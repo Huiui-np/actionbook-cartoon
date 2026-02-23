@@ -301,22 +301,35 @@ fn handle_existing_config(cli: &Cli, non_interactive: bool, reset: bool) -> Resu
     }
 }
 
-/// Print the welcome banner with gradient Actionbook logo.
+/// Return setup logo symbol. Prefer natural-join on UTF-8 terminals.
+fn setup_logo_symbol() -> &'static str {
+    let locale = std::env::var("LC_ALL")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| std::env::var("LC_CTYPE").ok().filter(|v| !v.is_empty()))
+        .or_else(|| std::env::var("LANG").ok().filter(|v| !v.is_empty()));
+
+    match locale {
+        Some(value) => {
+            let upper = value.to_uppercase();
+            if upper.contains("UTF-8") || upper.contains("UTF8") {
+                "⋈"
+            } else {
+                "><"
+            }
+        }
+        None => "><",
+    }
+}
+
+/// Print the welcome banner.
 fn print_welcome() {
     println!();
-    let lines = [
-        r"     _        _   _             _                 _     ",
-        r"    / \   ___| |_(_) ___  _ __ | |__   ___   ___ | | __ ",
-        r"   / _ \ / __| __| |/ _ \| '_ \| '_ \ / _ \ / _ \| |/ /",
-        r"  / ___ \ (__| |_| | (_) | | | | |_) | (_) | (_) |   < ",
-        r" /_/   \_\___|\__|_|\___/|_| |_|_.__/ \___/ \___/|_|\_\",
-    ];
-    // Gradient: bright_cyan → cyan → blue
-    println!("  {}", lines[0].bright_cyan().bold());
-    println!("  {}", lines[1].bright_cyan());
-    println!("  {}", lines[2].cyan());
-    println!("  {}", lines[3].cyan());
-    println!("  {}", lines[4].blue());
+    println!(
+        "  {}  {}",
+        setup_logo_symbol().cyan().bold(),
+        "Actionbook".bold()
+    );
     println!();
     println!(
         "  {}  {}  {}",
