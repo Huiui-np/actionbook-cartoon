@@ -139,11 +139,10 @@ while (pageIndex < maxPages) {
   await nextBtn.click();
 
   // Post-click detection only: advance must be caused by this click
-  const advanced = await Promise.race([
+  const advanced = await Promise.any([
     page
       .waitForURL(url => url.toString() !== previousUrl, { timeout: 5000 })
-      .then(() => true)
-      .catch(() => false),
+      .then(() => true),
     page
       .waitForFunction(
         prev => {
@@ -153,9 +152,8 @@ while (pageIndex < maxPages) {
         previousFirstItem,
         { timeout: 5000 }
       )
-      .then(() => true)
-      .catch(() => false),
-  ]);
+      .then(() => true),
+  ]).catch(() => false);
 
   if (!advanced) break;
 
