@@ -90,8 +90,26 @@ Once the CLI is installed and the Skill is added, you can simply ask your agent:
 
 > "Go to Airbnb and search for a place in Tokyo."
 
-The agent will formatted:
+The agent will:
 1.  **Read Skill**: Understands it should use `actionbook` CLI.
 2.  **Search**: Runs `actionbook search "airbnb search"`.
 3.  **Get**: Runs `actionbook get ...` to find the search input and button selectors.
 4.  **Operate**: Runs `actionbook browser ...` commands to perform the search safely.
+
+### Extracting Data
+
+The `extract` skill handles requests where the goal is **obtaining data** from a website. Ask naturally:
+
+> "Extract all paper titles and authors from this arXiv search results page."
+
+> "Scrape the pricing table from example.com/pricing into a CSV."
+
+> "Pull all job listings from this page — title, company, location."
+
+The agent will:
+1.  Search Actionbook for verified selectors (or fall back to snapshot/screenshot).
+2.  Detect page mechanisms (lazy loading, virtual scroll, pagination).
+3.  Generate a **standalone Playwright script** that handles those mechanisms.
+4.  Run the script and write the extracted data to disk.
+
+The default output is an executable `.js` script + a `output.json` file. Both are re-runnable without Actionbook installed.
