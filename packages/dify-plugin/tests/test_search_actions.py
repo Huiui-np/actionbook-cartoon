@@ -2,6 +2,7 @@
 
 from unittest.mock import Mock, patch
 
+import pytest
 import requests
 
 from tools.search_actions import SearchActionsTool
@@ -29,6 +30,7 @@ class TestSearchActionsTool:
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.text = "Area ID: github.com:login:username\nDescription: Login field"
+        mock_response.headers = {"Content-Type": "text/plain"}
         mock_get.return_value = mock_response
 
         tool_parameters = {"query": "GitHub login", "limit": 5}
@@ -45,6 +47,7 @@ class TestSearchActionsTool:
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.text = "Area ID: github.com:login:username"
+        mock_response.headers = {"Content-Type": "text/plain"}
         mock_get.return_value = mock_response
 
         tool_parameters = {"query": "login", "domain": "github.com", "limit": 3}
@@ -80,6 +83,7 @@ class TestSearchActionsTool:
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.text = "results"
+        mock_response.headers = {"Content-Type": "text/plain"}
         mock_get.return_value = mock_response
 
         tool_parameters = {"query": "test", "limit": 0}
@@ -94,6 +98,7 @@ class TestSearchActionsTool:
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.text = "results"
+        mock_response.headers = {"Content-Type": "text/plain"}
         mock_get.return_value = mock_response
 
         tool_parameters = {"query": "test", "limit": 100}
@@ -108,6 +113,7 @@ class TestSearchActionsTool:
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.text = ""
+        mock_response.headers = {"Content-Type": "text/plain"}
         mock_get.return_value = mock_response
 
         tool_parameters = {"query": "nonexistent"}
@@ -115,7 +121,6 @@ class TestSearchActionsTool:
         result = list(self.tool._invoke(tool_parameters))
 
         assert len(result) == 1
-        # Updated assertion to match new SSRF-aware error message
         assert "empty response" in result[0].message.text.lower()
         assert ("SSRF proxy" in result[0].message.text or
                 "Self-hosted" in result[0].message.text)
@@ -125,6 +130,8 @@ class TestSearchActionsTool:
         """Test handling of invalid API key returns error message."""
         mock_response = Mock()
         mock_response.status_code = 401
+        mock_response.text = ""
+        mock_response.headers = {"Content-Type": "application/json"}
         mock_get.return_value = mock_response
 
         tool_parameters = {"query": "test"}
@@ -139,6 +146,8 @@ class TestSearchActionsTool:
         """Test handling of rate limit errors."""
         mock_response = Mock()
         mock_response.status_code = 429
+        mock_response.text = ""
+        mock_response.headers = {"Content-Type": "application/json"}
         mock_get.return_value = mock_response
 
         tool_parameters = {"query": "test"}
@@ -153,6 +162,8 @@ class TestSearchActionsTool:
         """Test handling of API unavailability."""
         mock_response = Mock()
         mock_response.status_code = 500
+        mock_response.text = ""
+        mock_response.headers = {"Content-Type": "application/json"}
         mock_get.return_value = mock_response
 
         tool_parameters = {"query": "test"}
@@ -172,7 +183,7 @@ class TestSearchActionsTool:
         result = list(self.tool._invoke(tool_parameters))
 
         assert len(result) == 1
-        assert "Cannot connect" in result[0].message.text
+        assert "ConnectionError" in result[0].message.text
 
     @patch("tools.search_actions.requests.get")
     def test_timeout_error(self, mock_get):
@@ -199,15 +210,13 @@ class TestSearchActionsTool:
         assert "unexpected error" in result[0].message.text.lower()
 
     @patch("tools.search_actions.requests.get")
-    def test_baseexception_error(self, mock_get):
-        """Test handling of non-Exception errors yields system-level message."""
+    def test_baseexception_propagates(self, mock_get):
+        """Test that non-Exception BaseException subclasses propagate uncaught."""
         mock_get.side_effect = _FakeSystemError("gevent timeout")
 
         tool_parameters = {"query": "test"}
-        result = list(self.tool._invoke(tool_parameters))
-
-        assert len(result) == 1
-        assert "system-level error" in result[0].message.text.lower()
+        with pytest.raises(_FakeSystemError, match="gevent timeout"):
+            list(self.tool._invoke(tool_parameters))
 
     @patch("tools.search_actions.requests.get")
     def test_search_without_api_key(self, mock_get):
@@ -215,6 +224,7 @@ class TestSearchActionsTool:
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.text = "Area ID: github.com:login:username"
+        mock_response.headers = {"Content-Type": "text/plain"}
         mock_get.return_value = mock_response
 
         tool = _make_tool(api_key="")
@@ -232,6 +242,8 @@ class TestSearchActionsTool:
         """Test handling of HTTP 403 Forbidden status."""
         mock_response = Mock()
         mock_response.status_code = 403
+        mock_response.text = ""
+        mock_response.headers = {"Content-Type": "application/json"}
         mock_get.return_value = mock_response
 
         tool_parameters = {"query": "test"}
@@ -242,7 +254,7 @@ class TestSearchActionsTool:
 
     @patch("tools.search_actions.requests.get")
     def test_connection_error_ssl(self, mock_get):
-        """Test SSL-specific connection error branch."""
+        """Test SSL-specific connection error includes error message."""
         mock_get.side_effect = requests.ConnectionError("SSL certificate verify failed")
 
         tool_parameters = {"query": "test"}
@@ -253,7 +265,7 @@ class TestSearchActionsTool:
 
     @patch("tools.search_actions.requests.get")
     def test_connection_error_refused(self, mock_get):
-        """Test connection-refused branch."""
+        """Test connection-refused error includes error message."""
         mock_get.side_effect = requests.ConnectionError("Connection refused")
 
         tool_parameters = {"query": "test"}
@@ -264,7 +276,7 @@ class TestSearchActionsTool:
 
     @patch("tools.search_actions.requests.get")
     def test_connection_error_timeout(self, mock_get):
-        """Test connection timeout branch."""
+        """Test connection timeout error includes error message."""
         mock_get.side_effect = requests.ConnectionError("Connection timeout")
 
         tool_parameters = {"query": "test"}
@@ -280,6 +292,7 @@ class TestSearchActionsTool:
             mock_response = Mock()
             mock_response.status_code = 200
             mock_response.text = "results"
+            mock_response.headers = {"Content-Type": "text/plain"}
             mock_get.return_value = mock_response
 
             # Float 5.7 should be cast to int 5
@@ -295,6 +308,7 @@ class TestSearchActionsTool:
             mock_response = Mock()
             mock_response.status_code = 200
             mock_response.text = "results"
+            mock_response.headers = {"Content-Type": "text/plain"}
             mock_get.return_value = mock_response
 
             list(tool._invoke({"query": "test", "limit": "abc"}))
@@ -309,3 +323,18 @@ class TestSearchActionsTool:
 
         assert isinstance(tool, SearchActionsTool)
         assert tool.runtime.credentials["actionbook_api_key"] == "factory_key"
+
+    @patch("tools.search_actions.requests.get")
+    def test_html_response_returns_misroute_error(self, mock_get):
+        """HTML response should return actionable base URL guidance."""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.text = "<!DOCTYPE html><html><body>Redirecting</body></html>"
+        mock_response.headers = {"Content-Type": "text/html; charset=utf-8"}
+        mock_get.return_value = mock_response
+
+        result = list(self.tool._invoke({"query": "test"}))
+
+        assert len(result) == 1
+        assert "HTML page" in result[0].message.text
+        assert "ACTIONBOOK_API_URL" in result[0].message.text

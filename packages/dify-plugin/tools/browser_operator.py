@@ -16,10 +16,64 @@ from urllib.parse import urlparse
 
 from dify_plugin import Tool
 from dify_plugin.entities.tool import ToolInvokeMessage
-from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from utils.cdp_client import validate_cdp_url
-from utils.connection_pool import ConnectionNotFound, ConnectionUnhealthy, WorkerTimeoutError, pool
+
+# Lazy imports — avoid loading playwright/connection_pool at module level.
+# These modules require the Playwright Node.js driver binary and spawn
+# background threads/subprocesses, which may not be available in Dify Cloud's
+# serverless runtime.
+#
+# Fallback exception stubs are defined eagerly so that except clauses always
+# reference valid BaseException subclasses, even before _ensure_browser_deps()
+# runs.  After a successful import the stubs are replaced by the real types.
+import threading
+
+_pool = None
+_lazy_imported = False
+_lazy_lock = threading.Lock()
+
+
+class _StubException(Exception):
+    """Placeholder exception type used before lazy imports complete."""
+
+
+PlaywrightTimeout: type[Exception] = _StubException
+ConnectionNotFound: type[Exception] = _StubException
+ConnectionUnhealthy: type[Exception] = _StubException
+WorkerTimeoutError: type[Exception] = _StubException
+
+
+pool = None  # Module-level alias set by _ensure_browser_deps(); patchable by tests.
+
+
+def _ensure_browser_deps():
+    """Lazy-import browser dependencies on first use (thread-safe)."""
+    global pool, _pool, _lazy_imported, PlaywrightTimeout, ConnectionNotFound, ConnectionUnhealthy, WorkerTimeoutError
+    if _lazy_imported:
+        return
+    with _lazy_lock:
+        if _lazy_imported:
+            return
+        try:
+            from playwright.sync_api import TimeoutError as _PT
+            PlaywrightTimeout = _PT
+        except Exception:
+            pass  # keep _StubException fallback
+
+        from utils.connection_pool import (
+            ConnectionNotFound as _CNF,
+            ConnectionUnhealthy as _CU,
+            WorkerTimeoutError as _WTE,
+            pool as _p,
+        )
+        ConnectionNotFound = _CNF
+        ConnectionUnhealthy = _CU
+        WorkerTimeoutError = _WTE
+        _pool = _p
+        pool = _p  # update module-level alias
+        # Only mark as done AFTER all imports succeed.
+        _lazy_imported = True
 
 logger = logging.getLogger(__name__)
 
@@ -637,6 +691,22 @@ def _pre_validate(action: str, params: dict[str, Any]) -> str | None:
 
 class BrowserOperatorTool(Tool):
     def _invoke(self, tool_parameters: dict[str, Any]) -> Generator[ToolInvokeMessage, None, None]:
+        # Lazy-load browser dependencies (playwright, connection_pool).
+        # This allows search_actions/get_action tools to work even when
+        # playwright is unavailable (e.g. Dify Cloud serverless runtime).
+        # Lazy-load browser dependencies. Skip if pool is already set
+        # (e.g. tests patching tools.browser_operator.pool directly).
+        if pool is None:
+            try:
+                _ensure_browser_deps()
+            except Exception as e:
+                yield self.create_text_message(
+                    f"Error: Browser dependencies unavailable: {type(e).__name__}: {e}\n"
+                    "Playwright and subprocess support are required for browser operations. "
+                    "This environment may not support browser tools."
+                )
+                return
+
         session_id = (tool_parameters.get("session_id") or "").strip()
         raw_cdp_url = (tool_parameters.get("cdp_url") or "").strip()
         action = (tool_parameters.get("action") or "").strip()
@@ -678,6 +748,15 @@ class BrowserOperatorTool(Tool):
         # 2) If missing/unhealthy and cdp_url exists, reconnect the pool for this session_id
         # 3) If only cdp_url exists, create an ephemeral pooled connection for this call
         if session_id:
+            # Snapshot provider metadata *before* get_page(), because
+            # ConnectionUnhealthy evicts the connection (and its metadata)
+            # from the pool before raising.  Without this, a reconnect via
+            # pool.connect() would use default empty values, causing
+            # browser_stop_session to fail later (remote session leak).
+            _session_meta = pool.get_session_info(session_id)
+            _recover_provider = _session_meta[0] if _session_meta else "hyperbrowser"
+            _recover_api_key = _session_meta[1] if _session_meta else ""
+
             try:
                 page = pool.get_page(session_id)
                 yield from handler(self, page, tool_parameters)
@@ -695,7 +774,11 @@ class BrowserOperatorTool(Tool):
                     "Pool lookup failed; attempting reconnect from cdp_url for session recovery."
                 )
                 try:
-                    pool.connect(session_id, cdp_url)
+                    pool.connect(
+                        session_id, cdp_url,
+                        provider_name=_recover_provider,
+                        api_key=_recover_api_key,
+                    )
                     page = pool.get_page(session_id)
                     yield from handler(self, page, tool_parameters)
                     return
