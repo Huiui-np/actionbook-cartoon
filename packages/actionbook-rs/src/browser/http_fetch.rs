@@ -31,13 +31,20 @@ pub async fn try_http_fetch(
     max_tokens: Option<usize>,
     _session_tag: Option<&str>,
 ) -> Result<Option<HttpFetchResult>, Box<dyn std::error::Error + Send + Sync>> {
+    // Security: Normalize HTTP URLs to HTTPS to prevent downgrade attacks
+    let normalized_url = if url.starts_with("http://") {
+        url.replacen("http://", "https://", 1)
+    } else {
+        url.to_string()
+    };
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::limited(5))
         .user_agent("Mozilla/5.0 (compatible; Actionbook/1.0)")
         .build()?;
 
-    let resp = match client.get(url).send().await {
+    let resp = match client.get(&normalized_url).send().await {
         Ok(r) => r,
         Err(_) => return Ok(None), // Network error → fallback to browser
     };
