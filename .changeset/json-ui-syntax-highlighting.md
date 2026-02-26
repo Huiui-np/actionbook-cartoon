@@ -10,3 +10,4 @@ Add syntax highlighting, code wrapping, and language switcher control
 - Add automatic theme switching for syntax highlighting (light/dark modes)
 - Enable code wrapping with `white-space: pre-wrap` for better mobile readability
 - Add enhanced CSS styling for code blocks with proper borders, backgrounds, and spacing
+- Add SRI (Subresource Integrity) hashes to all Prism.js CDN resources for supply chain security
