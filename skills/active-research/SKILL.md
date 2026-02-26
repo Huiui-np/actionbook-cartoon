@@ -1,19 +1,41 @@
 ---
 name: active-research
-description: Deep research and analysis tool. Generates comprehensive HTML reports on any topic, domain, paper, or technology. Use when user asks to research, analyze, investigate, deep-dive, or generate a report on any subject. Supports academic papers (arXiv), technologies, trends, comparisons, and general topics.
+description: Deep research and analysis tool. Generates comprehensive HTML reports on any topic, domain, paper, or technology. Enhanced with advanced browser automation — SPA handling, network idle wait, batch operations, stealth browsing, and intelligent page analysis. Use when user asks to research, analyze, investigate, deep-dive, or generate a report on any subject.
+exclude_tools: group:web
+triggers: research, deep-dive, investigate, analyze topic, deep research, generate report
+force_tool_turns: 10
 ---
 
 # Active Research
 
-Analyze any topic, domain, or paper and generate a beautiful HTML report using Actionbook browser automation and json-ui rendering.
+Analyze any topic, domain, or paper and generate a beautiful HTML report using **Actionbook Browser** — featuring SPA-aware navigation, network idle detection, batch operations, and intelligent page analysis.
+
+## Enhanced Browser Capabilities
+
+| Capability | Description |
+|------------|-------------|
+| Page load wait | `wait-idle` — monitors fetch/XHR until network settles |
+| SPA content | `wait-fn` — wait for JS conditions before extracting |
+| Page understanding | `snapshot --filter interactive --max-tokens N` — focused, budget-friendly |
+| Popups blocking | `--auto-dismiss-dialogs` — auto-handle alert/confirm/prompt |
+| Load speed | `--block-images` — skip images for faster text extraction |
+| Page stability | `--no-animations` — freeze CSS transitions |
+| Error detection | `console --level error` — check for page issues |
+| Multi-step forms | `batch` — execute multiple actions in one call |
+| Element debugging | `info <selector>` — inspect visibility, position, properties |
+| Change tracking | `snapshot --diff` — only see what changed |
+| Anti-detection | `--stealth` + `fingerprint rotate` for protected sites |
+| Auth management | `storage set` — inject JWT/tokens for gated content |
+| One-shot fetch | `browser fetch <url>` — navigate+wait+extract+close in one command |
+| Static page speed | `--lite` — HTTP-first, browser fallback only if needed |
+| Anti-scrape URLs | `--rewrite-urls` — x.com→xcancel.com, reddit→old.reddit |
+| Wait tuning | `--wait-hint` — domain-aware wait (fast/normal/slow/heavy) |
+| Log correlation | `--session-tag` — tag all operations for debugging |
 
 ## Usage
 
 ```
 /active-research <topic>
-/active-research <topic> --lang en
-/active-research <topic> --lang zh
-/active-research <topic> --lang both
 /active-research <topic> --output ./reports/my-report.json
 ```
 
@@ -24,16 +46,15 @@ Or simply tell Claude: "Research XXX and generate a report"
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
 | `topic` | Yes | - | The subject to research (any text) |
-| `--lang` | No | `en` | Language mode: `en` (default), `zh`, or `both` |
 | `--output` | No | `./output/<topic-slug>.json` | Output path for JSON report |
 
 ### Topic Detection
 
 | Pattern | Type | Strategy |
 |---------|------|----------|
-| `arxiv:XXXX.XXXXX` | Paper | **arXiv Advanced Search** (Step 2b) + ar5iv deep read |
+| `arxiv:XXXX.XXXXX` | Paper | **arXiv Advanced Search** + ar5iv deep read |
 | `doi:10.XXX/...` | Paper | Resolve DOI, then **arXiv Advanced Search** for related work |
-| Academic keywords (paper, research, model, algorithm) | Academic topic | **arXiv Advanced Search** (Step 2b) + Google for non-academic sources |
+| Academic keywords (paper, research, model, algorithm) | Academic topic | **arXiv Advanced Search** + Google for non-academic sources |
 | URL | Specific page | Fetch and analyze the page |
 | General text | Topic research | Google search + arXiv Advanced Search if relevant |
 
@@ -42,52 +63,109 @@ Or simply tell Claude: "Research XXX and generate a report"
 ```
 ┌──────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────┐
 │  Claude   │────▶│  Actionbook  │────▶│  Web Pages   │────▶│ Extract  │
-│  Code     │     │  Browser CLI │     │  (multiple)  │     │ Content  │
+│  Code     │     │   Browser    │     │  (multiple)  │     │ Content  │
 └──────────┘     └──────────────┘     └──────────────┘     └─────┬────┘
-      │                                                           │
-      │          ┌──────────────┐     ┌──────────────┐           │
-      ├─────────▶│  Actionbook  │     │ arXiv Adv.   │           │
-      │          │  search/get  │────▶│ Search Form  │──────────▶│
-      │          │  (selectors) │     │ (40+ fields) │           │
-      │          └──────────────┘     └──────────────┘           │
-      │                                                           │
-      │    Actionbook indexes arXiv form selectors,               │
-      │    enabling field-specific, filtered academic              │
-      │    searches that WebFetch/WebSearch CANNOT do.             │
-      │                                                           │
-┌──────────┐     ┌──────────────┐     ┌──────────────┐           │
-│  Open in │◀────│   json-ui    │◀────│  Write JSON  │◀──────────┘
+      │           │ wait-idle    │     │ SPA / dynamic │           │
+      │           │ batch ops    │     │ protected     │           │
+      │           │ --stealth    │     │ mobile-only   │           │
+      │           │ snapshot     │     └───────────────┘           │
+      │           └──────────────┘                                 │
+      │          ┌──────────────┐     ┌──────────────┐            │
+      ├─────────▶│  Actionbook  │     │ arXiv Adv.   │            │
+      │          │  search/get  │────▶│ Search Form  │───────────▶│
+      │          │  (selectors) │     │ (40+ fields) │            │
+      │          └──────────────┘     └──────────────┘            │
+      │                                                            │
+┌──────────┐     ┌──────────────┐     ┌──────────────┐            │
+│  Open in │◀────│   json-ui    │◀────│  Write JSON  │◀───────────┘
 │  Browser │     │   render     │     │  Report      │  Synthesize
 └──────────┘     └──────────────┘     └──────────────┘
 ```
 
-### Why Actionbook, Not WebFetch/WebSearch?
-
-| Capability | Actionbook | WebFetch/WebSearch |
-|------------|-----------|-------------------|
-| Operate complex web forms (dropdowns, checkboxes, date pickers) | Yes — uses indexed selectors | No |
-| arXiv: search by Author, Title, Abstract separately | Yes — `#terms-0-field` select | No — keyword only |
-| arXiv: filter by subject (CS, Physics, Math, ...) | Yes — category checkboxes | No |
-| arXiv: filter by date range or specific year | Yes — date inputs | No |
-| Read pages with verified selectors (no guessing) | Yes — `actionbook get` | No — raw HTML parse |
-| Interact with any indexed site's UI | Yes — click, type, select | No — read-only |
-
-**This is the core value of Actionbook for research: it turns web forms into structured, programmable interfaces for AI agents.**
-
 ## MUST USE Actionbook CLI
 
-**Always use `actionbook browser` commands for web browsing. Never use WebFetch or WebSearch.**
+**Always use `actionbook browser` commands for web browsing. NEVER use any other method to access the web:**
+
+- **NEVER** use `curl`, `wget`, `httpie`, or any HTTP CLI tool via bash
+- **NEVER** use `python -c "import requests"` or any scripting-language HTTP library via bash
+- **NEVER** use WebFetch or WebSearch tools
+- **ONLY** use `actionbook browser` and `actionbook search`/`actionbook get` commands
+
+If you need web content, the PREFERRED path is: `actionbook browser fetch <url> --format text --json` (one-shot).
+For interactive multi-step workflows, use: `actionbook browser open <url>` → `actionbook browser wait-idle` → `actionbook browser text`.
+
+## Browser Flags — Research Defaults
+
+**CRITICAL: Always use these flags when opening the browser for research.**
 
 ```bash
-actionbook browser open <url>          # Navigate to page
-actionbook browser snapshot            # Get accessibility tree
-actionbook browser text [selector]     # Extract text content
-actionbook browser screenshot [path]   # Capture visual
-actionbook browser click <selector>    # Click element
-actionbook browser close               # Close browser (ALWAYS do this at end)
+# PREFERRED: One-shot fetch (I1) — handles open+wait+extract+close automatically
+actionbook --block-images --rewrite-urls browser fetch "<url>" --format text --json
+
+# For interactive multi-step workflows, use explicit open:
+actionbook --block-images --auto-dismiss-dialogs --no-animations --rewrite-urls browser open "<url>"
+```
+
+| Flag | Why |
+|------|-----|
+| `--block-images` | Skip image downloads — 2-5x faster page load for text extraction |
+| `--auto-dismiss-dialogs` | Prevent alert/confirm/prompt from blocking automation |
+| `--no-animations` | Freeze CSS animations — stable snapshots, no timing issues |
+| `--rewrite-urls` | Rewrite x.com→xcancel.com, reddit→old.reddit to avoid anti-bot blocking |
+| `--wait-hint <hint>` | Domain-aware wait: `instant`, `fast`, `normal`, `slow`, `heavy`, or ms |
+| `--session-tag <tag>` | Tag all operations for log correlation and debugging |
+| `--lite` (fetch only) | Try HTTP first, skip browser for static pages (Wikipedia, docs, blogs) |
+
+For sites with anti-bot protection, add `--stealth`:
+```bash
+actionbook --block-images --auto-dismiss-dialogs --no-animations --stealth --rewrite-urls browser open "<url>"
+```
+
+## Navigation Pattern — ALWAYS Follow
+
+**Option A: One-shot fetch (PREFERRED for read-only page extraction):**
+
+```bash
+# Single command: navigate → wait (domain-aware) → extract → close
+actionbook --block-images --rewrite-urls browser fetch "<url>" --format text --json
+# For static pages (Wikipedia, docs, blogs), add --lite to skip browser entirely:
+actionbook --rewrite-urls browser fetch "<url>" --format text --lite --json
+# For accessibility tree:
+actionbook --block-images --rewrite-urls browser fetch "<url>" --format snapshot --max-tokens 2000 --json
+```
+
+**Option B: Interactive multi-step pattern (for forms, clicks, multi-page flows):**
+
+```bash
+# Step 1: Navigate
+actionbook browser open "<url>"          # or: goto, click a link
+
+# Step 2: Wait for load (MANDATORY in v2)
+actionbook browser wait-idle             # Wait for fetch/XHR to settle
+
+# Step 3: Extract content
+actionbook browser text [selector]       # Extract text
+# OR
+actionbook browser snapshot --filter interactive --max-tokens 500  # Understand page structure
+```
+
+**Why `wait-idle` is critical:**
+- SPAs (React, Vue, Next.js) load content via fetch/XHR after initial HTML
+- Without waiting, `text` returns empty or incomplete content
+- `wait-idle` monitors all pending network requests, waits until quiet for 500ms
+
+**For pages that load content dynamically after network settles:**
+```bash
+actionbook browser wait-idle
+actionbook browser wait-fn "document.querySelector('.results')"    # Wait for specific element
+actionbook browser text ".results"
 ```
 
 ## Complete Workflow
+
+> **REMINDER:** Every web access in this workflow MUST use `actionbook browser` commands.
+> Using `curl`, `wget`, `python requests`, or any other HTTP tool is **strictly forbidden**.
+> The bash tool should ONLY be used for `actionbook` CLI commands and local file operations (json-ui render, `open`).
 
 ### Step 1: Plan Search Strategy
 
@@ -103,15 +181,13 @@ Based on the topic, generate 5-8 search queries from different angles:
 
 | Step | Action | Why |
 |------|--------|-----|
-| **Step 2 (FIRST)** | **Query Actionbook API** | Get verified selectors for arXiv Advanced Search form, ar5iv papers, and any other known sites BEFORE browsing. This is the foundation for all subsequent steps. |
-| **Step 3 (SECOND)** | **arXiv Advanced Search** | Use Actionbook selectors from Step 2 to perform multi-field, filtered academic search. Even non-academic topics often have relevant papers. |
+| **Step 2 (FIRST)** | **Query Actionbook API** | Get verified selectors for arXiv, ar5iv, and other known sites BEFORE browsing. |
+| **Step 3 (SECOND)** | **arXiv Advanced Search** | Use Actionbook selectors for multi-field, filtered academic search. |
 | **Step 4 (THIRD)** | Google / Bing search | Supplement with blogs, news, code, discussions, non-academic sources. |
-
-**IMPORTANT:** Always query Actionbook API first (Step 2) to get selectors, then use them in arXiv Advanced Search (Step 3). This is what makes Actionbook-powered research fundamentally different from WebFetch/WebSearch — the agent knows the exact selectors for every form field before it even opens the browser.
 
 ### Step 2: Query Actionbook API for Selectors (ALWAYS DO THIS FIRST)
 
-**BEFORE browsing any URL, query Actionbook's indexed selectors.** This gives you verified CSS/XPath selectors instead of guessing.
+**BEFORE browsing any URL, query Actionbook's indexed selectors.**
 
 ```bash
 # Search for indexed actions by domain
@@ -125,146 +201,218 @@ actionbook get "<domain>:/<path>:<area>"
 
 | Site | area_id | Key Selectors |
 |------|---------|---------------|
-| arXiv Advanced Search | `arxiv.org:/search/advanced:default` | **40+ selectors**: field select, term input, category checkboxes (CS/Physics/Math/...), date range filters, cross-list control — used in Step 3 |
-| ar5iv paper | `ar5iv.labs.arxiv.org:/html/{paper_id}:default` | `h1.ltx_title_document` (title), `div.ltx_authors` (authors), `div.ltx_abstract` (abstract), `section.ltx_section` (sections) |
-| Google Scholar | `scholar.google.com:/:default` | `#gs_hdr_tsi` (search input), `#gs_hdr_tsb` (search button) |
+| arXiv Advanced Search | `arxiv.org:/search/advanced:default` | **40+ selectors**: field select, term input, category checkboxes, date range filters |
+| ar5iv paper | `ar5iv.labs.arxiv.org:/html/{paper_id}:default` | `h1.ltx_title_document`, `div.ltx_authors`, `div.ltx_abstract`, `section.ltx_section` |
+| Google Scholar | `scholar.google.com:/:default` | `#gs_hdr_tsi` (search), `#gs_hdr_tsb` (submit) |
 | arXiv homepage | `arxiv.org:/:default` | Global search across 2.4M+ articles |
 
-**For any URL you plan to visit**, run `actionbook search "<keywords>" -d "<domain>"` to check if it's indexed. Use indexed selectors when available; fall back to `actionbook browser snapshot` for unindexed sites.
+**For any URL you plan to visit**, run `actionbook search "<keywords>" -d "<domain>"` to check if it's indexed.
 
-**Example: Get arXiv Advanced Search selectors before searching:**
+### Step 3: arXiv Search (URL-First, Form as Backup)
 
-```bash
-# Query Actionbook for arXiv form selectors
-actionbook get "arxiv.org:/search/advanced:default"
-# Returns 40+ selectors: #terms-0-field, #terms-0-term, #classification-computer_science, etc.
-```
+**LESSON LEARNED: arXiv form submission via browser automation is unreliable. Use URL-based search as the PRIMARY method.**
 
-### Step 3: arXiv Advanced Search (Using Actionbook Selectors)
-
-> **Key differentiator:** WebFetch/WebSearch can only do simple keyword searches. Actionbook has indexed the **entire arXiv Advanced Search form** with 40+ verified selectors (queried in Step 2), enabling multi-field, multi-criteria academic searches — just like a human researcher would use the form.
-
-Using the selectors obtained from Step 2, the Agent can:
-
-| Capability | Actionbook Selector | WebFetch/WebSearch |
-|------------|--------------------|--------------------|
-| Search by specific field (Title, Author, Abstract) | `#terms-0-field` select → choose field | Not possible |
-| Add multiple search terms with boolean logic | `button "Add another term +"` | Not possible |
-| Filter by subject (CS, Physics, Math, etc.) | `#classification-computer_science` checkbox | Not possible |
-| Filter by date range | `#date-filter_by-3` radio + `#date-from_date` / `#date-to_date` | Not possible |
-| Filter by specific year | `#date-filter_by-2` radio + `#date-year` input | Not possible |
-| Include/exclude cross-listed papers | `#classification-include_cross_list-0/1` radio | Not possible |
-| Control results display | `#size` select, `#abstracts-0/1` radio | Not possible |
-
-**Example: Search for recent CS papers by a specific author:**
+**Option A: URL-based search (PRIMARY — most reliable):**
 
 ```bash
-# Open arXiv Advanced Search
-actionbook browser open "https://arxiv.org/search/advanced"
+# Simple keyword search
+actionbook --block-images --auto-dismiss-dialogs --no-animations browser open "https://arxiv.org/search/?query=large+language+model+agent&searchtype=all"
+actionbook browser wait-idle
+actionbook browser text "#main-container"
 
-# 1. Set search field to "Author" and type author name
-actionbook browser click "#terms-0-field"
-actionbook browser click "option[value='author']"
-actionbook browser type "#terms-0-term" "Yann LeCun"
-
-# 2. Filter to Computer Science only
-actionbook browser click "#classification-computer_science"
-
-# 3. Restrict to past 12 months
-actionbook browser click "#date-filter_by-1"
-
-# 4. Show abstracts in results
-actionbook browser click "#abstracts-0"
-
-# 5. Submit search
-actionbook browser click "button:has-text('Search'):nth(2)"
-
-# 6. Extract results
+# Advanced URL search with filters
+# searchtype: all, title, author, abstract
+# start: result offset (0, 50, 100, ...)
+actionbook browser open "https://arxiv.org/search/?query=Rust+machine+learning&searchtype=all&start=0"
+actionbook browser wait-idle
 actionbook browser text "#main-container"
 ```
 
-**Example: Search by title keywords in a date range:**
+**Search strategy: Start broad, then narrow:**
+1. First search: broad terms (e.g., `"Rust" "machine learning"`) — aim for 50+ results
+2. If too few results (< 10): broaden further, remove date/category filters
+3. If too many results (> 200): add more specific terms, use `searchtype=title`
+4. Try 2-3 different query angles (e.g., framework names, use cases, benchmarks)
+
+**Option B: Form interaction via batch (BACKUP — use if URL search is insufficient):**
 
 ```bash
-actionbook browser open "https://arxiv.org/search/advanced"
+# Open arXiv with research flags
+actionbook --block-images --auto-dismiss-dialogs --no-animations browser open "https://arxiv.org/search/advanced"
+actionbook browser wait-idle
 
-# Search in "Title" field
-actionbook browser click "#terms-0-field"
-actionbook browser click "option[value='title']"
-actionbook browser type "#terms-0-term" "large language model agent"
-
-# Date range: 2025-01 to 2026-02
-actionbook browser click "#date-filter_by-3"
-actionbook browser type "#date-from_date" "2025-01-01"
-actionbook browser type "#date-to_date" "2026-02-09"
-
-# Submit and extract
-actionbook browser click "button:has-text('Search'):nth(2)"
+# Use batch for form — fewer round-trips, more reliable
+cat <<'EOF' | actionbook browser batch --delay 150
+{
+  "actions": [
+    {"kind": "click", "selector": "#terms-0-field"},
+    {"kind": "click", "selector": "option[value='title']"},
+    {"kind": "type", "selector": "#terms-0-term", "text": "large language model agent"},
+    {"kind": "click", "selector": "#classification-computer_science"},
+    {"kind": "click", "selector": "#date-filter_by-3"},
+    {"kind": "type", "selector": "#date-from_date", "text": "2025-01-01"},
+    {"kind": "type", "selector": "#date-to_date", "text": "2026-02-23"},
+    {"kind": "click", "selector": "button:has-text('Search'):nth(2)"}
+  ],
+  "stopOnError": true
+}
+EOF
+actionbook browser wait-idle
 actionbook browser text "#main-container"
+
+# If batch form submission fails (page shows form again instead of results):
+# → Fall back to Option A URL-based search immediately
+# → Do NOT retry the form — it wastes time
 ```
+
+**arXiv search capabilities (from indexed selectors — for Option B):**
+
+| Capability | Selector |
+|------------|----------|
+| Search field (Title/Author/Abstract) | `#terms-0-field` select |
+| Search term | `#terms-0-term` input |
+| Add boolean terms | `button "Add another term +"` |
+| Filter: Computer Science | `#classification-computer_science` |
+| Filter: Physics, Math, etc. | `#classification-physics`, `#classification-mathematics` |
+| Date: past 12 months | `#date-filter_by-1` radio |
+| Date: specific year | `#date-filter_by-2` radio + `#date-year` |
+| Date: custom range | `#date-filter_by-3` radio + `#date-from_date` / `#date-to_date` |
+| Show abstracts | `#abstracts-0` radio |
 
 ### Step 4: Supplement with Google / Bing Search
 
-After arXiv, use Google/Bing to find non-academic sources (blogs, news, docs, code, discussions):
-
 ```bash
-# Search via Google
+# Search via Google (with wait-idle for SPA results)
 actionbook browser open "https://www.google.com/search?q=<encoded_query>"
+actionbook browser wait-idle
 actionbook browser text "#search"
 
 # Or search via Bing
 actionbook browser open "https://www.bing.com/search?q=<encoded_query>"
+actionbook browser wait-idle
 actionbook browser text "#b_results"
 ```
 
-Parse the search results to extract URLs and snippets. Collect the top 5-10 most relevant URLs. For each discovered URL, query Actionbook API (Step 2 pattern) to check if the site is indexed before visiting.
+Parse search results to extract URLs. For each discovered URL, query Actionbook API to check if indexed.
+
+**CRITICAL: URL Handling Rules (Learned from Production Use)**
+
+1. **NEVER manually construct URLs from search snippets.** Many Google snippet URLs are truncated or reformatted. Instead:
+   - Use `actionbook browser snapshot --filter interactive` to find actual link elements
+   - Click the link directly: `actionbook browser click "a[href*='domain.com']"`
+   - Or extract href from snapshot refs
+
+2. **Expect 20-30% of URLs to be dead.** In practice, ~5 out of 20 URLs return 404. Handle this:
+   ```bash
+   actionbook browser open "<url>"
+   actionbook browser wait-idle
+   # Check if the page is a 404 or error page
+   actionbook browser wait-fn "!document.title.includes('404') && !document.title.includes('Not Found')" --timeout 3000
+   # If timeout → page is dead, skip immediately. Do NOT retry.
+   ```
+
+3. **Salvage info from Google snippets.** If a URL is dead but the Google snippet had useful info:
+   - The snippet text you already extracted IS valid data
+   - Use it in the report with a note that the source is no longer available
+   - Search for the same content on alternative sites (archive.org, cached versions)
+
+4. **Use 4+ diverse search queries.** Don't rely on one search angle:
+   - Query 1: Core topic overview (e.g., "Rust AI ecosystem 2026")
+   - Query 2: Specific frameworks/tools (e.g., "Candle vs Burn Rust ML framework")
+   - Query 3: Use cases/benchmarks (e.g., "Rust LLM inference performance benchmark")
+   - Query 4: Recent news/developments (e.g., "Rust machine learning latest 2026")
+   - Query 5: Community/ecosystem (e.g., "Rust AI agent framework comparison")
 
 ### Step 5: Deep Read Sources
 
-For each relevant URL, **first query Actionbook API** (same as Step 2) to check if the site is indexed, then use verified selectors:
+**PREFERRED: Use `browser fetch` for one-shot page extraction (handles wait + extract + cleanup):**
+
+```bash
+# Quick text extraction (most common)
+actionbook --block-images --rewrite-urls browser fetch "<url>" --format text --json
+
+# Static pages (Wikipedia, docs, blogs) — skip browser entirely
+actionbook --rewrite-urls browser fetch "<url>" --format text --lite --json
+
+# Page structure analysis
+actionbook --block-images --rewrite-urls browser fetch "<url>" --format snapshot --max-tokens 2000 --json
+
+# With token budget for LLM context management
+actionbook --block-images --rewrite-urls browser fetch "<url>" --format text --max-tokens 4000 --json
+```
+
+**For interactive workflows (forms, clicks), fall back to multi-step:**
 
 ```bash
 actionbook browser open "<url>"
-actionbook browser text                # Full page text (fallback)
-actionbook browser text "<selector>"   # Use Actionbook selector if indexed
+actionbook browser wait-idle                    # MANDATORY: wait for network
+actionbook browser text                         # Full page text (fallback)
+actionbook browser text "<selector>"            # Use Actionbook selector if indexed
 ```
 
-**For arXiv papers**, try sources in this order (newer papers often fail on ar5iv):
+**If page content seems incomplete, debug:**
 
 ```bash
-# 1. Try ar5iv first (best structured selectors from Actionbook)
-actionbook browser open "https://ar5iv.org/html/<arxiv_id>"
-actionbook browser text "h1.ltx_title_document"  # Title
-actionbook browser text "div.ltx_authors"         # Authors
-actionbook browser text "div.ltx_abstract"        # Abstract
-# NOTE: section.ltx_section often fails on newer papers — use "article" as fallback
+# Check for JS errors that might block rendering
+actionbook browser console --level error
 
-# 2. If ar5iv content is truncated (<5KB), fall back to arxiv abstract + other sources
-actionbook browser open "https://arxiv.org/abs/<arxiv_id>"
-actionbook browser text "main"
+# Check if a specific element exists
+actionbook browser wait-fn "document.querySelector('.content')" --timeout 5000
 
-# 3. Supplement with HuggingFace model cards and GitHub READMEs for full details
-actionbook browser open "https://huggingface.co/papers/<arxiv_id>"
-actionbook browser text "main"
+# Inspect element properties
+actionbook browser info ".content"
 ```
 
-**Key lesson:** Don't rely solely on ar5iv. Always cross-reference 3-4 sources for completeness.
+**For arXiv papers**, try sources in this order:
+
+```bash
+# 1. arXiv abstract (most reliable) — use fetch
+actionbook --block-images browser fetch "https://arxiv.org/abs/<arxiv_id>" --format text --json
+
+# 2. HuggingFace papers page
+actionbook --block-images browser fetch "https://huggingface.co/papers/<arxiv_id>" --format text --json
+
+# 3. ar5iv HTML (structured, but fails on new papers) — use --lite for static HTML
+actionbook browser fetch "https://ar5iv.org/html/<arxiv_id>" --format text --lite --json
+# NOTE: if content too short, ar5iv didn't render. Fall back.
+
+# 4. GitHub repo (from search results) — use fetch
+actionbook --block-images browser fetch "<github_repo_url>" --format text --json
+```
+
+**For protected sites (Cloudflare, bot detection) — use interactive mode with stealth:**
+
+```bash
+actionbook --stealth --block-images --auto-dismiss-dialogs --rewrite-urls browser open "<protected_url>"
+actionbook browser wait-idle
+actionbook browser text
+```
+
+**For mobile-only content:**
+
+```bash
+actionbook browser emulate iphone-14
+actionbook browser open "<url>"
+actionbook browser wait-idle
+actionbook browser text
+```
 
 **For Google Scholar** (indexed by Actionbook):
 
 ```bash
 actionbook browser open "https://scholar.google.com"
-# Type into search: use selector #gs_hdr_tsi
+actionbook browser wait-idle
 actionbook browser click "#gs_hdr_tsi"
-# ... type query, click #gs_hdr_tsb to search
+actionbook browser type "#gs_hdr_tsi" "<query>"
+actionbook browser click "#gs_hdr_tsb"
+actionbook browser wait-idle
+actionbook browser text "#gs_res"
 ```
 
-**For unindexed sites**, use snapshot to discover page structure:
+**For unindexed sites**, use snapshot to discover structure:
 
 ```bash
-actionbook browser open "<url>"
-actionbook browser snapshot            # Get accessibility tree to find selectors
-actionbook browser text "<discovered_selector>"
+actionbook --block-images browser fetch "<url>" --format snapshot --max-tokens 800 --json
 ```
 
 ### Step 6: Synthesize Findings
@@ -287,24 +435,24 @@ Write a JSON file following the `@actionbookdev/json-ui` schema. Use the Write t
 
 **CRITICAL: You MUST try ALL fallback methods before giving up. Do NOT stop at the first failure.**
 
-**IMPORTANT: Always use ABSOLUTE paths for JSON_FILE and HTML_FILE.** Relative paths break when git rev-parse returns an absolute repo root.
+**IMPORTANT: Always use ABSOLUTE paths for JSON_FILE and HTML_FILE.**
 
 Try each method one by one until one succeeds:
 
 ```bash
-# Method 1: npx (recommended — works anywhere if npm is available)
-npx @actionbookdev/json-ui render /absolute/path/to/report.json -o /absolute/path/to/report.html
+# Method 1: Monorepo absolute path (most reliable if inside actionbook project)
+node "$(git rev-parse --show-toplevel)/packages/json-ui/dist/cli.js" render /absolute/path/to/report.json -o /absolute/path/to/report.html
 
-# Method 2: Global install (if user ran: npm install -g @actionbookdev/json-ui)
+# Method 2: Global install (if user ran: cd packages/json-ui && npm link)
 json-ui render /absolute/path/to/report.json -o /absolute/path/to/report.html
 
-# Method 3: Monorepo local path (fallback if inside actionbook project)
-node "$(git rev-parse --show-toplevel)/packages/json-ui/dist/cli.js" render /absolute/path/to/report.json -o /absolute/path/to/report.html
+# Method 3: npx (if published to npm)
+npx @actionbookdev/json-ui render /absolute/path/to/report.json -o /absolute/path/to/report.html
 ```
 
 **NEVER give up silently.** If all methods fail, tell the user:
 1. The JSON report is saved at `<path>`
-2. To install the renderer, run: `npm install -g @actionbookdev/json-ui`
+2. To enable HTML rendering, run: `cd <actionbook-repo>/packages/json-ui && npm link`
 
 ### Step 9: Open in Browser
 
@@ -323,6 +471,127 @@ xdg-open <report.html>
 ```bash
 actionbook browser close
 ```
+
+## Error Recovery Patterns
+
+**Intelligent error recovery using advanced browser capabilities:**
+
+### Pattern: Page Load Failure
+
+```bash
+# 1. Open page
+actionbook browser open "<url>"
+actionbook browser wait-idle --timeout 15000
+
+# 2. Check for JS errors
+actionbook browser console --level error
+# If errors found → page is broken, skip to next source
+
+# 3. Check if content rendered
+actionbook browser wait-fn "document.body.innerText.length > 100" --timeout 5000
+# If timeout → content didn't render, try fallback
+```
+
+### Pattern: Selector Not Found
+
+```bash
+# 1. Use snapshot to discover actual page structure
+actionbook browser snapshot --filter interactive --max-tokens 800
+
+# 2. Or inspect a specific area
+actionbook browser info "<parent_selector>"
+# Returns: suggested selectors, visibility, tag info
+
+# 3. Adjust selector and retry
+```
+
+### Pattern: Anti-Bot Detection
+
+```bash
+# 1. If initial load returns CAPTCHA or access denied:
+actionbook browser close
+
+# 2. Reopen with stealth
+actionbook --stealth --no-animations --auto-dismiss-dialogs browser open "<url>"
+actionbook browser wait-idle
+
+# 3. If still blocked, rotate fingerprint
+actionbook browser fingerprint rotate --os windows
+actionbook browser open "<url>"
+actionbook browser wait-idle
+```
+
+### Pattern: SPA Content Not Loading
+
+```bash
+# 1. Wait for network
+actionbook browser wait-idle --idle-time 1000 --timeout 15000
+
+# 2. Wait for specific element
+actionbook browser wait-fn "document.querySelector('.results')" --timeout 10000
+
+# 3. If still empty, check console
+actionbook browser console --level error
+
+# 4. Try clicking a loading trigger
+actionbook browser snapshot --filter interactive --max-tokens 300
+# Look for "Load More", "Show Results", etc.
+```
+
+## Full Error Handling Reference
+
+| Error | Recovery Strategy |
+|-------|-------------------|
+| Browser fails to open | `actionbook browser status`, retry + check `console --level error` |
+| Page load timeout | `wait-idle --timeout 15000`, then `console --level error` to diagnose |
+| **URL returns 404** | `wait-fn "!document.title.includes('404')"` to detect fast. **Skip immediately, do NOT retry.** Use Google snippet text as backup data. |
+| **arXiv form submission fails** | Fall back to URL-based search: `arxiv.org/search/?query=...&searchtype=all` |
+| ar5iv content truncated | Fall back to arxiv abstract + `wait-fn "document.body.innerText.length > 5000"` to verify |
+| Selector not found | `snapshot --filter interactive` to discover actual structure |
+| Dynamic content missing | `wait-idle` + `wait-fn` for specific conditions |
+| Alert popup blocking | `--auto-dismiss-dialogs` prevents this entirely |
+| Anti-bot detection | `--stealth` + `fingerprint rotate` |
+| Slow media-heavy page | `--block-images` or `--block-media` for 2-5x speedup |
+| CSS animation interference | `--no-animations` freezes all transitions |
+| json-ui render crash | Check MetricsGrid — `suffix`/`value` must be plain strings |
+| `npx json-ui` 404 | Try all 3 methods (monorepo, global, npx) |
+| No search results | Start broad (50+ results), then narrow. Use 4+ query angles. |
+
+**IMPORTANT:** Always run `actionbook browser close` before finishing, even on errors.
+
+## Feature Usage Checklist
+
+**Before finalizing research, verify you used these capabilities:**
+
+| Feature | When to Use | Check |
+|---------|-------------|-------|
+| `browser fetch` | Read-only page extraction (preferred over open+wait+text) | Use for most page reads |
+| `--lite` | Static pages (Wikipedia, docs, blogs) — skip browser entirely | Add to `fetch` for static sites |
+| `--rewrite-urls` | Always (avoids anti-bot on x.com, reddit) | Set in initial browser launch |
+| `--wait-hint` | Domain-aware wait tuning (fast/slow/heavy) | Use with `fetch` or manual flow |
+| `--session-tag` | Multi-step operations needing log correlation | Set for debugging sessions |
+| `wait-idle` | After EVERY `open`/`goto`/`click` that triggers navigation | Must be used on every page |
+| `--block-images` | Always (research doesn't need images) | Set in initial browser launch |
+| `--auto-dismiss-dialogs` | Always (prevents blocking) | Set in initial browser launch |
+| `--no-animations` | Always (stable snapshots) | Set in initial browser launch |
+| `wait-fn` | When content loads asynchronously after network settles | Use on SPAs, dynamic pages |
+| `console --level error` | When page content seems incomplete or broken | Use for debugging |
+| `batch` | When filling multi-step forms (arXiv, Google Scholar) | Replaces 5+ sequential commands |
+| `snapshot --filter interactive` | When discovering unknown page structure | Use on unindexed sites |
+| `info <selector>` | When a click/type doesn't work as expected | Debug element visibility |
+| `--stealth` | When site returns CAPTCHA or access denied | Add on retry |
+
+**Common mistakes to avoid:**
+- Using manual `open → wait-idle → text → close` when `browser fetch` does it in one command
+- Not using `--lite` for static pages (Wikipedia, docs, blogs) — wastes 5-10s on browser startup
+- Not using `--rewrite-urls` — x.com and reddit.com have aggressive anti-bot that blocks scraping
+- Forgetting `wait-idle` after navigation in interactive mode (content appears empty)
+- Not using `batch` for form interactions (slow, unreliable)
+- Retrying a dead URL instead of skipping it
+- Constructing URLs manually from search snippets instead of clicking links
+- Using only one search query angle (always use 4+ diverse queries)
+- Not checking for 404 pages before extracting content
+- Using bilingual `{ "en": "...", "zh": "..." }` objects in report JSON — use plain English strings
 
 ## json-ui Report Template
 
@@ -347,7 +616,7 @@ actionbook browser close
         {
           "type": "Prose",
           "props": {
-            "content": "English overview..."
+            "content": "Overview of the topic..."
           }
         }
       ]
@@ -412,8 +681,6 @@ actionbook browser close
 }
 ```
 
-Optional: if a user explicitly asks for bilingual output, you can use i18n objects (see i18n section below).
-
 ### Paper Report Template (for arXiv papers)
 
 When analyzing academic papers, use a richer template with:
@@ -459,29 +726,24 @@ When analyzing academic papers, use a richer template with:
 
 | Pitfall | Symptom | Fix |
 |---------|---------|-----|
-| `MetricsGrid.suffix` as i18n object | `text.replace is not a function` | `suffix` must be a **plain string**, not `{ "en": ..., "zh": ... }` |
+| `MetricsGrid.suffix` as object | `text.replace is not a function` | `suffix` must be a **plain string** |
 | `MetricsGrid.value` as number | Render error | `value` must be a **string** (e.g., `"58.5"` not `58.5`) |
 | Missing `BrandHeader`/`BrandFooter` | Report looks broken | Always include both |
-| `Table` row values as i18n object | `[object Object]` in cells | Row cell values must be **plain strings**. Column `label` supports i18n, but row data does not. Use `"Runtimes / Chinese label"` instead of `{ "en": "Runtimes", "zh": "Chinese label" }` |
+| `Table` row values as object | `[object Object]` in cells | Row cell values must be **plain strings** |
+| Using bilingual `{en, zh}` objects | Unnecessary complexity | Use **plain English strings** by default |
 | Very long Prose content | Truncated render | Split into multiple Prose blocks or use subsections |
 
-### i18n Support
+### Text Fields — English Only
 
-By default (`--lang en`), write plain strings:
+**Default to plain English strings for all text fields.** Do NOT use bilingual `{ "en": "...", "zh": "..." }` objects unless the user explicitly requests multi-language output.
+
 ```json
-"English text"
+{ "title": "Key Findings" }
 ```
 
-If a user or agent explicitly chooses bilingual output (`--lang both`), use i18n objects:
-```json
-{ "en": "English text", "zh": "Chinese text" }
-```
-
-For `--lang zh`, use plain Chinese strings.
-
-**Exceptions:**
+**Exceptions (always plain strings regardless):**
 - `MetricsGrid` props `value` and `suffix` must always be plain strings.
-- `Table` row cell values must be plain strings (column `label` supports i18n, but row data does not). For bilingual rows, use a combined string like `"English / Chinese"`.
+- `Table` row cell values must be plain strings.
 
 ## Academic Paper Support
 
@@ -489,65 +751,42 @@ For `--lang zh`, use plain Chinese strings.
 
 **ar5iv.org HTML** (preferred for reading, but often incomplete for papers < 3 months old):
 
-| Element | Selector (Actionbook-verified) | Reliability | Fallback |
-|---------|-------------------------------|-------------|----------|
-| Title | `h1.ltx_title_document` | High | `div.ltx_abstract` includes title context |
+| Element | Selector | Reliability | Fallback |
+|---------|----------|-------------|----------|
+| Title | `h1.ltx_title_document` | High | `div.ltx_abstract` |
 | Authors | `div.ltx_authors` | High | — |
 | Abstract | `div.ltx_abstract` | High | — |
 | Full article | `article` | Medium | Use when section selectors fail |
-| Sections | `section.ltx_section` | **Low on new papers** | `article` for all content |
-| Section title | `h2.ltx_title_section` | **Low on new papers** | Parse from `article` text |
+| Sections | `section.ltx_section` | **Low on new papers** | `article` |
 | Figures | `figure.ltx_figure` | Medium | — |
 | Tables | `table.ltx_tabular` | Medium | — |
-| Bibliography | `.ltx_bibliography` | Medium | — |
 
-**Note:** For papers submitted within the last ~3 months, ar5iv often renders incomplete content. Always check `actionbook browser text 2>&1 | wc -c` — if < 5KB, the page didn't fully render. Fall back to other sources.
+**Recommended approach:** Use `wait-idle` + `wait-fn` to verify ar5iv content loaded:
 
-**arXiv API** (for metadata via actionbook browser):
+```bash
+actionbook browser open "https://ar5iv.org/html/<arxiv_id>"
+actionbook browser wait-idle --timeout 15000
+actionbook browser wait-fn "document.body.innerText.length > 5000" --timeout 10000
+# If wait-fn times out → content didn't render, fall back to other sources
 ```
-actionbook browser open "http://export.arxiv.org/api/query?id_list={arxiv_id}"
-actionbook browser text
-```
 
-### Recommended Source Priority for Papers
-
-Based on testing, use this priority order for maximum coverage:
+### Recommended Source Priority
 
 | Priority | Source | What you get | Reliability |
 |----------|--------|-------------|-------------|
 | 1 | `arxiv.org/abs/<id>` | Abstract, metadata, submission history | Very high |
-| 2 | `huggingface.co/papers/<id>` | Abstract, community comments, related models/datasets | Very high |
-| 3 | GitHub repo (from search results) | README with method details, model zoo, code | High |
-| 4 | HuggingFace model card | Training recipe, benchmark results, quick start | High |
-| 5 | `ar5iv.org/html/<id>` | Full paper HTML with structured selectors | Medium (fails on new papers) |
+| 2 | `huggingface.co/papers/<id>` | Abstract, community, related models | Very high |
+| 3 | GitHub repo | README, code, model zoo | High |
+| 4 | HuggingFace model card | Training recipe, benchmarks | High |
+| 5 | `ar5iv.org/html/<id>` | Full paper HTML | Medium |
 | 6 | Google Scholar / Semantic Scholar | Citations, related work | Medium |
-
-**Key insight:** Don't rely on a single source. The combination of arxiv abstract + HuggingFace + GitHub typically gives 90%+ of what you need, even when ar5iv fails.
 
 ### Other Academic Sources
 
-Use `actionbook browser` to visit and extract content from:
-- Google Scholar (`scholar.google.com`) — Actionbook indexed, use `#gs_hdr_tsi` for search
+- Google Scholar (`scholar.google.com`) — Actionbook indexed
 - Semantic Scholar (`semanticscholar.org`)
 - Papers With Code (`paperswithcode.com`)
 - Conference proceedings sites
-
-## Error Handling
-
-| Error | Action |
-|-------|--------|
-| Browser fails to open | Run `actionbook browser status`, retry |
-| Page load timeout (30s) | Skip source, try next. Common on papers.cool, slow academic sites |
-| ar5iv content truncated (<5KB) | Paper too new for ar5iv. Fall back to arxiv abstract + HuggingFace + GitHub |
-| `section.ltx_section` not found | ar5iv rendering incomplete. Use `actionbook browser text "article"` or `"main"` instead |
-| Actionbook selector not found | Use `actionbook browser snapshot` to discover actual page structure |
-| `actionbook search` returns no results | Site not indexed. Use `actionbook browser snapshot` to find selectors manually |
-| json-ui render crash (`text.replace`) | Check MetricsGrid `suffix`/`value` — must be plain strings, not i18n objects |
-| `npx @actionbookdev/json-ui` fails | Run `npm install -g @actionbookdev/json-ui` and retry with `json-ui render`. If still fails, try monorepo local path |
-| No search results | Broaden search terms, try different angles |
-| Render failed | Save JSON, tell user path, and suggest: `npm install -g @actionbookdev/json-ui` |
-
-**IMPORTANT:** Always run `actionbook browser close` before finishing, even on errors.
 
 ## Quality Guidelines
 
@@ -557,13 +796,3 @@ Use `actionbook browser` to visit and extract content from:
 4. **Structure**: Use appropriate json-ui components for each content type
 5. **Attribution**: Always include source links in the report
 6. **Freshness**: Prefer recent sources when relevance is equal
-
-## Bilingual Content Notes (Optional)
-
-When `--lang both` is used, the `zh` field should be written naturally (not word-by-word translation).
-
-Practical rules:
-1. Keep facts identical across languages (numbers, dates, source links).
-2. Keep table text short and readable.
-3. Preserve technical terms in English when there is no stable Chinese term.
-4. Prioritize clarity over literal translation.
