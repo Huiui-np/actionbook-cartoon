@@ -33,8 +33,7 @@ pub async fn try_http_fetch(
 ) -> Result<Option<HttpFetchResult>, Box<dyn std::error::Error + Send + Sync>> {
     // Security: Only accept HTTPS URLs to prevent downgrade attacks
     // For HTTP URLs, fall back to browser-based fetching (caller's responsibility)
-    let parsed_url = reqwest::Url::parse(url)?;
-    if parsed_url.scheme() != "https" {
+    if !url.starts_with("https://") {
         // Return None to signal caller should use browser-based fetch instead
         return Ok(None);
     }
@@ -45,7 +44,7 @@ pub async fn try_http_fetch(
         .user_agent("Mozilla/5.0 (compatible; Actionbook/1.0)")
         .build()?;
 
-    let resp = match client.get(parsed_url.clone()).send().await {
+    let resp = match client.get(url).send().await {
         Ok(r) => r,
         Err(_) => return Ok(None), // Network error → fallback to browser
     };
