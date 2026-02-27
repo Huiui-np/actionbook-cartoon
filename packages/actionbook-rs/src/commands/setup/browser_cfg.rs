@@ -31,8 +31,9 @@ pub async fn configure_browser(
     if non_interactive {
         if config.browser.mode == BrowserMode::Isolated {
             if let Some(browser) = env.browsers.first() {
-                config.browser.executable = Some(browser.path.display().to_string());
-                config.browser.headless = true;
+                if config.browser.executable.is_none() {
+                    config.browser.executable = Some(browser.path.display().to_string());
+                }
                 if cli.json {
                     println!(
                         "{}",
@@ -40,7 +41,7 @@ pub async fn configure_browser(
                             "step": "browser",
                             "mode": "isolated",
                             "browser": browser.browser_type.name(),
-                            "headless": true,
+                            "headless": config.browser.headless,
                         })
                     );
                 } else {
@@ -51,15 +52,13 @@ pub async fn configure_browser(
                     );
                 }
             } else {
-                config.browser.executable = None;
-                config.browser.headless = true;
                 if cli.json {
                     println!(
                         "{}",
                         serde_json::json!({
                             "step": "browser",
                             "mode": "isolated",
-                            "headless": true,
+                            "headless": config.browser.headless,
                         })
                     );
                 } else {
@@ -328,7 +327,9 @@ fn apply_browser_mode(
     match mode {
         BrowserMode::Isolated => {
             if let Some(browser) = env.browsers.first() {
-                config.browser.executable = Some(browser.path.display().to_string());
+                if config.browser.executable.is_none() {
+                    config.browser.executable = Some(browser.path.display().to_string());
+                }
                 if !cli.json {
                     println!(
                         "  {}  Using isolated mode with: {}",
@@ -336,13 +337,9 @@ fn apply_browser_mode(
                         browser.browser_type.name()
                     );
                 }
-            } else {
-                config.browser.executable = None;
-                if !cli.json {
-                    println!("  {}  Using isolated mode", "◇".green());
-                }
+            } else if !cli.json {
+                println!("  {}  Using isolated mode", "◇".green());
             }
-            config.browser.headless = true;
         }
         BrowserMode::Extension => {
             if !cli.json {
@@ -426,7 +423,8 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(config.browser.mode, BrowserMode::Isolated);
         assert!(config.browser.executable.is_none());
-        assert!(config.browser.headless);
+        // headless is preserved from config (default: false)
+        assert!(!config.browser.headless);
     }
 
     #[test]
@@ -447,6 +445,31 @@ mod tests {
             config.browser.executable,
             Some("/usr/bin/chrome".to_string())
         );
+        // headless is preserved from config (default: false)
+        assert!(!config.browser.headless);
+    }
+
+    #[test]
+    fn test_apply_isolated_mode_preserves_existing_executable() {
+        let cli = make_test_cli();
+        let browser = BrowserInfo {
+            browser_type: BrowserType::Chrome,
+            path: PathBuf::from("/usr/bin/chrome"),
+            version: Some("131.0".to_string()),
+        };
+        let env = make_env_with_browsers(vec![browser]);
+        let mut config = Config::default();
+        config.browser.executable = Some("/custom/browser".to_string());
+        config.browser.headless = true;
+
+        let result = apply_browser_mode(&cli, &env, BrowserMode::Isolated, &mut config);
+        assert!(result.is_ok());
+        // Existing executable should be preserved
+        assert_eq!(
+            config.browser.executable,
+            Some("/custom/browser".to_string())
+        );
+        // Existing headless setting should be preserved
         assert!(config.browser.headless);
     }
 

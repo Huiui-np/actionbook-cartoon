@@ -487,26 +487,44 @@ fn has_explicit_scheme(input: &str) -> bool {
     false
 }
 
+/// Resolve effective browser mode.
+/// Priority: --browser-mode > --extension (deprecated) > config.browser.mode
+fn resolve_browser_mode(
+    browser_mode: Option<BrowserMode>,
+    extension_flag: bool,
+    extension_port: u16,
+    config_mode: BrowserMode,
+    config_port: u16,
+) -> (bool, u16) {
+    if browser_mode == Some(BrowserMode::Extension) {
+        let port = if extension_port == 19222 { config_port } else { extension_port };
+        (true, port)
+    } else if browser_mode == Some(BrowserMode::Isolated) {
+        (false, extension_port)
+    } else if extension_flag {
+        let port = if extension_port == 19222 { config_port } else { extension_port };
+        (true, port)
+    } else if browser_mode.is_none() && matches!(config_mode, BrowserMode::Extension) {
+        (true, config_port)
+    } else {
+        (false, extension_port)
+    }
+}
+
 pub async fn run(cli: &Cli, command: &BrowserCommands) -> Result<()> {
     let mut config = Config::load()?;
 
-    // Resolve effective extension mode: CLI flags > config.browser.mode
-    let cli = if cli.extension || cli.browser_mode == Some(BrowserMode::Extension) {
-        // Explicit CLI flag — also pick up config port if CLI port is default
+    // Resolve effective extension mode.
+    // Priority: --browser-mode > --extension (deprecated) > config.browser.mode
+    let (ext_enabled, ext_port) = resolve_browser_mode(
+        cli.browser_mode, cli.extension, cli.extension_port,
+        config.browser.mode, config.browser.extension.port,
+    );
+    let cli = {
         let mut effective = cli.clone();
-        effective.extension = true;
-        if effective.extension_port == 19222 {
-            effective.extension_port = config.browser.extension.port;
-        }
+        effective.extension = ext_enabled;
+        effective.extension_port = ext_port;
         effective
-    } else if cli.browser_mode.is_none() && matches!(config.browser.mode, BrowserMode::Extension) {
-        // No CLI override — config says extension mode
-        let mut effective = cli.clone();
-        effective.extension = true;
-        effective.extension_port = config.browser.extension.port;
-        effective
-    } else {
-        cli.clone()
     };
     let cli = &cli;
 
@@ -4681,7 +4699,7 @@ mod tests {
     use super::{
         effective_profile_name, is_reusable_initial_blank_page_url, normalize_navigation_url,
     };
-    use crate::cli::{BrowserCommands, Cli, Commands};
+    use crate::cli::{BrowserCommands, BrowserMode, Cli, Commands};
     use crate::config::Config;
     use serde_json::json;
 
@@ -4847,6 +4865,67 @@ mod tests {
         config.browser.default_profile = "team-connect".to_string();
 
         assert_eq!(effective_profile_name(&cli, &config), "team-connect");
+    }
+
+    // --- resolve_browser_mode tests ---
+
+    #[test]
+    fn browser_mode_extension_enables_extension() {
+        let (ext, _port) = super::resolve_browser_mode(
+            Some(BrowserMode::Extension), false, 19222, BrowserMode::Isolated, 19222,
+        );
+        assert!(ext, "--browser-mode=extension should enable extension");
+    }
+
+    #[test]
+    fn browser_mode_isolated_overrides_extension_flag() {
+        let (ext, _port) = super::resolve_browser_mode(
+            Some(BrowserMode::Isolated), true, 19222, BrowserMode::Extension, 19222,
+        );
+        assert!(!ext, "--browser-mode=isolated should override --extension flag");
+    }
+
+    #[test]
+    fn extension_flag_alone_enables_extension() {
+        let (ext, _port) = super::resolve_browser_mode(
+            None, true, 19222, BrowserMode::Isolated, 19222,
+        );
+        assert!(ext, "--extension alone should enable extension");
+    }
+
+    #[test]
+    fn config_extension_mode_activates_when_no_flags() {
+        let (ext, port) = super::resolve_browser_mode(
+            None, false, 19222, BrowserMode::Extension, 18000,
+        );
+        assert!(ext, "Config extension mode should activate when no flags");
+        assert_eq!(port, 18000, "Should use config port");
+    }
+
+    #[test]
+    fn default_stays_isolated() {
+        let (ext, _port) = super::resolve_browser_mode(
+            None, false, 19222, BrowserMode::Isolated, 19222,
+        );
+        assert!(!ext, "Default should stay isolated");
+    }
+
+    #[test]
+    fn custom_cli_port_preserved() {
+        let (ext, port) = super::resolve_browser_mode(
+            Some(BrowserMode::Extension), false, 20000, BrowserMode::Isolated, 19222,
+        );
+        assert!(ext);
+        assert_eq!(port, 20000, "Non-default CLI port should be preserved");
+    }
+
+    #[test]
+    fn default_port_falls_back_to_config_port() {
+        let (ext, port) = super::resolve_browser_mode(
+            Some(BrowserMode::Extension), false, 19222, BrowserMode::Isolated, 18500,
+        );
+        assert!(ext);
+        assert_eq!(port, 18500, "Default port (19222) should fall back to config port");
     }
 
     // Tests for the new CDP Accessibility Tree snapshot formatting are in

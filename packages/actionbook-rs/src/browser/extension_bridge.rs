@@ -430,6 +430,7 @@ pub async fn serve_with_shutdown(
 
     // Cleanup always runs, whether shutdown was graceful or the loop exited.
     delete_port_file().await;
+    delete_pid_file().await;
     ttl_handle.abort();
     result
 }

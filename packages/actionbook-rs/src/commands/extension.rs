@@ -74,9 +74,6 @@ async fn serve(_cli: &Cli, port: u16) -> Result<()> {
     // Run the bridge server
     let result = extension_bridge::serve(port, token).await;
 
-    // Cleanup PID file on exit
-    extension_bridge::delete_pid_file().await;
-
     result
 }
 
@@ -354,7 +351,7 @@ async fn stop(cli: &Cli, port: u16) -> Result<()> {
         if still_running {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             let still_running = unsafe { libc::kill(pid as i32, 0) } == 0;
-            if still_running {
+            if still_running && extension_bridge::is_bridge_running(port).await {
                 unsafe { libc::kill(pid as i32, libc::SIGKILL) };
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }

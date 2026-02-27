@@ -919,6 +919,148 @@ mod bridge_tests {
             );
     }
 
+    // --- Auth matrix tests ---
+
+    /// Test: CLI with wrong token is rejected with hello_error/invalid_token.
+    #[tokio::test]
+    async fn cli_wrong_token_rejected() {
+        let port = free_port().await;
+        let (server_handle, _token) = start_bridge(port);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let mut ws = ws_connect(port).await;
+        send_json(
+            &mut ws,
+            serde_json::json!({
+                "type": "hello",
+                "role": "cli",
+                "version": "0.2.0",
+                "token": "wrong-token-value"
+            }),
+        )
+        .await;
+
+        let resp = recv_json_timeout(&mut ws, 3000)
+            .await
+            .expect("Should receive hello_error");
+        assert_eq!(resp["type"].as_str(), Some("hello_error"));
+        assert_eq!(resp["error"].as_str(), Some("invalid_token"));
+
+        server_handle.abort();
+    }
+
+    /// Test: CLI with no token field is rejected with hello_error/invalid_token.
+    #[tokio::test]
+    async fn cli_no_token_rejected() {
+        let port = free_port().await;
+        let (server_handle, _token) = start_bridge(port);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let mut ws = ws_connect(port).await;
+        send_json(
+            &mut ws,
+            serde_json::json!({
+                "type": "hello",
+                "role": "cli",
+                "version": "0.2.0"
+            }),
+        )
+        .await;
+
+        let resp = recv_json_timeout(&mut ws, 3000)
+            .await
+            .expect("Should receive hello_error");
+        assert_eq!(resp["type"].as_str(), Some("hello_error"));
+        assert_eq!(resp["error"].as_str(), Some("invalid_token"));
+
+        server_handle.abort();
+    }
+
+    /// Test: Extension role bypasses token validation (localhost trust model).
+    #[tokio::test]
+    async fn extension_role_bypasses_token() {
+        let port = free_port().await;
+        let (server_handle, _token) = start_bridge(port);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let mut ws = ws_connect(port).await;
+        // Extension hello without token field
+        send_json(
+            &mut ws,
+            serde_json::json!({
+                "type": "hello",
+                "role": "extension",
+                "version": "0.2.0"
+            }),
+        )
+        .await;
+
+        let resp = recv_json_timeout(&mut ws, 3000)
+            .await
+            .expect("Should receive hello_ack");
+        assert_eq!(resp["type"].as_str(), Some("hello_ack"), "Extension should get hello_ack without token");
+
+        server_handle.abort();
+    }
+
+    /// Test: Full extension mode lifecycle — start bridge, connect extension + CLI, round-trip command.
+    #[tokio::test]
+    async fn extension_mode_lifecycle_e2e() {
+        let port = free_port().await;
+        let (server_handle, token) = start_bridge(port);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Verify bridge is running
+        let running = actionbook::browser::extension_bridge::is_bridge_running(port).await;
+        assert!(running, "Bridge should be running after start");
+
+        // Connect extension
+        let mut ext_ws = ws_connect(port).await;
+        hello_extension(&mut ext_ws).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Connect CLI with valid token
+        let mut cli_ws = ws_connect(port).await;
+        hello_cli(&mut cli_ws, &token).await;
+
+        // CLI sends command
+        send_json(
+            &mut cli_ws,
+            serde_json::json!({
+                "id": 100,
+                "method": "Page.captureScreenshot",
+                "params": {}
+            }),
+        )
+        .await;
+
+        // Extension receives and responds
+        let ext_msg = recv_json_timeout(&mut ext_ws, 3000)
+            .await
+            .expect("Extension should receive command");
+        assert_eq!(ext_msg["method"].as_str(), Some("Page.captureScreenshot"));
+        let bridge_id = ext_msg["id"].as_u64().unwrap();
+
+        send_json(
+            &mut ext_ws,
+            serde_json::json!({
+                "id": bridge_id,
+                "result": { "data": "base64screenshot" }
+            }),
+        )
+        .await;
+
+        // CLI receives response
+        let cli_resp = recv_json_timeout(&mut cli_ws, 3000)
+            .await
+            .expect("CLI should receive response");
+        assert_eq!(cli_resp["id"].as_u64(), Some(100));
+        assert_eq!(cli_resp["result"]["data"].as_str(), Some("base64screenshot"));
+
+        // Cleanup
+        server_handle.abort();
+    }
+
     // --- Issue 3: cookies clear with --domain flag ---
 
     /// Test: cookies clear --dry-run flag is accepted by CLI parser.
