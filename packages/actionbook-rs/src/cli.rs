@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 
 use crate::commands;
+use crate::config::DEFAULT_EXTENSION_PORT;
 use crate::error::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -81,8 +82,8 @@ pub struct Cli {
     #[arg(long, env = "ACTIONBOOK_EXTENSION", global = true, hide = true)]
     pub extension: bool,
 
-    /// [Deprecated: set port in config.toml under [browser.extension]] Extension bridge port override
-    #[arg(long, env = "ACTIONBOOK_EXTENSION_PORT", global = true, default_value = "19222", hide = true)]
+    /// [Deprecated] Extension bridge port override
+    #[arg(long, env = "ACTIONBOOK_EXTENSION_PORT", global = true, default_value_t = DEFAULT_EXTENSION_PORT, hide = true)]
     pub extension_port: u16,
 
     /// Enable verbose output
@@ -748,21 +749,21 @@ pub enum ExtensionCommands {
     /// This command is provided for debugging and manual control only.
     Serve {
         /// Port to listen on
-        #[arg(long, default_value = "19222")]
+        #[arg(long, default_value_t = DEFAULT_EXTENSION_PORT)]
         port: u16,
     },
 
     /// Check if the bridge server is running
     Status {
         /// Bridge server port
-        #[arg(long, default_value = "19222")]
+        #[arg(long, default_value_t = DEFAULT_EXTENSION_PORT)]
         port: u16,
     },
 
     /// Ping the extension through the bridge
     Ping {
         /// Bridge server port
-        #[arg(long, default_value = "19222")]
+        #[arg(long, default_value_t = DEFAULT_EXTENSION_PORT)]
         port: u16,
     },
 
@@ -776,7 +777,7 @@ pub enum ExtensionCommands {
     /// Stop the running bridge server
     Stop {
         /// Bridge server port
-        #[arg(long, default_value = "19222")]
+        #[arg(long, default_value_t = DEFAULT_EXTENSION_PORT)]
         port: u16,
     },
 

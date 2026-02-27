@@ -3,7 +3,7 @@ use colored::Colorize;
 use crate::browser::extension_bridge;
 use crate::browser::extension_installer;
 use crate::cli::{Cli, ExtensionCommands};
-use crate::error::{ActionbookError, Result};
+use crate::error::Result;
 
 pub async fn run(cli: &Cli, command: &ExtensionCommands) -> Result<()> {
     match command {
@@ -235,8 +235,9 @@ async fn stop(cli: &Cli, port: u16) -> Result<()> {
         }
     };
 
-    // Guard against malformed PID files: PID must be positive
-    if pid == 0 {
+    // Guard against malformed PID files: PID must be positive and fit in i32
+    // (pid > i32::MAX would overflow to negative in libc::kill, signaling a process group)
+    if pid == 0 || pid > i32::MAX as u32 {
         extension_bridge::delete_pid_file().await;
         if cli.json {
             println!("{}", serde_json::json!({ "status": "not_running" }));

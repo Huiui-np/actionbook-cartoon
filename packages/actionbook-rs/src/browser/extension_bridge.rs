@@ -256,6 +256,9 @@ struct BridgeState {
     next_id: u64,
     /// Last activity timestamp (any message from any client resets this)
     last_activity: Instant,
+    /// Monotonically increasing connection id to distinguish extension connections.
+    /// On disconnect, only the connection that owns this id may clear extension_tx.
+    connection_id: u64,
     /// Camoufox session for --extension --camofox mode (persistent across commands)
     #[cfg(feature = "camoufox")]
     camofox_session: Option<crate::browser::camofox::CamofoxSession>,
@@ -269,6 +272,7 @@ impl BridgeState {
             pending: HashMap::new(),
             next_id: 1,
             last_activity: Instant::now(),
+            connection_id: 0,
             #[cfg(feature = "camoufox")]
             camofox_session: None,
         }
@@ -659,10 +663,12 @@ async fn handle_extension_client(
     // Create a channel for sending commands to the extension
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
 
-    {
+    let my_connection_id = {
         let mut s = state.lock().await;
+        s.connection_id += 1;
         s.extension_tx = Some(tx);
-    }
+        s.connection_id
+    };
 
     // Spawn a task to forward commands from the channel to the WebSocket
     let write_handle = tokio::spawn(async move {
@@ -725,17 +731,20 @@ async fn handle_extension_client(
         colored::Colorize::yellow("!")
     );
 
-    // Clean up: notify all pending requests and clear extension channel
+    // Clean up: only clear extension_tx if this is still the active connection.
+    // A newer extension may have already connected and taken ownership.
     {
         let mut s = state.lock().await;
-        for (_id, sender) in s.pending.drain() {
-            let err_msg = serde_json::json!({
-                "id": 0,
-                "error": { "code": -32000, "message": "Extension disconnected" }
-            });
-            let _ = sender.send(err_msg.to_string());
+        if s.connection_id == my_connection_id {
+            for (_id, sender) in s.pending.drain() {
+                let err_msg = serde_json::json!({
+                    "id": 0,
+                    "error": { "code": -32000, "message": "Extension disconnected" }
+                });
+                let _ = sender.send(err_msg.to_string());
+            }
+            s.extension_tx = None;
         }
-        s.extension_tx = None;
     }
 
     write_handle.abort();
@@ -1143,7 +1152,10 @@ pub async fn send_command_with_token(
 pub fn is_pid_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        unsafe { libc::kill(pid as i32, 0) == 0 }
+        match i32::try_from(pid) {
+            Ok(p) if p > 0 => unsafe { libc::kill(p, 0) == 0 },
+            _ => false,
+        }
     }
     #[cfg(not(unix))]
     {

@@ -15,7 +15,7 @@ use crate::browser::{
     ResourceBlockLevel,
 };
 use crate::cli::{BrowserCommands, BrowserMode, Cli, CookiesCommands, FingerprintCommands, StorageCommands};
-use crate::config::Config;
+use crate::config::{Config, DEFAULT_EXTENSION_PORT};
 use crate::error::{ActionbookError, Result};
 
 /// Send a command (CDP or Extension.*) through the extension bridge.
@@ -497,12 +497,12 @@ fn resolve_browser_mode(
     config_port: u16,
 ) -> (bool, u16) {
     if browser_mode == Some(BrowserMode::Extension) {
-        let port = if extension_port == 19222 { config_port } else { extension_port };
+        let port = if extension_port == DEFAULT_EXTENSION_PORT { config_port } else { extension_port };
         (true, port)
     } else if browser_mode == Some(BrowserMode::Isolated) {
         (false, extension_port)
     } else if extension_flag {
-        let port = if extension_port == 19222 { config_port } else { extension_port };
+        let port = if extension_port == DEFAULT_EXTENSION_PORT { config_port } else { extension_port };
         (true, port)
     } else if browser_mode.is_none() && matches!(config_mode, BrowserMode::Extension) {
         (true, config_port)

@@ -18,8 +18,7 @@ pub const NATIVE_HOST_NAME: &str = "com.actionbook.bridge";
 /// The stable extension ID derived from the public key in manifest.json.
 pub const EXTENSION_ID: &str = "dpfioflkmnkklgjldmaggkodhlidkdcd";
 
-/// Default bridge port (must match extension's BRIDGE_URL and CLI default).
-const DEFAULT_BRIDGE_PORT: u16 = 19222;
+use crate::config::DEFAULT_EXTENSION_PORT;
 
 /// Read one native messaging message from stdin.
 fn read_message() -> io::Result<serde_json::Value> {
@@ -77,7 +76,7 @@ pub async fn run() -> crate::error::Result<()> {
     let response = match msg_type {
         "get_bridge_info" | "get_token" => {
             // "get_token" kept for backward compatibility, but no token is used anymore
-            let port = extension_bridge::read_port_file().await.unwrap_or(DEFAULT_BRIDGE_PORT);
+            let port = extension_bridge::read_port_file().await.unwrap_or(DEFAULT_EXTENSION_PORT);
             let bridge_running = extension_bridge::is_bridge_running(port).await;
 
             if bridge_running {

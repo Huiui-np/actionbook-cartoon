@@ -153,8 +153,12 @@ impl Default for CamofoxConfig {
     }
 }
 
+/// Well-known default port for the extension bridge WebSocket server.
+/// All consumers should reference this constant instead of hard-coding 19222.
+pub const DEFAULT_EXTENSION_PORT: u16 = 19222;
+
 fn default_extension_port() -> u16 {
-    19222
+    DEFAULT_EXTENSION_PORT
 }
 
 fn default_camofox_port() -> u16 {
