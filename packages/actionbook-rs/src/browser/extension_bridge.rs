@@ -344,9 +344,14 @@ pub async fn serve_with_shutdown(
         ActionbookError::Other(format!("Failed to bind to {}: {}", addr, e))
     })?;
 
-    // Write PID file after successful bind so `extension stop` can find this process
+    // Write PID file after successful bind so `extension stop` can find this process.
+    // Fail fast: a running bridge without a PID file causes ensure_bridge_running to
+    // misidentify it as a port conflict, breaking all subsequent extension commands.
     if let Err(e) = write_pid_file(port).await {
-        tracing::warn!("Failed to write PID file: {}. Stop command may not work.", e);
+        return Err(ActionbookError::Other(format!(
+            "Failed to write PID file: {}. Bridge startup aborted.",
+            e
+        )));
     }
 
     let state = Arc::new(Mutex::new(BridgeState::new(token)));
@@ -503,18 +508,27 @@ fn is_origin_allowed(origin: Option<&str>) -> bool {
 /// Handle a single incoming WebSocket connection.
 /// Performs origin validation during the upgrade, then does the hello handshake.
 async fn handle_connection(stream: TcpStream, state: Arc<Mutex<BridgeState>>) {
+    // Capture origin during WebSocket upgrade for hello handshake validation.
+    let captured_origin: Arc<std::sync::Mutex<Option<String>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let origin_capture = Arc::clone(&captured_origin);
+
     // Use accept_hdr_async to inspect upgrade request headers for origin validation
     let ws = match tokio_tungstenite::accept_hdr_async(
         stream,
-        |req: &tokio_tungstenite::tungstenite::http::Request<()>,
-         resp: tokio_tungstenite::tungstenite::http::Response<()>|
-         -> std::result::Result<
+        move |req: &tokio_tungstenite::tungstenite::http::Request<()>,
+              resp: tokio_tungstenite::tungstenite::http::Response<()>|
+              -> std::result::Result<
             tokio_tungstenite::tungstenite::http::Response<()>,
             tokio_tungstenite::tungstenite::http::Response<Option<String>>,
         > {
-            let origin = req.headers().get("origin").and_then(|v| v.to_str().ok());
+            let origin = req
+                .headers()
+                .get("origin")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_lowercase());
 
-            if !is_origin_allowed(origin) {
+            if !is_origin_allowed(origin.as_deref()) {
                 tracing::warn!("Rejected WebSocket connection with origin: {:?}", origin);
                 let rejection = tokio_tungstenite::tungstenite::http::Response::builder()
                     .status(StatusCode::FORBIDDEN)
@@ -523,6 +537,8 @@ async fn handle_connection(stream: TcpStream, state: Arc<Mutex<BridgeState>>) {
                 return Err(rejection);
             }
 
+            // Store origin for post-upgrade validation
+            *origin_capture.lock().unwrap() = origin;
             Ok(resp)
         },
     )
@@ -534,6 +550,9 @@ async fn handle_connection(stream: TcpStream, state: Arc<Mutex<BridgeState>>) {
             return;
         }
     };
+
+    // Retrieve origin captured during WebSocket upgrade (already lowercase)
+    let connection_origin = captured_origin.lock().unwrap().take();
 
     let (mut write, mut read) = ws.split();
 
@@ -602,10 +621,31 @@ async fn handle_connection(stream: TcpStream, state: Arc<Mutex<BridgeState>>) {
         }
     }
 
-    // Validate token — extension clients use localhost trust model (no token required),
-    // CLI clients must provide a matching token.
-    // TODO: Harden by also validating Origin header (chrome-extension://<id>) for extension clients
-    if client_role != "extension" {
+    // Validate token or origin depending on client role.
+    // Extension clients skip token but must prove chrome-extension:// origin.
+    // CLI / other clients must provide a valid token.
+    if client_role == "extension" {
+        let has_extension_origin = connection_origin
+            .as_deref()
+            .map(|o| o.starts_with("chrome-extension://"))
+            .unwrap_or(false);
+        if !has_extension_origin {
+            tracing::warn!(
+                "Rejected client claiming extension role without chrome-extension:// origin \
+                 (origin={:?})",
+                connection_origin
+            );
+            let err_msg = serde_json::json!({
+                "type": "hello_error",
+                "error": "invalid_origin",
+                "message": "Extension clients must connect via a chrome-extension:// origin.",
+            });
+            let _ = write
+                .send(Message::Text(err_msg.to_string().into()))
+                .await;
+            return;
+        }
+    } else {
         let s = state.lock().await;
         let token_match = client_token.as_bytes().ct_eq(s.token.as_bytes());
         if token_match.unwrap_u8() != 1 {
@@ -1247,5 +1287,29 @@ mod tests {
         let token = generate_token();
         assert!(token.starts_with(TOKEN_PREFIX));
         assert_eq!(token.len(), 4 + 32); // "abk_" + 32 hex chars
+    }
+
+    #[test]
+    fn test_extension_origin_required() {
+        // No origin → should NOT qualify as chrome-extension
+        let no_origin: Option<&str> = None;
+        let has_ext_origin = no_origin
+            .map(|o| o.starts_with("chrome-extension://"))
+            .unwrap_or(false);
+        assert!(!has_ext_origin);
+
+        // localhost origin → should NOT qualify as chrome-extension
+        let localhost_origin = Some("http://localhost:8080");
+        let has_ext_origin = localhost_origin
+            .map(|o| o.starts_with("chrome-extension://"))
+            .unwrap_or(false);
+        assert!(!has_ext_origin);
+
+        // Valid chrome-extension origin
+        let ext_origin = Some("chrome-extension://dpfioflkmnkklgjldmaggkodhlidkdcd");
+        let has_ext_origin = ext_origin
+            .map(|o| o.starts_with("chrome-extension://"))
+            .unwrap_or(false);
+        assert!(has_ext_origin);
     }
 }
