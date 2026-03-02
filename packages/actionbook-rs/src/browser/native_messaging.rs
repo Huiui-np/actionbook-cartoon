@@ -15,8 +15,14 @@ use crate::browser::extension_bridge;
 #[allow(dead_code)]
 pub const NATIVE_HOST_NAME: &str = "com.actionbook.bridge";
 
-/// The stable extension ID derived from the public key in manifest.json.
-pub const EXTENSION_ID: &str = "dpfioflkmnkklgjldmaggkodhlidkdcd";
+/// Extension ID for local/unpacked development (derived from manifest.json "key").
+pub const EXTENSION_ID_DEV: &str = "dpfioflkmnkklgjldmaggkodhlidkdcd";
+
+/// Extension ID assigned by Chrome Web Store (permanent, bound to developer account).
+pub const EXTENSION_ID_CWS: &str = "bebchpafpemheedhcdabookaifcijmfo";
+
+/// All recognized extension IDs (CWS first as primary).
+pub const EXTENSION_IDS: &[&str] = &[EXTENSION_ID_CWS, EXTENSION_ID_DEV];
 
 use crate::config::DEFAULT_EXTENSION_PORT;
 
@@ -153,9 +159,9 @@ pub fn generate_manifest(binary_path: &str) -> serde_json::Value {
         "description": "Actionbook CLI - bridge connection host for the browser extension",
         "path": binary_path,
         "type": "stdio",
-        "allowed_origins": [
-            format!("chrome-extension://{}/", EXTENSION_ID)
-        ]
+        "allowed_origins": EXTENSION_IDS.iter()
+            .map(|id| format!("chrome-extension://{}/", id))
+            .collect::<Vec<_>>()
     })
 }
 
@@ -236,15 +242,27 @@ mod tests {
         assert_eq!(manifest["path"], "/usr/local/bin/actionbook");
 
         let origins = manifest["allowed_origins"].as_array().unwrap();
-        assert_eq!(origins.len(), 1);
-        assert!(origins[0].as_str().unwrap().contains(EXTENSION_ID));
+        assert_eq!(origins.len(), EXTENSION_IDS.len());
+        for id in EXTENSION_IDS {
+            assert!(
+                origins.iter().any(|o| o.as_str().unwrap().contains(id)),
+                "allowed_origins should contain {}",
+                id
+            );
+        }
     }
 
     #[test]
     fn test_extension_id_format() {
         // Extension IDs are 32 lowercase characters a-p
-        assert_eq!(EXTENSION_ID.len(), 32);
-        assert!(EXTENSION_ID.chars().all(|c| c >= 'a' && c <= 'p'));
+        for id in EXTENSION_IDS {
+            assert_eq!(id.len(), 32, "ID {} should be 32 chars", id);
+            assert!(
+                id.chars().all(|c| c >= 'a' && c <= 'p'),
+                "ID {} should only contain a-p",
+                id
+            );
+        }
     }
 
     #[test]

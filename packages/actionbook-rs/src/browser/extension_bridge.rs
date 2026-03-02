@@ -623,18 +623,20 @@ async fn handle_connection(stream: TcpStream, state: Arc<Mutex<BridgeState>>) {
 
     // Validate token or origin depending on client role.
     // Extension clients skip token but must prove they are the Actionbook extension
-    // by matching the exact chrome-extension://<EXTENSION_ID> origin.
+    // by matching a recognized chrome-extension://<ID> origin (CWS or dev).
     // CLI / other clients must provide a valid token.
     if client_role == "extension" {
-        let expected_origin = format!("chrome-extension://{}", super::native_messaging::EXTENSION_ID);
-        let origin_matches = connection_origin
-            .as_deref()
-            .map(|o| o.eq_ignore_ascii_case(&expected_origin))
-            .unwrap_or(false);
+        let origin_matches = super::native_messaging::EXTENSION_IDS.iter().any(|id| {
+            let expected = format!("chrome-extension://{}", id);
+            connection_origin
+                .as_deref()
+                .map(|o| o.eq_ignore_ascii_case(&expected))
+                .unwrap_or(false)
+        });
         if !origin_matches {
             tracing::warn!(
-                "Rejected extension client: origin {:?} does not match expected {}",
-                connection_origin, expected_origin
+                "Rejected extension client: origin {:?} does not match any known Actionbook extension ID",
+                connection_origin
             );
             let err_msg = serde_json::json!({
                 "type": "hello_error",
@@ -1292,35 +1294,33 @@ mod tests {
 
     #[test]
     fn test_extension_origin_required() {
-        use super::super::native_messaging::EXTENSION_ID;
-        let expected = format!("chrome-extension://{}", EXTENSION_ID);
+        use super::super::native_messaging::{EXTENSION_IDS, EXTENSION_ID_CWS, EXTENSION_ID_DEV};
+
+        /// Helper: check if an origin matches any known extension ID.
+        fn origin_matches_any(origin: Option<&str>) -> bool {
+            EXTENSION_IDS.iter().any(|id| {
+                let expected = format!("chrome-extension://{}", id);
+                origin
+                    .map(|o| o.eq_ignore_ascii_case(&expected))
+                    .unwrap_or(false)
+            })
+        }
 
         // No origin → rejected
-        let no_origin: Option<&str> = None;
-        let matches = no_origin
-            .map(|o| o.eq_ignore_ascii_case(&expected))
-            .unwrap_or(false);
-        assert!(!matches);
+        assert!(!origin_matches_any(None));
 
         // localhost origin → rejected
-        let localhost_origin = Some("http://localhost:8080");
-        let matches = localhost_origin
-            .map(|o| o.eq_ignore_ascii_case(&expected))
-            .unwrap_or(false);
-        assert!(!matches);
+        assert!(!origin_matches_any(Some("http://localhost:8080")));
 
         // Random other extension → rejected
-        let other_ext = Some("chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        let matches = other_ext
-            .map(|o| o.eq_ignore_ascii_case(&expected))
-            .unwrap_or(false);
-        assert!(!matches);
+        assert!(!origin_matches_any(Some("chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")));
 
-        // Exact Actionbook extension origin → accepted
-        let ext_origin = Some(expected.as_str());
-        let matches = ext_origin
-            .map(|o| o.eq_ignore_ascii_case(&expected))
-            .unwrap_or(false);
-        assert!(matches);
+        // Dev extension origin → accepted
+        let dev_origin = format!("chrome-extension://{}", EXTENSION_ID_DEV);
+        assert!(origin_matches_any(Some(&dev_origin)));
+
+        // CWS extension origin → accepted
+        let cws_origin = format!("chrome-extension://{}", EXTENSION_ID_CWS);
+        assert!(origin_matches_any(Some(&cws_origin)));
     }
 }

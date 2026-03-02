@@ -16,11 +16,11 @@ async fn main() -> Result<()> {
     // Check if invoked as Chrome Native Messaging host.
     // Chrome passes "chrome-extension://<id>/" as the first argument.
     let args: Vec<String> = std::env::args().collect();
-    let expected_origin = format!(
-        "chrome-extension://{}/",
-        browser::native_messaging::EXTENSION_ID
-    );
-    if args.len() >= 2 && args[1] == expected_origin {
+    let is_native_messaging = args.len() >= 2
+        && browser::native_messaging::EXTENSION_IDS
+            .iter()
+            .any(|id| args[1] == format!("chrome-extension://{}/", id));
+    if is_native_messaging {
         return browser::native_messaging::run().await;
     }
 
