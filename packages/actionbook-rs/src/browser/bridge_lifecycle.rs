@@ -36,9 +36,7 @@ pub async fn ensure_bridge_running(port: u16) -> Result<bool> {
         return Err(ActionbookError::ExtensionError(format!(
             "Port {} is already in use by another process.\n\
              {}\n\
-             To use a different port, edit ~/.actionbook/config.toml:\n\
-             [browser.extension]\n\
-             port = 19223  # Or any free port",
+             Please kill the occupying process and retry.",
             port, hint
         )));
     }
@@ -286,6 +284,7 @@ pub async fn stop_bridge(port: u16) -> Result<()> {
 async fn cleanup_files() {
     extension_bridge::delete_pid_file().await;
     extension_bridge::delete_port_file().await;
+    extension_bridge::delete_token_file().await;
 }
 
 #[cfg(test)]

@@ -548,8 +548,9 @@ pub async fn run(cli: &Cli, command: &BrowserCommands) -> Result<()> {
         ensure_cdp_override(cli, &config).await?;
     }
 
-    // Auto-start extension bridge when in extension mode
-    if cli.extension {
+    // Auto-start extension bridge when in extension mode (skip for Close — no
+    // point starting a bridge just to immediately shut it down).
+    if cli.extension && !matches!(command, BrowserCommands::Close) {
         bridge_lifecycle::ensure_bridge_running(cli.extension_port).await?;
     }
 
@@ -4086,12 +4087,18 @@ async fn upload(
 
 async fn close(cli: &Cli, config: &Config) -> Result<()> {
     if cli.extension {
-        extension_send(cli, "Extension.detachTab", serde_json::json!({})).await?;
+        // Best-effort detach: bridge may already be down, so ignore errors
+        if let Err(e) = extension_send(cli, "Extension.detachTab", serde_json::json!({})).await {
+            tracing::debug!("Best-effort tab detach failed (expected if bridge is down): {e}");
+        }
+
+        // Stop bridge process and clean up all state files (PID, port, token)
+        bridge_lifecycle::stop_bridge(cli.extension_port).await?;
 
         if cli.json {
             println!("{}", serde_json::json!({ "success": true }));
         } else {
-            println!("{} Tab detached (extension)", "✓".green());
+            println!("{} Browser closed (extension bridge stopped)", "✓".green());
         }
         return Ok(());
     }

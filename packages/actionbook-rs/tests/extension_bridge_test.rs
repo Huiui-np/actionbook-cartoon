@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
+use tokio_tungstenite::tungstenite::http::Request;
 use tokio_tungstenite::tungstenite::Message;
 
 /// Find a free port by binding to port 0 and reading the assigned port.
@@ -28,6 +29,37 @@ async fn ws_connect(
     let (ws, _) = tokio_tungstenite::connect_async(&url)
         .await
         .expect("Failed to connect to bridge");
+    ws
+}
+
+/// Connect a WebSocket client with the Actionbook extension Origin header.
+/// This simulates a real Chrome extension connection.
+async fn ws_connect_as_extension(
+    port: u16,
+) -> tokio_tungstenite::WebSocketStream<
+    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+> {
+    let origin = format!(
+        "chrome-extension://{}",
+        actionbook::browser::native_messaging::EXTENSION_ID_CWS
+    );
+    let url = format!("ws://127.0.0.1:{}", port);
+    let request = Request::builder()
+        .uri(&url)
+        .header("Host", format!("127.0.0.1:{}", port))
+        .header("Origin", &origin)
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header(
+            "Sec-WebSocket-Key",
+            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+        )
+        .body(())
+        .expect("Failed to build request");
+    let (ws, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("Failed to connect to bridge as extension");
     ws
 }
 
@@ -241,7 +273,7 @@ mod bridge_tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // 1. Connect as extension with hello handshake
-        let mut ext_ws = ws_connect(port).await;
+        let mut ext_ws = ws_connect_as_extension(port).await;
         hello_extension(&mut ext_ws).await;
 
         // Give bridge time to register extension
@@ -315,7 +347,7 @@ mod bridge_tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Connect extension with hello
-        let mut ext_ws = ws_connect(port).await;
+        let mut ext_ws = ws_connect_as_extension(port).await;
         hello_extension(&mut ext_ws).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -376,7 +408,7 @@ mod bridge_tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Connect extension with hello
-        let mut ext_ws = ws_connect(port).await;
+        let mut ext_ws = ws_connect_as_extension(port).await;
         hello_extension(&mut ext_ws).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -459,7 +491,7 @@ mod bridge_tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Connect extension
-        let mut ext_ws = ws_connect(port).await;
+        let mut ext_ws = ws_connect_as_extension(port).await;
         hello_extension(&mut ext_ws).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -508,7 +540,7 @@ mod bridge_tests {
         let (server_handle, token) = start_bridge(port);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let mut ext_ws = ws_connect(port).await;
+        let mut ext_ws = ws_connect_as_extension(port).await;
         hello_extension(&mut ext_ws).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -545,7 +577,7 @@ mod bridge_tests {
         let (server_handle, token) = start_bridge(port);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let mut ext_ws = ws_connect(port).await;
+        let mut ext_ws = ws_connect_as_extension(port).await;
         hello_extension(&mut ext_ws).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -582,7 +614,7 @@ mod bridge_tests {
         let (server_handle, token) = start_bridge(port);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let mut ext_ws = ws_connect(port).await;
+        let mut ext_ws = ws_connect_as_extension(port).await;
         hello_extension(&mut ext_ws).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -718,7 +750,7 @@ mod bridge_tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Connect extension
-        let mut ext_ws = ws_connect(port).await;
+        let mut ext_ws = ws_connect_as_extension(port).await;
         hello_extension(&mut ext_ws).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -788,7 +820,7 @@ mod bridge_tests {
         let (server_handle, token) = start_bridge(port);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let mut ext_ws = ws_connect(port).await;
+        let mut ext_ws = ws_connect_as_extension(port).await;
         hello_extension(&mut ext_ws).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -856,7 +888,7 @@ mod bridge_tests {
         let (server_handle, token) = start_bridge(port);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let mut ext_ws = ws_connect(port).await;
+        let mut ext_ws = ws_connect_as_extension(port).await;
         hello_extension(&mut ext_ws).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -983,7 +1015,7 @@ mod bridge_tests {
         let (server_handle, _token) = start_bridge(port);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let mut ws = ws_connect(port).await;
+        let mut ws = ws_connect_as_extension(port).await;
         // Extension hello without token field
         send_json(
             &mut ws,
@@ -1015,7 +1047,7 @@ mod bridge_tests {
         assert!(running, "Bridge should be running after start");
 
         // Connect extension
-        let mut ext_ws = ws_connect(port).await;
+        let mut ext_ws = ws_connect_as_extension(port).await;
         hello_extension(&mut ext_ws).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
 
