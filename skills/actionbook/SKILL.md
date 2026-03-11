@@ -103,7 +103,8 @@ Quick reference. Full details with all flags and options: [command-reference.md]
 ```bash
 actionbook browser open <url>           # Open URL in new tab
 actionbook browser goto <url>           # Navigate current page
-actionbook browser back / forward       # History navigation
+actionbook browser back                 # Go back
+actionbook browser forward              # Go forward
 actionbook browser reload               # Reload page
 actionbook browser pages                # List open tabs
 actionbook browser switch <page_id>     # Switch tab
