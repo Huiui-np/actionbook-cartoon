@@ -194,10 +194,8 @@ async fn execute_action(
         }
         "snapshot" => {
             let raw = driver.get_accessibility_tree_raw().await?;
-            // Phase 2b: Convert to JSON string for typed deserialization
-            let raw_json = serde_json::to_string(&raw)?;
             let (nodes, _cache) = crate::browser::snapshot::parse_ax_tree(
-                &raw_json,
+                raw,
                 crate::browser::snapshot::SnapshotFilter::All,
                 None,
                 None,

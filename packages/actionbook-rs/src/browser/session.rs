@@ -1093,61 +1093,12 @@ impl SessionManager {
         while let Some(msg) = ws.next().await {
             match msg {
                 Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
-                    // Phase 2a optimization: Typed deserialization (struct, not enum)
-                    // First, parse as generic Value to determine message type by structure
-                    let value: serde_json::Value = match serde_json::from_str(&text) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            // Malformed JSON - this is unexpected
-                            tracing::warn!(
-                                "Received malformed CDP message (not valid JSON): {}, length: {}, first 50 chars: {}",
-                                e,
-                                text.len(),
-                                text.chars().take(50).collect::<String>()
-                            );
-                            parse_failures += 1;
-                            if parse_failures > 5 {
-                                return Err(ActionbookError::Other(format!(
-                                    "Too many CDP parse failures ({}), last error: {}",
-                                    parse_failures, e
-                                )));
-                            }
-                            continue;
-                        }
-                    };
-
-                    // Check message type by field structure (protocol-level detection)
-                    let has_method = value.get("method").is_some();
-                    let has_id = value.get("id").is_some();
-
-                    if has_method && !has_id {
-                        // CDP Event: {"method": "...", "params": {...}}
-                        // These are asynchronous notifications, not responses - skip silently
-                        let method = value.get("method")
-                            .and_then(|m| m.as_str())
-                            .unwrap_or("unknown");
-                        tracing::trace!("Skipping CDP Event: method={}", method);
-                        continue;
-                    }
-
-                    if !has_id {
-                        // Neither Response nor Event - unexpected message structure
-                        tracing::warn!(
-                            "Received CDP message without 'id' or 'method' field, keys: {:?}",
-                            value.as_object().map(|o| o.keys().collect::<Vec<_>>())
-                        );
-                        continue;
-                    }
-
-                    // This should be a Response - try typed deserialization
-                    // Clone value for error logging (only on failure path)
-                    let id = value.get("id").cloned();
-                    let has_result = value.get("result").is_some();
-                    let has_error = value.get("error").is_some();
-
-                    match serde_json::from_value::<CdpResponse>(value) {
+                    // Phase 2a optimization: Single-pass typed deserialization
+                    // Try parsing directly as CdpResponse (the common case for responses).
+                    // CdpResponse requires an "id" field, so CDP Events (which lack "id")
+                    // will fail to parse and fall through to the lightweight event check.
+                    match serde_json::from_str::<CdpResponse>(&text) {
                         Ok(response) => {
-                            // Check if this is our response (id == 1)
                             if response.id == 1 {
                                 if let Some(err) = response.error {
                                     return Err(ActionbookError::Other(format!("CDP error: {}", err)));
@@ -1157,17 +1108,25 @@ impl SessionManager {
                             // Not our response (different id), keep waiting
                             tracing::trace!("Received CDP Response with id={}, waiting for id=1", response.id);
                         }
-                        Err(e) => {
-                            // Has 'id' but failed to parse as Response - log structure
+                        Err(_) => {
+                            // Not a valid CdpResponse — check if it's a CDP Event or malformed
+                            // Use lightweight string checks to avoid a full Value parse
+                            if text.contains("\"method\"") && !text.contains("\"id\"") {
+                                // CDP Event: {"method": "...", "params": {...}}
+                                tracing::trace!("Skipping CDP Event");
+                                continue;
+                            }
+                            // Unexpected message structure
                             tracing::warn!(
-                                "Failed to parse CDP Response: {}, id={:?}, has_result={}, has_error={}",
-                                e, id, has_result, has_error
+                                "Unexpected CDP message, length: {}, first 80 chars: {}",
+                                text.len(),
+                                text.chars().take(80).collect::<String>()
                             );
                             parse_failures += 1;
                             if parse_failures > 5 {
                                 return Err(ActionbookError::Other(format!(
-                                    "Too many CDP Response parse failures ({}), last error: {}",
-                                    parse_failures, e
+                                    "Too many CDP parse failures ({})",
+                                    parse_failures
                                 )));
                             }
                             continue;

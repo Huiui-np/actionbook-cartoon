@@ -174,15 +174,15 @@ const STRUCTURAL_ROLES: &[&str] = &[
 ///
 /// ## Phase 2b Optimization
 /// Now uses typed deserialization for 42% performance improvement over dynamic Value access.
-/// Accepts JSON string directly for single-pass parsing.
+/// Accepts `serde_json::Value` directly to avoid Value→String→Value roundtrip.
 pub fn parse_ax_tree(
-    raw_json: &str,
+    raw: serde_json::Value,
     filter: SnapshotFilter,
     max_depth: Option<usize>,
     scope_backend_id: Option<i64>,
 ) -> Result<(Vec<A11yNode>, RefCache)> {
-    // Phase 2b: Typed deserialization (single parse pass)
-    let response: AxTreeResponse = serde_json::from_str(raw_json)?;
+    // Phase 2b: Typed deserialization directly from Value (no roundtrip)
+    let response: AxTreeResponse = serde_json::from_value(raw)?;
     let nodes = &response.nodes;
 
     // Build parent map and child map for depth calculation

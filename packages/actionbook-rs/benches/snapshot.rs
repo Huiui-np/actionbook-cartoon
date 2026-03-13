@@ -328,11 +328,12 @@ fn bench_parse_ax_tree(c: &mut Criterion) {
             b.iter(|| parse_ax_tree_value_full(black_box(&ax_tree_json)));
         });
 
-        // Phase 2b: Real implementation (AFTER optimization)
+        // Phase 2b: Real implementation (AFTER optimization) — accepts Value directly
         group.bench_with_input(BenchmarkId::new("real_typed", size), size, |b, _| {
             b.iter(|| {
+                let value: serde_json::Value = serde_json::from_str(black_box(&ax_tree_json)).unwrap();
                 parse_ax_tree(
-                    black_box(&ax_tree_json),
+                    black_box(value),
                     SnapshotFilter::All,
                     None,
                     None,
