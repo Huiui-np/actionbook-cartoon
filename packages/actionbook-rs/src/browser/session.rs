@@ -110,11 +110,23 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub fn new(config: Config) -> Self {
-        let sessions_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".actionbook")
-            .join("sessions");
+        Self::with_sessions_dir(config, Self::default_sessions_dir())
+    }
 
+    /// Create session manager with stealth configuration
+    pub fn with_stealth(config: Config, stealth_config: StealthConfig) -> Self {
+        Self {
+            config,
+            sessions_dir: Self::default_sessions_dir(),
+            stealth_config: Some(stealth_config),
+        }
+    }
+
+    /// Create session manager with a custom sessions directory.
+    ///
+    /// This is primarily useful for tests and embedded callers that need
+    /// isolated state instead of writing into `~/.actionbook/sessions`.
+    pub fn with_sessions_dir(config: Config, sessions_dir: PathBuf) -> Self {
         Self {
             config,
             sessions_dir,
@@ -122,18 +134,11 @@ impl SessionManager {
         }
     }
 
-    /// Create session manager with stealth configuration
-    pub fn with_stealth(config: Config, stealth_config: StealthConfig) -> Self {
-        let sessions_dir = dirs::home_dir()
+    fn default_sessions_dir() -> PathBuf {
+        dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".actionbook")
-            .join("sessions");
-
-        Self {
-            config,
-            sessions_dir,
-            stealth_config: Some(stealth_config),
-        }
+            .join("sessions")
     }
 
     /// Check if stealth mode is enabled
@@ -1064,6 +1069,7 @@ impl SessionManager {
         params: serde_json::Value,
     ) -> Result<serde_json::Value> {
         use tokio_tungstenite::connect_async;
+        use crate::browser::cdp_types::CdpResponse;
 
         let (mut ws, _) = connect_async(ws_url).await.map_err(|e| {
             ActionbookError::CdpConnectionFailed(format!("WebSocket connection failed: {}", e))
@@ -1081,21 +1087,53 @@ impl SessionManager {
         .await
         .map_err(|e| ActionbookError::Other(format!("Failed to send command: {}", e)))?;
 
+        use futures::stream::StreamExt;
+        let mut parse_failures = 0u8; // Track consecutive parse failures
+
         while let Some(msg) = ws.next().await {
             match msg {
                 Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
-                    let response: serde_json::Value = serde_json::from_str(text.as_str())?;
-                    if response.get("id") == Some(&serde_json::json!(1)) {
-                        if let Some(error) = response.get("error") {
-                            return Err(ActionbookError::Other(format!("CDP error: {}", error)));
+                    // Phase 2a optimization: Single-pass typed deserialization
+                    // Try parsing directly as CdpResponse (the common case for responses).
+                    // CdpResponse requires an "id" field, so CDP Events (which lack "id")
+                    // will fail to parse and fall through to the lightweight event check.
+                    match serde_json::from_str::<CdpResponse>(&text) {
+                        Ok(response) => {
+                            if response.id == 1 {
+                                if let Some(err) = response.error {
+                                    return Err(ActionbookError::Other(format!("CDP error: {}", err)));
+                                }
+                                return Ok(response.result.unwrap_or(serde_json::Value::Null));
+                            }
+                            // Not our response (different id), keep waiting
+                            tracing::trace!("Received CDP Response with id={}, waiting for id=1", response.id);
                         }
-                        return Ok(response
-                            .get("result")
-                            .cloned()
-                            .unwrap_or(serde_json::Value::Null));
+                        Err(_) => {
+                            // Not a valid CdpResponse — check if it's a CDP Event or malformed
+                            // Use lightweight string checks to avoid a full Value parse
+                            if text.contains("\"method\"") && !text.contains("\"id\"") {
+                                // CDP Event: {"method": "...", "params": {...}}
+                                tracing::trace!("Skipping CDP Event");
+                                continue;
+                            }
+                            // Unexpected message structure
+                            tracing::warn!(
+                                "Unexpected CDP message, length: {}, first 80 chars: {}",
+                                text.len(),
+                                text.chars().take(80).collect::<String>()
+                            );
+                            parse_failures += 1;
+                            if parse_failures > 5 {
+                                return Err(ActionbookError::Other(format!(
+                                    "Too many CDP parse failures ({})",
+                                    parse_failures
+                                )));
+                            }
+                            continue;
+                        }
                     }
                 }
-                Ok(_) => continue,
+                Ok(_) => continue, // Ignore non-text messages (ping/pong/binary)
                 Err(e) => return Err(ActionbookError::Other(format!("WebSocket error: {}", e))),
             }
         }

@@ -195,11 +195,11 @@ async fn execute_action(
         "snapshot" => {
             let raw = driver.get_accessibility_tree_raw().await?;
             let (nodes, _cache) = crate::browser::snapshot::parse_ax_tree(
-                &raw,
+                raw,
                 crate::browser::snapshot::SnapshotFilter::All,
                 None,
                 None,
-            );
+            )?;
             let output = crate::browser::snapshot::format_compact(&nodes);
             Ok(Some(serde_json::json!({
                 "nodeCount": nodes.len(),

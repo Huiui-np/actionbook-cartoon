@@ -4,6 +4,7 @@ pub mod bridge_lifecycle;
 pub mod camofox;
 #[cfg(feature = "camoufox")]
 pub mod camofox_webdriver;
+pub mod cdp_types; // CDP typed message structures (Phase 2a optimization)
 pub mod content;
 mod discovery;
 pub mod app_discovery; // Electron app discovery
@@ -28,6 +29,7 @@ pub mod stealth_enhanced; // Enhanced stealth based on Camoufox techniques (Phas
 pub use backend::BrowserBackend;
 #[allow(unused_imports)]
 pub use discovery::{discover_all_browsers, BrowserInfo, BrowserType};
+#[allow(unused_imports)]
 pub use app_discovery::{discover_electron_apps, ElectronAppInfo};
 pub use router::BrowserDriver;
 pub use session::{SessionManager, SessionStatus, StealthConfig};
