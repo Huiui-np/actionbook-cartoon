@@ -11,10 +11,7 @@
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import yaml from 'js-yaml'
-
-const __dirname = dirname(fileURLToPath(import.meta.url))
 
 // ── Helpers ──
 
@@ -27,8 +24,8 @@ function formatDuration(ms) {
   return `${(ms / 1000).toFixed(1)}s`
 }
 
-function loadScreenshot(filepath) {
-  const abs = resolve(__dirname, filepath)
+function loadScreenshot(filepath, baseDir) {
+  const abs = resolve(baseDir, filepath)
   try {
     const buffer = readFileSync(abs)
     return `data:image/png;base64,${buffer.toString('base64')}`
@@ -62,12 +59,12 @@ function mergeWorkflowAndResult(workflow, result) {
   })
 
   const totalDuration = steps.reduce((sum, s) => sum + s.duration, 0)
-  const allPassed = steps.every(s => s.status === 'passed')
   const anyFailed = steps.some(s => s.status === 'failed')
+  const anyPassed = steps.some(s => s.status === 'passed')
 
   return {
     name: workflow.name,
-    status: anyFailed ? 'failed' : allPassed ? 'passed' : 'skipped',
+    status: anyFailed ? 'failed' : anyPassed ? 'passed' : 'skipped',
     duration: totalDuration,
     tags: workflow.tags ?? [],
     summary: workflow.description ?? '',
@@ -79,7 +76,7 @@ function mergeWorkflowAndResult(workflow, result) {
 
 // ── Report Builder ──
 
-function buildReport(tests, environment) {
+function buildReport(tests, environment, baseDir) {
   const timestamp = environment.timestamp ?? new Date().toISOString()
   const summary = computeSummary(tests)
 
@@ -91,7 +88,7 @@ function buildReport(tests, environment) {
       buildSummarySection(summary),
       buildEnvironmentSection(environment, timestamp),
       buildResultsTable(tests, summary),
-      ...buildTestDetailSections(tests),
+      ...buildTestDetailSections(tests, baseDir),
       buildFooter(timestamp),
     ],
   }
@@ -197,7 +194,7 @@ function buildResultsTable(tests, summary) {
   }
 }
 
-function buildTestDetailSections(tests) {
+function buildTestDetailSections(tests, baseDir) {
   return tests.map(t => {
     const icon = t.status === 'passed' ? 'check' : t.status === 'failed' ? 'warning' : 'skip'
     const calloutType = t.status === 'passed' ? 'tip' : t.status === 'failed' ? 'important' : 'note'
@@ -231,7 +228,7 @@ function buildTestDetailSections(tests) {
     }
 
     if (t.screenshot) {
-      const src = loadScreenshot(t.screenshot)
+      const src = loadScreenshot(t.screenshot, baseDir)
       if (src) {
         children.push({
           type: 'Image',
@@ -284,8 +281,10 @@ function main() {
   const outputIdx = args.indexOf('-o')
   const outputFile = outputIdx !== -1 ? args[outputIdx + 1] : 'report.json'
 
-  // Read execution result(s)
-  const raw = JSON.parse(readFileSync(resolve(__dirname, inputFile), 'utf-8'))
+  // Resolve CLI paths against cwd, internal paths against input file's directory
+  const inputPath = resolve(process.cwd(), inputFile)
+  const inputDir = dirname(inputPath)
+  const raw = JSON.parse(readFileSync(inputPath, 'utf-8'))
   const execResults = Array.isArray(raw) ? raw : [raw]
 
   // Collect environment from first result (shared across all tests)
@@ -293,7 +292,7 @@ function main() {
 
   // Merge each execution result with its YAML workflow
   const tests = execResults.map(result => {
-    const workflowPath = resolve(__dirname, result.workflow)
+    const workflowPath = resolve(inputDir, result.workflow)
     const workflow = yaml.load(readFileSync(workflowPath, 'utf-8'))
     // Use workflow url as target if environment doesn't specify
     if (!environment.target) {
@@ -302,9 +301,9 @@ function main() {
     return mergeWorkflowAndResult(workflow, result)
   })
 
-  const report = buildReport(tests, environment)
+  const report = buildReport(tests, environment, inputDir)
 
-  const outPath = resolve(__dirname, outputFile)
+  const outPath = resolve(process.cwd(), outputFile)
   writeFileSync(outPath, JSON.stringify(report, null, 2))
   const size = (readFileSync(outPath).length / 1024).toFixed(0)
   console.log(`Report written to ${outPath} (${size} KB)`)
