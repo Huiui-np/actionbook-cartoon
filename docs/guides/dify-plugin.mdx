@@ -12,6 +12,16 @@ description: 'Use Actionbook inside Dify workflows and agents'
 Use this option if you want verified selectors from Actionbook and cloud browser
 automation directly in Dify.
 
+## Why Use Actionbook in Dify
+
+- Start from verified selectors and action manuals instead of guessing from raw
+  HTML.
+- Combine Actionbook search/get tools with live browser automation in one Dify
+  workflow.
+- Recover from selector drift by taking a fresh accessibility `snapshot` and
+  continuing the run.
+- Reuse a stable `profile_id` to preserve cookies and login state across runs.
+
 ## Included Tools
 
 | Tool | What it does | Best for |
@@ -49,12 +59,19 @@ automation directly in Dify.
   </Accordion>
 </AccordionGroup>
 
-## Requirements
+## Credentials
 
-- `search_actions` and `get_action_by_area_id` call the Actionbook API and work
-  without an extra Actionbook credential in the current plugin flow.
-- `browser_create_session`, `browser_operator`, and `browser_stop_session`
-  require a Hyperbrowser API key.
+### Actionbook API Key
+
+- Optional for `search_actions` and `get_action_by_area_id`.
+- Leave it empty to use the free tier, or add a key for higher quotas.
+- Get a key from [actionbook.dev](https://actionbook.dev).
+
+### Hyperbrowser API Key
+
+- Required for `browser_create_session`, `browser_operator`, and
+  `browser_stop_session`.
+- Get a key from [Hyperbrowser](https://app.hyperbrowser.ai/).
 - Reuse the same `profile_id` in `browser_create_session` when you want cookies
   and login state to persist across runs.
 
@@ -75,7 +92,6 @@ search_actions(query="github login", domain="github.com")
 get_action_by_area_id(area_id="github.com:login:email-input")
 
 browser_create_session(
-  api_key="hb-...",
   profile_id="user-42"
 )
 
@@ -96,10 +112,22 @@ browser_stop_session(session_id="<session_id>")
 ```
 
 <Tip>
-  For `browser_operator`, pass both `session_id` and `cdp_url` on each call.
-  The plugin explicitly recommends using the `ws_endpoint` returned by
-  `browser_create_session` as `cdp_url` for better recovery.
+  Configure the Hyperbrowser API key in the plugin credentials first.
+  `search_actions` and `get_action_by_area_id` are recommended for getting
+  verified selectors first, but they are not a hard prerequisite for
+  `browser_operator`.
 </Tip>
+
+How this maps to the current plugin behavior:
+
+- `browser_operator` accepts either `session_id` or `cdp_url`; for multi-step
+  workflows, pass both for the best recovery behavior.
+- `browser_create_session` returns `ws_endpoint`, which should be passed to
+  `browser_operator` as `cdp_url`.
+- `snapshot` is a fallback step when selectors fail or page state changes, not
+  a mandatory success-path step.
+- `browser_stop_session` should be called after each browser workflow to release
+  the remote session and persist profile state when applicable.
 
 ## Browser Operator Tips
 
@@ -111,6 +139,14 @@ browser_stop_session(session_id="<session_id>")
   the most reliable selectors for follow-up `click` and `fill` calls.
 - Always call `browser_stop_session` at the end of the workflow to avoid
   unnecessary browser billing.
+
+## Example Use Cases
+
+- Search or filter content on dynamic web apps.
+- Combine Actionbook search/get tools with browser automation for agentic task
+  execution.
+- Recover from selector drift by taking a fresh `snapshot` and continuing the
+  workflow.
 
 ## Dify Cloud Caveats
 
@@ -126,3 +162,11 @@ Common symptoms:
 - `search_actions` or `get_action_by_area_id` returns an empty response.
 - Browser session creation fails with a network or connectivity error.
 - Requests to Actionbook time out even though the target service is healthy.
+
+## Community
+
+- [GitHub](https://github.com/actionbook/actionbook) for source, issues, and
+  contributions.
+- [Discord](https://actionbook.dev/discord) for questions and workflow ideas.
+- [Request a Website](https://actionbook.dev/request-website) if you want a new
+  site indexed by Actionbook.
