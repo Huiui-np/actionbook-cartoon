@@ -20,7 +20,6 @@ automation directly in Dify.
   workflow.
 - Recover from selector drift by taking a fresh accessibility `snapshot` and
   continuing the run.
-- Reuse a stable `profile_id` to preserve cookies and login state across runs.
 
 ## Included Tools
 
@@ -30,34 +29,21 @@ automation directly in Dify.
 | `get_action_by_area_id` | Fetch the full action manual for a selected area ID | Getting precise CSS, XPath, and ARIA selectors |
 | `browser_create_session` | Start a managed cloud browser session | Opening a browser before multi-step automation |
 | `browser_operator` | Navigate, click, fill, snapshot, and inspect pages | Executing browser steps in a workflow |
-| `browser_stop_session` | Stop the cloud browser session and release resources | Cleanup and profile persistence |
+| `browser_stop_session` | Stop the cloud browser session and release resources | Cleanup at the end of a workflow |
 
 ## Installation
 
-<AccordionGroup>
-  <Accordion title="Dify Marketplace">
-    Search for `Actionbook` in the Dify plugin marketplace, then install it in
-    your workspace.
-  </Accordion>
+Install the plugin directly from the official Dify Marketplace:
 
-  <Accordion title="Upload a release package">
-    1. Download the latest `.difypkg` from the
-    [Actionbook releases](https://github.com/actionbook/actionbook/releases?q=actionbook-dify-plugin)
-    page.
-    2. Open your Dify instance and go to `Plugins`.
-    3. Upload the package and enable the plugin for your workspace.
-  </Accordion>
+1. Open the [Actionbook plugin page](https://marketplace.dify.ai/plugin/actionbook/actionbook).
+2. Click `Install`.
+3. Enable the plugin in your Dify workspace.
+4. Configure the plugin credentials before running browser workflows.
 
-  <Accordion title="Build the package from source">
-    ```bash
-    cd packages/dify-plugin
-    uv sync
-    uv run dify plugin package . --output_path dist/actionbook.difypkg
-    ```
-
-    Then upload `dist/actionbook.difypkg` in Dify.
-  </Accordion>
-</AccordionGroup>
+<Tip>
+  The Marketplace page always provides the latest version, so you no longer
+  need to download a GitHub release package or build a `.difypkg` manually.
+</Tip>
 
 ## Credentials
 
@@ -72,8 +58,6 @@ automation directly in Dify.
 - Required for `browser_create_session`, `browser_operator`, and
   `browser_stop_session`.
 - Get a key from [Hyperbrowser](https://app.hyperbrowser.ai/).
-- Reuse the same `profile_id` in `browser_create_session` when you want cookies
-  and login state to persist across runs.
 
 ## Recommended Workflow
 
@@ -91,9 +75,7 @@ Example sequence:
 search_actions(query="github login", domain="github.com")
 get_action_by_area_id(area_id="github.com:login:email-input")
 
-browser_create_session(
-  profile_id="user-42"
-)
+browser_create_session()
 
 browser_operator(
   session_id="<session_id>",
@@ -127,7 +109,7 @@ How this maps to the current plugin behavior:
 - `snapshot` is a fallback step when selectors fail or page state changes, not
   a mandatory success-path step.
 - `browser_stop_session` should be called after each browser workflow to release
-  the remote session and persist profile state when applicable.
+  the remote session cleanly.
 
 ## Browser Operator Tips
 
@@ -147,26 +129,3 @@ How this maps to the current plugin behavior:
   execution.
 - Recover from selector drift by taking a fresh `snapshot` and continuing the
   workflow.
-
-## Dify Cloud Caveats
-
-<Warning>
-  Dify Cloud may block or proxy outbound requests to `api.actionbook.dev` or the
-  Hyperbrowser API. In the plugin codebase, this is handled as SSRF-style empty
-  responses, connection failures, or timeouts. If that happens, use Dify
-  Self-hosted for more reliable external network access.
-</Warning>
-
-Common symptoms:
-
-- `search_actions` or `get_action_by_area_id` returns an empty response.
-- Browser session creation fails with a network or connectivity error.
-- Requests to Actionbook time out even though the target service is healthy.
-
-## Community
-
-- [GitHub](https://github.com/actionbook/actionbook) for source, issues, and
-  contributions.
-- [Discord](https://actionbook.dev/discord) for questions and workflow ideas.
-- [Request a Website](https://actionbook.dev/request-website) if you want a new
-  site indexed by Actionbook.
