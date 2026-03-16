@@ -514,6 +514,8 @@ mod tests {
             wait_hint: None,
             camofox: false,
             camofox_port: None,
+            no_daemon: true,
+            auto_connect: false,
             command: crate::cli::Commands::Config {
                 command: crate::cli::ConfigCommands::Show,
             },

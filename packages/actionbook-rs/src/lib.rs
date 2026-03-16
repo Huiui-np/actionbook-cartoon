@@ -8,4 +8,6 @@ pub mod error;
 
 mod api;
 pub mod commands;
+#[cfg(unix)]
+pub mod daemon;
 mod update_notifier;

@@ -759,6 +759,8 @@ default_profile = "{}"
 
     #[test]
     fn browser_connect_uses_config_default_profile_when_not_specified() {
+        // connect to unreachable endpoint fails with exit code 1 but still
+        // emits JSON with the resolved profile name before exiting.
         let (_tmp, home, config_home, data_home) = setup_config("team");
         actionbook()
             .env("HOME", &home)
@@ -771,7 +773,7 @@ default_profile = "{}"
                 "ws://127.0.0.1:9222/devtools/browser/test",
             ])
             .assert()
-            .success()
+            .failure()
             .stdout(predicate::str::contains("\"profile\":\"team\""));
     }
 
@@ -790,7 +792,7 @@ default_profile = "{}"
                 "ws://127.0.0.1:9222/devtools/browser/test",
             ])
             .assert()
-            .success()
+            .failure()
             .stdout(predicate::str::contains("\"profile\":\"env-profile\""));
     }
 
@@ -811,7 +813,7 @@ default_profile = "{}"
                 "ws://127.0.0.1:9222/devtools/browser/test",
             ])
             .assert()
-            .success()
+            .failure()
             .stdout(predicate::str::contains("\"profile\":\"cli-profile\""));
     }
 

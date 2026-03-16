@@ -77,7 +77,8 @@ impl BrowserDriver {
 
         match backend {
             BrowserBackend::Cdp => {
-                let session_mgr = SessionManager::new(config.clone());
+                let mut session_mgr = SessionManager::new(config.clone());
+                session_mgr.set_daemon_enabled(!cli.no_daemon);
                 Ok(Self::Cdp(session_mgr))
             }
             #[cfg(feature = "camoufox")]

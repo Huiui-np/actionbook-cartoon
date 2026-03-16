@@ -3,6 +3,7 @@ pub mod app;
 pub mod batch;
 pub mod browser;
 pub mod config;
+pub mod daemon;
 pub mod extension;
 pub mod get;
 pub mod profile;

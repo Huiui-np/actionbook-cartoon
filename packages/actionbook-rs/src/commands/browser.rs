@@ -138,7 +138,7 @@ fn js_resolve_selector(selector: &str) -> String {
 
 /// Create a SessionManager with appropriate stealth configuration from CLI flags
 fn create_session_manager(cli: &Cli, config: &Config) -> SessionManager {
-    if cli.stealth {
+    let mut sm = if cli.stealth {
         let stealth_profile =
             build_stealth_profile(cli.stealth_os.as_deref(), cli.stealth_gpu.as_deref());
 
@@ -151,7 +151,11 @@ fn create_session_manager(cli: &Cli, config: &Config) -> SessionManager {
         SessionManager::with_stealth(config.clone(), stealth_config)
     } else {
         SessionManager::new(config.clone())
-    }
+    };
+
+    // Daemon is on by default; --no-daemon disables it
+    sm.set_daemon_enabled(!cli.no_daemon);
+    sm
 }
 
 /// Create a browser driver — public entry point for other command modules (e.g., batch)
@@ -222,13 +226,16 @@ async fn resolve_snapshot_ref(driver: &mut BrowserDriver, ref_str: &str) -> Resu
 /// the current browser WebSocket URL.
 pub(crate) async fn resolve_cdp_endpoint(endpoint: &str) -> Result<(u16, String)> {
     if endpoint.starts_with("ws://") || endpoint.starts_with("wss://") {
-        let port = endpoint
+        let host_port = endpoint
             .split("://")
             .nth(1)
             .and_then(|s| s.split('/').next())
-            .and_then(|host_port| host_port.rsplit(':').next())
+            .unwrap_or("127.0.0.1:9222");
+        let port = host_port
+            .rsplit(':')
+            .next()
             .and_then(|p| p.parse::<u16>().ok())
-            .unwrap_or(9222);
+            .unwrap_or(if endpoint.starts_with("wss://") { 443 } else { 9222 });
         Ok((port, endpoint.to_string()))
     } else if let Ok(port) = endpoint.parse::<u16>() {
         let version_url = format!("http://127.0.0.1:{}/json/version", port);
@@ -266,9 +273,100 @@ pub(crate) async fn resolve_cdp_endpoint(endpoint: &str) -> Result<(u16, String)
     }
 }
 
+/// Verify a CDP WebSocket URL is reachable and resolve a fresh browser WS URL.
+///
+/// - **Local ws://**: queries `/json/version` to get the current `webSocketDebuggerUrl`
+///   (browser IDs rotate on every launch, so user-provided URLs may be stale).
+/// - **Remote ws:// / wss://**: performs a full WS handshake to verify reachability;
+///   returns the user-provided URL as-is (no `/json/version` on remote endpoints).
+/// - **Port-only / other**: returns the URL unchanged.
+///
+/// Used by both `--cdp` override and `app attach` to ensure only verified,
+/// fresh URLs are persisted to the session file.
+pub(crate) async fn verify_and_resolve_cdp_url(
+    cli: &Cli,
+    config: &Config,
+    cdp_port: u16,
+    cdp_url: &str,
+) -> Result<String> {
+    let host_port = cdp_url
+        .split("://")
+        .nth(1)
+        .and_then(|s| s.split('/').next())
+        .unwrap_or("");
+    // Extract host, handling IPv6 bracket notation: [::1]:9222 → [::1]
+    let host = if host_port.starts_with('[') {
+        host_port
+            .split(']')
+            .next()
+            .map(|s| format!("{}]", s))
+            .unwrap_or_default()
+    } else {
+        host_port.split(':').next().unwrap_or("").to_string()
+    };
+    let is_local = matches!(
+        host.as_str(),
+        "127.0.0.1" | "localhost" | "[::1]" | "0.0.0.0" | ""
+    );
+
+    if cdp_url.starts_with("ws://") && is_local {
+        // Local: query /json/version to get the current webSocketDebuggerUrl.
+        // The user may have passed a stale /devtools/browser/<old-id> — the browser
+        // rotates this ID on every launch. Persisting a stale URL would make the
+        // daemon connect to a dead endpoint even though the browser is alive.
+        let version_url = format!("http://127.0.0.1:{}/json/version", cdp_port);
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        let resp = client.get(&version_url).send().await.map_err(|_| {
+            ActionbookError::CdpConnectionFailed(format!(
+                "Cannot reach CDP at port {}. Is the browser running with --remote-debugging-port={}?",
+                cdp_port, cdp_port
+            ))
+        })?;
+        let resolved = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("webSocketDebuggerUrl")?.as_str().map(String::from))
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    "Could not extract webSocketDebuggerUrl from /json/version on port {}; using user-provided URL",
+                    cdp_port
+                );
+                cdp_url.to_string()
+            });
+        if resolved != cdp_url {
+            tracing::debug!(
+                "Resolved fresh WS URL: {} (user provided: {})",
+                resolved,
+                cdp_url
+            );
+        }
+        Ok(resolved)
+    } else if (cdp_url.starts_with("wss://") || cdp_url.starts_with("ws://")) && !is_local {
+        // Remote: full WS handshake — verifies the URL (not just host:port) is valid.
+        let session_manager = create_session_manager(cli, config);
+        if !session_manager.is_websocket_reachable(cdp_url, None).await {
+            return Err(ActionbookError::CdpConnectionFailed(format!(
+                "WebSocket handshake failed for {}. Check the URL, path, and network.",
+                cdp_url
+            )));
+        }
+        Ok(cdp_url.to_string())
+    } else {
+        Ok(cdp_url.to_string())
+    }
+}
+
 /// If the user passed `--cdp <port_or_url>`, resolve it to a fresh WebSocket URL
 /// and persist it as the active session so that `get_or_create_session` picks it up.
 /// This is a no-op when `--cdp` is not set.
+///
+/// Only persists and restarts daemon when the endpoint is reachable.
+/// This prevents a bad `--cdp` value from destroying a working session config.
 async fn ensure_cdp_override(cli: &Cli, config: &Config) -> Result<()> {
     let cdp = match &cli.cdp {
         Some(c) => c.as_str(),
@@ -278,14 +376,86 @@ async fn ensure_cdp_override(cli: &Cli, config: &Config) -> Result<()> {
     let profile_name = effective_profile_name(cli, config);
     let (cdp_port, cdp_url) = resolve_cdp_endpoint(cdp).await?;
 
+    let resolved_url = verify_and_resolve_cdp_url(cli, config, cdp_port, &cdp_url).await?;
+
     let session_manager = create_session_manager(cli, config);
-    session_manager.save_external_session(profile_name, cdp_port, &cdp_url)?;
+    session_manager.save_external_session(profile_name, cdp_port, &resolved_url)?;
     tracing::debug!(
         "CDP override applied: port={}, url={}, profile={}",
         cdp_port,
-        cdp_url,
+        resolved_url,
         profile_name
     );
+
+    // Stop running daemon so it reconnects with the new endpoint.
+    // Without this, the daemon keeps its WS to the old browser.
+    #[cfg(unix)]
+    if !cli.no_daemon {
+        if crate::daemon::lifecycle::is_daemon_alive(profile_name).await {
+            tracing::info!(
+                "Stopping daemon for '{}' (--cdp override changed endpoint)",
+                profile_name
+            );
+            let _ = crate::daemon::lifecycle::stop_daemon(profile_name).await;
+        }
+    }
+
+    Ok(())
+}
+
+/// Auto-discover a running Chrome instance and persist it as the active session.
+/// Skips if a session already exists and the browser is still reachable.
+async fn ensure_auto_connect(cli: &Cli, config: &Config) -> Result<()> {
+    use crate::browser::auto_connect;
+
+    let profile_name = effective_profile_name(cli, config);
+    let session_manager = create_session_manager(cli, config);
+
+    // If we already have a reachable session for this profile, refresh the
+    // WS URL (it may have rotated after browser restart) and skip discovery.
+    if session_manager.is_session_reachable(profile_name).await {
+        // Try to refresh the WS URL from /json/version in case it rotated.
+        session_manager.refresh_session_ws_url(profile_name).await;
+        tracing::debug!(
+            "Auto-connect: existing session for '{}' is reachable, skipping discovery",
+            profile_name
+        );
+        return Ok(());
+    }
+
+    let discovered = auto_connect::auto_discover().await.map_err(|e| {
+        ActionbookError::CdpConnectionFailed(format!("Auto-connect failed: {}", e))
+    })?;
+
+    session_manager.save_external_session(profile_name, discovered.port, &discovered.ws_url)?;
+    tracing::info!(
+        "Auto-connected to Chrome at port {} (profile: {})",
+        discovered.port,
+        profile_name
+    );
+
+    // If a daemon is running for this profile, stop it so that ensure_daemon()
+    // (called later in run()) restarts it with the newly discovered session.
+    // Without this, the old daemon keeps its WS connection to the previous
+    // browser until it disconnects on its own.
+    #[cfg(unix)]
+    if !cli.no_daemon {
+        if crate::daemon::lifecycle::is_daemon_alive(profile_name).await {
+            tracing::info!(
+                "Stopping stale daemon for '{}' (session changed by auto-connect)",
+                profile_name
+            );
+            let _ = crate::daemon::lifecycle::stop_daemon(profile_name).await;
+        }
+    }
+
+    if cli.verbose {
+        eprintln!(
+            "{} Auto-connected to {}",
+            "✓".green(),
+            discovered.ws_url
+        );
+    }
 
     Ok(())
 }
@@ -499,15 +669,24 @@ fn resolve_browser_mode(
     }
 }
 
-/// Check if a command requires an active session (bridge/browser)
+/// Check if a command requires an active session (bridge/browser).
+/// Read-only and cleanup commands return false to avoid triggering
+/// auto-connect, daemon startup, or other session side-effects.
 fn requires_active_session(command: &BrowserCommands) -> bool {
-    !matches!(
-        command,
-        // Read-only commands that can work without active session
-        BrowserCommands::Status | BrowserCommands::Pages |
+    match command {
+        // Read-only commands
+        BrowserCommands::Status | BrowserCommands::Pages => false,
         // Close is safe to call even when no session exists
-        BrowserCommands::Close
-    )
+        BrowserCommands::Close => false,
+        // Connect establishes a new session — daemon starts after it, not before
+        BrowserCommands::Connect { .. } => false,
+        // Tab list/active are read-only; new/switch/close need a session
+        BrowserCommands::Tab { command } => !matches!(
+            command,
+            crate::cli::TabCommands::List | crate::cli::TabCommands::Active
+        ),
+        _ => true,
+    }
 }
 
 pub async fn run(cli: &Cli, command: &BrowserCommands) -> Result<()> {
@@ -552,10 +731,21 @@ pub async fn run(cli: &Cli, command: &BrowserCommands) -> Result<()> {
         config.set_profile(&profile_name, profile);
     }
 
+    // Auto-discover a running Chrome instance when --auto-connect is set.
+    // Runs before --cdp override so explicit --cdp takes precedence.
+    // Connect is excluded via requires_active_session().
+    if cli.auto_connect
+        && cli.cdp.is_none()
+        && !cli.extension
+        && requires_active_session(command)
+    {
+        ensure_auto_connect(cli, &config).await?;
+    }
+
     // When --cdp is set, resolve it to a fresh WebSocket URL and persist it
-    // as the active session *before* any command runs. Skip for `connect`
-    // which has its own CDP resolution logic.
-    if !matches!(command, BrowserCommands::Connect { .. }) {
+    // as the active session. Skip for read-only commands (status, pages, tab list)
+    // so they don't overwrite a working session. Connect has its own CDP logic.
+    if requires_active_session(command) {
         ensure_cdp_override(cli, &config).await?;
     }
 
@@ -563,6 +753,14 @@ pub async fn run(cli: &Cli, command: &BrowserCommands) -> Result<()> {
     // Skip for read-only commands (status, pages, etc.)
     if cli.extension && requires_active_session(command) {
         bridge_lifecycle::ensure_bridge_running(cli.extension_port).await?;
+    }
+
+    // Auto-start daemon (default on; --no-daemon disables)
+    // The daemon holds a persistent WS connection to avoid per-command connect overhead
+    #[cfg(unix)]
+    if !cli.no_daemon && !cli.extension && requires_active_session(command) {
+        let profile_name = effective_profile_name(cli, &config);
+        crate::daemon::lifecycle::ensure_daemon(profile_name).await?;
     }
 
     match command {
@@ -3920,6 +4118,8 @@ async fn fetch_via_browser(
         wait_hint: cli.wait_hint.clone(),
         camofox: cli.camofox,
         camofox_port: cli.camofox_port,
+        no_daemon: true, // fetch uses its own temporary session
+        auto_connect: false,
         command: crate::cli::Commands::Browser {
             command: BrowserCommands::Status,
         },
@@ -4844,27 +5044,71 @@ pub(crate) async fn connect(cli: &Cli, config: &Config, endpoint: &str, raw_head
         Some(map)
     };
 
-    // Persist the session so subsequent commands can reuse this browser
+    // Probe the endpoint *before* saving so we don't pollute the existing
+    // session config with an unreachable endpoint or bad auth.
     let session_manager = create_session_manager(cli, config);
-    session_manager.save_external_session_full(profile_name, cdp_port, &cdp_url, None, ws_headers)?;
+    let probe_ok = session_manager
+        .is_websocket_reachable(&cdp_url, ws_headers.as_ref())
+        .await;
+
+    if probe_ok {
+        // Only persist once the endpoint is verified reachable.
+        session_manager.save_external_session_full(
+            profile_name,
+            cdp_port,
+            &cdp_url,
+            None,
+            ws_headers.clone(),
+        )?;
+
+        // Stop any existing daemon so it doesn't keep a WS to the old endpoint,
+        // then start a fresh one with the new session config (if daemon is enabled).
+        #[cfg(unix)]
+        {
+            if crate::daemon::lifecycle::is_daemon_alive(profile_name).await {
+                let _ = crate::daemon::lifecycle::stop_daemon(profile_name).await;
+                tracing::debug!("Stopped stale daemon for profile '{}'", profile_name);
+            }
+            if !cli.no_daemon && !cli.extension {
+                if let Err(e) = crate::daemon::lifecycle::ensure_daemon(profile_name).await {
+                    tracing::warn!("Failed to start daemon for '{}': {}", profile_name, e);
+                }
+            }
+        }
+    }
 
     if cli.json {
         println!(
             "{}",
             serde_json::json!({
-                "success": true,
+                "success": probe_ok,
                 "profile": profile_name,
                 "cdp_port": cdp_port,
-                "cdp_url": cdp_url
+                "cdp_url": cdp_url,
+                "verified": probe_ok,
             })
         );
-    } else {
+    } else if probe_ok {
         println!("{} Connected to CDP at port {}", "✓".green(), cdp_port);
         println!("  WebSocket URL: {}", cdp_url);
         println!("  Profile: {}", profile_name);
+    } else {
+        eprintln!(
+            "{} Endpoint not reachable — check URL and auth headers",
+            "✗".red()
+        );
+        eprintln!("  WebSocket URL: {}", cdp_url);
+        eprintln!("  Profile: {}", profile_name);
     }
 
-    Ok(())
+    if probe_ok {
+        Ok(())
+    } else {
+        Err(ActionbookError::CdpConnectionFailed(format!(
+            "Endpoint {} is not reachable",
+            cdp_url
+        )))
+    }
 }
 
 pub(crate) async fn tab_command(cli: &Cli, config: &Config, cmd: &TabCommands) -> Result<()> {
@@ -5183,6 +5427,8 @@ mod tests {
             wait_hint: None,
             camofox: false,
             camofox_port: None,
+            no_daemon: true,
+            auto_connect: false,
             command: Commands::Browser { command },
         }
     }

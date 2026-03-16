@@ -1,3 +1,4 @@
+pub mod auto_connect; // Auto-discover running Chrome instances
 mod backend;
 pub mod bridge_lifecycle;
 #[cfg(feature = "camoufox")]

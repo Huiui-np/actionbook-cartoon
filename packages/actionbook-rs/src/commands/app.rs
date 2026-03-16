@@ -373,11 +373,19 @@ async fn attach(cli: &Cli, config: &Config, target: &str) -> Result<()> {
     let profile_name = crate::commands::browser::effective_profile_name(cli, config);
     let (cdp_port, cdp_url) = crate::commands::browser::resolve_cdp_endpoint(&endpoint).await?;
 
+    // Verify reachability and resolve fresh WS URL — same logic as ensure_cdp_override().
+    // For local ws:// endpoints, query /json/version to get the current webSocketDebuggerUrl
+    // (browser IDs rotate on every launch). For remote wss://, do a full WS handshake.
+    let resolved_url = crate::commands::browser::verify_and_resolve_cdp_url(
+        cli, config, cdp_port, &cdp_url,
+    )
+    .await?;
+
     let session_manager = SessionManager::new(config.clone());
     session_manager.save_external_session_with_app(
         profile_name,
         cdp_port,
-        &cdp_url,
+        &resolved_url,
         inferred_app_path.clone(),
     )?;
 
@@ -386,7 +394,7 @@ async fn attach(cli: &Cli, config: &Config, target: &str) -> Result<()> {
             "success": true,
             "profile": profile_name,
             "cdp_port": cdp_port,
-            "cdp_url": cdp_url
+            "cdp_url": resolved_url
         });
         if let Some(app_path) = inferred_app_path {
             json_output["app_path"] = serde_json::json!(app_path);
@@ -395,7 +403,7 @@ async fn attach(cli: &Cli, config: &Config, target: &str) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&json_output)?);
     } else {
         println!("{} Connected to CDP at port {}", "✓".green(), cdp_port);
-        println!("  WebSocket URL: {}", cdp_url);
+        println!("  WebSocket URL: {}", resolved_url);
         println!("  Profile: {}", profile_name);
         if let Some(app_path) = inferred_app_path {
             println!("  {} Inferred app path: {}", "ℹ".blue(), app_path);

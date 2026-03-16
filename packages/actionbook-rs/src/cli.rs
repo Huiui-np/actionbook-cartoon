@@ -5,6 +5,16 @@ use crate::commands;
 use crate::config::DEFAULT_EXTENSION_PORT;
 use crate::error::Result;
 
+/// Parse truthy values: "true", "1", "yes" (case-insensitive) → true; everything else → false.
+/// Compatible with common env var conventions (e.g. `ACTIONBOOK_AUTO_CONNECT=1`).
+fn parse_truthy(s: &str) -> std::result::Result<bool, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" => Ok(true),
+        "false" | "0" | "no" | "" => Ok(false),
+        _ => Err(format!("Invalid boolean value '{}'. Expected: true/false/1/0/yes/no", s)),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum SetupTarget {
     Claude,
@@ -37,7 +47,8 @@ pub struct Cli {
     #[arg(long, env = "ACTIONBOOK_BROWSER_PATH", global = true)]
     pub browser_path: Option<String>,
 
-    /// CDP port or WebSocket URL
+    /// CDP port or WebSocket URL (e.g. 9222, ws://127.0.0.1:9222/..., wss://remote/...).
+    /// Endpoint is verified reachable before persisting to the profile.
     #[arg(long, env = "ACTIONBOOK_CDP", global = true)]
     pub cdp: Option<String>,
 
@@ -126,6 +137,30 @@ pub struct Cli {
     #[arg(long, env = "ACTIONBOOK_CAMOFOX_PORT", global = true)]
     pub camofox_port: Option<u16>,
 
+    /// Disable the per-profile daemon (persistent WS connection, Unix only).
+    /// On Unix, browser commands route CDP through a daemon process by default.
+    /// Use --no-daemon to fall back to direct per-command connections.
+    /// On non-Unix platforms, daemon is not available and this flag is ignored.
+    #[arg(
+        long = "no-daemon",
+        env = "ACTIONBOOK_NO_DAEMON",
+        global = true,
+        default_value_t = false,
+    )]
+    pub no_daemon: bool,
+
+    /// Auto-discover and connect to a running Chrome instance
+    #[arg(
+        long,
+        env = "ACTIONBOOK_AUTO_CONNECT",
+        global = true,
+        value_parser = parse_truthy,
+        default_value_t = false,
+        default_missing_value = "true",
+        num_args = 0..=1,
+    )]
+    pub auto_connect: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -200,6 +235,12 @@ pub enum Commands {
     Extension {
         #[command(subcommand)]
         command: ExtensionCommands,
+    },
+
+    /// Daemon management (persistent WS connection per profile)
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonCommands,
     },
 
     /// Initial setup wizard
@@ -1084,6 +1125,23 @@ pub enum ScrollDirection {
 }
 
 #[derive(Subcommand, Clone)]
+pub enum DaemonCommands {
+    /// Start daemon server for a profile (internal, auto-started)
+    #[command(hide = true)]
+    Serve {
+        /// Profile name (overrides global --profile)
+        #[arg(long)]
+        profile: Option<String>,
+    },
+
+    /// Check daemon status for the current profile
+    Status,
+
+    /// Stop the daemon for the current profile
+    Stop,
+}
+
+#[derive(Subcommand, Clone)]
 pub enum ExtensionCommands {
     #[command(hide = true)]
     /// Start the extension bridge WebSocket server
@@ -1230,6 +1288,7 @@ impl Cli {
             Commands::Sources { command } => commands::sources::run(self, command).await,
             Commands::Config { command } => commands::config::run(self, command).await,
             Commands::Profile { command } => commands::profile::run(self, command).await,
+            Commands::Daemon { command } => commands::daemon::run(self, command).await,
             Commands::Setup {
                 target,
                 api_key,

@@ -3,6 +3,8 @@ mod browser;
 mod cli;
 mod commands;
 mod config;
+#[cfg(unix)]
+mod daemon;
 mod error;
 mod update_notifier;
 

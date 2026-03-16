@@ -91,6 +91,12 @@ pub enum ActionbookError {
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
 
+    #[error("Daemon error: {0}")]
+    DaemonError(String),
+
+    #[error("Daemon not running: {0}")]
+    DaemonNotRunning(String),
+
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 
@@ -137,6 +143,8 @@ impl ActionbookError {
             ActionbookError::InvalidOperation(_) => "invalid_operation",
             ActionbookError::CdpError(_) => "cdp_error",
             ActionbookError::InvalidArgument(_) => "invalid_argument",
+            ActionbookError::DaemonError(_) => "daemon_error",
+            ActionbookError::DaemonNotRunning(_) => "daemon_not_running",
             ActionbookError::IoError(_) => "io_error",
             ActionbookError::NetworkError(_) => "network_error",
             ActionbookError::JsonError(_) => "json_error",

@@ -106,6 +106,9 @@ pub struct SessionManager {
     config: Config,
     sessions_dir: PathBuf,
     stealth_config: Option<StealthConfig>,
+    /// When true, CDP commands are routed through the per-profile daemon
+    /// (persistent WS connection). Set by `--daemon` CLI flag.
+    daemon_enabled: bool,
 }
 
 impl SessionManager {
@@ -119,6 +122,7 @@ impl SessionManager {
             config,
             sessions_dir: Self::default_sessions_dir(),
             stealth_config: Some(stealth_config),
+            daemon_enabled: false,
         }
     }
 
@@ -131,7 +135,14 @@ impl SessionManager {
             config,
             sessions_dir,
             stealth_config: None,
+            daemon_enabled: false,
         }
+    }
+
+    /// Enable daemon routing for CDP commands.
+    /// When enabled, `send_cdp_command` routes through the per-profile daemon.
+    pub fn set_daemon_enabled(&mut self, enabled: bool) {
+        self.daemon_enabled = enabled;
     }
 
     fn default_sessions_dir() -> PathBuf {
@@ -251,6 +262,27 @@ impl SessionManager {
         }
     }
 
+    /// Check if the saved session for a profile is still reachable.
+    ///
+    /// Uses `is_session_alive` which checks HTTP for local sessions (tolerates
+    /// browser WS URL rotation) and WS for remote sessions.
+    pub async fn is_session_reachable(&self, profile_name: &str) -> bool {
+        match self.load_session_state(profile_name) {
+            Some(state) => self.is_session_alive(&state).await,
+            None => false,
+        }
+    }
+
+    /// Probe a WebSocket endpoint to check if it's reachable and auth succeeds.
+    /// Returns true on successful handshake, false on any error or timeout.
+    pub async fn is_websocket_reachable(
+        &self,
+        ws_url: &str,
+        headers: Option<&std::collections::HashMap<String, String>>,
+    ) -> bool {
+        self.is_websocket_alive(ws_url, headers).await
+    }
+
     async fn is_websocket_alive(
         &self,
         ws_url: &str,
@@ -315,6 +347,29 @@ impl SessionManager {
         info.get("webSocketDebuggerUrl")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
+    }
+
+    /// Refresh the saved WS URL for a local session by querying /json/version.
+    /// No-op if the session is remote or if the HTTP probe fails.
+    pub async fn refresh_session_ws_url(&self, profile_name: &str) {
+        let Some(mut state) = self.load_session_state(profile_name) else {
+            return;
+        };
+        if !state.uses_local_http_endpoints() {
+            return;
+        }
+        if let Some(fresh_url) = self.fetch_browser_ws_url(state.cdp_port).await {
+            if fresh_url != state.cdp_url {
+                tracing::debug!(
+                    "Refreshed WS URL for '{}': {} → {}",
+                    profile_name,
+                    state.cdp_url,
+                    fresh_url
+                );
+                state.cdp_url = fresh_url;
+                let _ = self.save_session_state(&state);
+            }
+        }
     }
 
     /// Get or create a browser session for the given profile
@@ -626,8 +681,20 @@ impl SessionManager {
             .map(|c| &c.profile)
     }
 
-    /// Connect to an existing browser session
+    /// Connect to an existing browser session.
+    ///
+    /// Note: chromiumoxide `Browser::connect` does not support custom WS headers.
+    /// For remote sessions with auth headers, this will fail — callers should use
+    /// CDP commands via `send_cdp_command` instead.
     async fn connect_to_session(&self, state: &SessionState) -> Result<(Browser, Handler)> {
+        if state.ws_headers.as_ref().is_some_and(|h| !h.is_empty()) {
+            return Err(ActionbookError::CdpConnectionFailed(
+                "Cannot use chromiumoxide for remote sessions with auth headers. \
+                 Use CDP commands (goto, eval, click) instead of open/restart."
+                    .to_string(),
+            ));
+        }
+
         let (browser, handler) = Browser::connect(&state.cdp_url).await.map_err(|e| {
             ActionbookError::CdpConnectionFailed(format!("Failed to connect to browser: {}", e))
         })?;
@@ -640,17 +707,51 @@ impl SessionManager {
         let profile_name = self.resolve_profile_name(profile_name);
 
         if let Some(state) = self.load_session_state(&profile_name) {
-            // Try to close the browser gracefully
-            if let Ok((mut browser, mut handler)) = self.connect_to_session(&state).await {
-                // Spawn handler to process events
-                tokio::spawn(async move { while handler.next().await.is_some() {} });
-
-                // Close browser
-                let _ = browser.close().await;
+            // For remote sessions with auth headers, use Browser.close via CDP
+            if state.ws_headers.as_ref().is_some_and(|h| !h.is_empty()) {
+                let close_result = self
+                    .send_cdp_command(Some(&profile_name), "Browser.close", serde_json::json!({}))
+                    .await;
+                match close_result {
+                    Ok(_) => {
+                        self.remove_session_state(&profile_name)?;
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to close remote browser: {}", e);
+                        // Don't delete session files — browser may still be running
+                        return Err(ActionbookError::CdpConnectionFailed(format!(
+                            "Failed to close remote browser: {}",
+                            e
+                        )));
+                    }
+                }
+                return Ok(());
             }
 
-            // Remove session state
-            self.remove_session_state(&profile_name)?;
+            // Local/no-headers path: use chromiumoxide
+            let connected = self.connect_to_session(&state).await;
+            match connected {
+                Ok((mut browser, mut handler)) => {
+                    tokio::spawn(async move { while handler.next().await.is_some() {} });
+                    let _ = browser.close().await;
+                    self.remove_session_state(&profile_name)?;
+                }
+                Err(e) if !state.uses_local_http_endpoints() => {
+                    // Remote session without headers: connection failed, don't
+                    // delete session — browser may still be running remotely
+                    tracing::warn!(
+                        "Cannot connect to remote browser for close, keeping session state"
+                    );
+                    return Err(ActionbookError::CdpConnectionFailed(format!(
+                        "Failed to close remote browser: {}",
+                        e
+                    )));
+                }
+                Err(_) => {
+                    // Local session that's unreachable — safe to clean up
+                    self.remove_session_state(&profile_name)?;
+                }
+            }
         }
 
         Ok(())
@@ -667,21 +768,28 @@ impl SessionManager {
             let url = format!("http://127.0.0.1:{}/json/list", state.cdp_port);
             let client = reqwest::Client::builder()
                 .no_proxy()
+                .timeout(Duration::from_secs(2))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new());
 
-            let response = client.get(&url).send().await.map_err(|e| {
-                ActionbookError::CdpConnectionFailed(format!("Failed to get pages: {}", e))
-            })?;
-
-            let pages: Vec<PageInfo> = response.json().await.map_err(|e| {
-                ActionbookError::CdpConnectionFailed(format!("Failed to parse pages: {}", e))
-            })?;
-
-            return Ok(pages
-                .into_iter()
-                .filter(|p| p.page_type == "page")
-                .collect());
+            // Try HTTP first, but fall back to WS Target.getTargets if HTTP
+            // fails (Chrome M146+ chrome://inspect mode has no HTTP API).
+            match client.get(&url).send().await {
+                Ok(response) => match response.json::<Vec<PageInfo>>().await {
+                    Ok(pages) => {
+                        return Ok(pages
+                            .into_iter()
+                            .filter(|p| p.page_type == "page")
+                            .collect());
+                    }
+                    Err(e) => {
+                        tracing::debug!("HTTP /json/list parse failed, falling back to WS: {}", e);
+                    }
+                },
+                Err(e) => {
+                    tracing::debug!("HTTP /json/list failed, falling back to WS: {}", e);
+                }
+            }
         }
 
         self.get_pages_via_ws_targets(&state.cdp_url, state.ws_headers.as_ref()).await
@@ -907,6 +1015,48 @@ impl SessionManager {
         use futures::SinkExt;
         use tokio_tungstenite::connect_async;
 
+        // When daemon is enabled, route through send_cdp_command so the
+        // daemon's persistent WS + Target.attachToTarget session is used,
+        // rather than opening a one-off page WebSocket.
+        if self.daemon_enabled {
+            // Handle iframe context: get execution context via createIsolatedWorld
+            let frame_id = self.get_current_frame_id(profile_name);
+            let mut params = serde_json::json!({
+                "expression": expression,
+                "returnByValue": true
+            });
+
+            if let Some(fid) = &frame_id {
+                let world_result = self
+                    .send_cdp_command(
+                        profile_name,
+                        "Page.createIsolatedWorld",
+                        serde_json::json!({ "frameId": fid }),
+                    )
+                    .await;
+
+                if let Ok(world) = world_result {
+                    if let Some(ctx_id) = world.get("executionContextId").and_then(|c| c.as_i64()) {
+                        params.as_object_mut().unwrap().insert(
+                            "contextId".to_string(),
+                            serde_json::json!(ctx_id),
+                        );
+                    }
+                }
+            }
+
+            let result = self
+                .send_cdp_command(profile_name, "Runtime.evaluate", params)
+                .await?;
+
+            let value = result
+                .get("result")
+                .and_then(|r| r.get("value"))
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            return Ok(value);
+        }
+
         let page_info = self.get_active_page_info(profile_name).await?;
         let Some(ws_url) = page_info.web_socket_debugger_url.as_deref() else {
             let result = self
@@ -1026,6 +1176,10 @@ impl SessionManager {
     }
 
     /// Helper to send a CDP command and get response (public for snapshot/blocking)
+    ///
+    /// When a daemon is running for this profile (indicated by an active UDS socket),
+    /// commands are routed through the daemon's persistent WS connection instead of
+    /// opening a new WS per command.
     pub async fn send_cdp_command(
         &self,
         profile_name: Option<&str>,
@@ -1033,6 +1187,18 @@ impl SessionManager {
         params: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let resolved_profile = self.resolve_profile_name(profile_name);
+
+        // Try routing through daemon if its socket exists
+        #[cfg(unix)]
+        {
+            if let Some(result) = self
+                .try_send_via_daemon(&resolved_profile, method, params.clone())
+                .await
+            {
+                return result;
+            }
+        }
+
         let state = self
             .load_session_state(&resolved_profile)
             .ok_or(ActionbookError::BrowserNotRunning)?;
@@ -1040,10 +1206,14 @@ impl SessionManager {
         let page_info = self.get_active_page_info(Some(&resolved_profile)).await?;
 
         if let Some(ws_url) = page_info.web_socket_debugger_url.as_deref() {
-            // For local loopback, page-level ws URLs don't need auth headers.
-            // For remote endpoints, always use the attached-target path with headers
-            // because synthesized page ws URLs may also require the same auth.
-            if state.uses_local_http_endpoints() || state.ws_headers.is_none() {
+            // Only use direct page WS for local loopback sessions where page-level
+            // ws URLs are directly connectable without auth headers.
+            // For ALL remote endpoints (with or without headers), use the
+            // attach-target path through the browser WS, because:
+            // - Remote page WS URLs may be synthesized and not directly accessible
+            // - Some remote services only expose the browser WS endpoint
+            // - Auth headers (if any) need to be sent on the browser WS handshake
+            if state.uses_local_http_endpoints() {
                 return self
                     .send_cdp_command_over_page_ws(ws_url, method, params)
                     .await;
@@ -1051,7 +1221,7 @@ impl SessionManager {
         }
 
         // Remote ws/wss endpoints: use browser websocket + Target.attachToTarget(sessionId)
-        // with auth headers to ensure authenticated handshake.
+        // with optional auth headers.
         self.send_cdp_command_via_attached_target(
             &state.cdp_url,
             &page_info.id,
@@ -1060,6 +1230,43 @@ impl SessionManager {
             state.ws_headers.as_ref(),
         )
         .await
+    }
+
+    /// Try to send a CDP command through the daemon for this profile.
+    ///
+    /// Only attempts daemon routing when `daemon_enabled` is true AND the daemon
+    /// socket exists. Returns `Some(Ok(value))` on success, `None` on any failure
+    /// (falls through to direct WS path). This ensures the daemon layer never
+    /// blocks commands that would succeed via the direct path.
+    #[cfg(unix)]
+    async fn try_send_via_daemon(
+        &self,
+        profile: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Option<Result<serde_json::Value>> {
+        if !self.daemon_enabled {
+            return None;
+        }
+
+        let sock_path = crate::daemon::lifecycle::socket_path(profile);
+        if !sock_path.exists() {
+            return None;
+        }
+
+        let client = crate::daemon::client::DaemonClient::new(profile.to_string());
+        match client.send_cdp(method, params).await {
+            Ok(value) => Some(Ok(value)),
+            Err(e) => {
+                // Fall back to direct WS on ANY daemon error:
+                // - DaemonNotRunning: socket file stale, daemon dead
+                // - DaemonError: WS not connected yet, attach pending, timeout, etc.
+                // This prevents the daemon layer from amplifying failures for
+                // commands that would succeed via the direct path.
+                tracing::debug!("Daemon error, falling back to direct WS: {}", e);
+                None
+            }
+        }
     }
 
     async fn send_cdp_command_over_page_ws(
@@ -2632,8 +2839,15 @@ impl SessionManager {
         backend_node_id: i64,
         function_declaration: &str,
     ) -> Result<serde_json::Value> {
-        use futures::stream::StreamExt;
-        use futures::SinkExt;
+        // When daemon is enabled, route each CDP step through send_cdp_command
+        // so the daemon's persistent WS is reused (4 sequential UDS round-trips
+        // instead of 1 one-off page WS with 4 commands).
+        if self.daemon_enabled {
+            return self
+                .resolve_and_call_via_cdp(profile_name, backend_node_id, function_declaration)
+                .await;
+        }
+
         use tokio_tungstenite::connect_async;
 
         let page_info = self.get_active_page_info(profile_name).await?;
@@ -2739,6 +2953,62 @@ impl SessionManager {
             .unwrap_or(serde_json::Value::Null))
     }
 
+    /// Daemon-aware resolve_and_call: routes each CDP step through send_cdp_command
+    /// so the daemon's persistent WS is reused instead of opening a one-off page WS.
+    async fn resolve_and_call_via_cdp(
+        &self,
+        profile_name: Option<&str>,
+        backend_node_id: i64,
+        function_declaration: &str,
+    ) -> Result<serde_json::Value> {
+        // 1. Enable DOM domain
+        let _ = self
+            .send_cdp_command(profile_name, "DOM.enable", serde_json::json!({}))
+            .await;
+        // 2. Get document root
+        let _ = self
+            .send_cdp_command(profile_name, "DOM.getDocument", serde_json::json!({}))
+            .await;
+        // 3. Resolve backendNodeId to remote object
+        let resolved = self
+            .send_cdp_command(
+                profile_name,
+                "DOM.resolveNode",
+                serde_json::json!({ "backendNodeId": backend_node_id }),
+            )
+            .await?;
+
+        let object_id = resolved
+            .get("object")
+            .and_then(|o| o.get("objectId"))
+            .and_then(|id| id.as_str())
+            .ok_or_else(|| {
+                ActionbookError::ElementNotFound(format!(
+                    "Could not resolve backendNodeId {}",
+                    backend_node_id
+                ))
+            })?;
+
+        // 4. Call function on the resolved object
+        let result = self
+            .send_cdp_command(
+                profile_name,
+                "Runtime.callFunctionOn",
+                serde_json::json!({
+                    "objectId": object_id,
+                    "functionDeclaration": function_declaration,
+                    "returnByValue": true,
+                }),
+            )
+            .await?;
+
+        Ok(result
+            .get("result")
+            .and_then(|r| r.get("value"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null))
+    }
+
     /// Get the center coordinates of an element by backendNodeId (scrolls into view)
     pub async fn get_element_center_by_node_id(
         &self,
@@ -2820,6 +3090,13 @@ impl SessionManager {
         selector: &str,
         files: &[String],
     ) -> Result<()> {
+        // When daemon is enabled, route each CDP step through send_cdp_command
+        if self.daemon_enabled {
+            return self
+                .set_file_input_files_via_cdp(profile_name, selector, files)
+                .await;
+        }
+
         use tokio_tungstenite::connect_async;
 
         let page_info = self.get_active_page_info(profile_name).await?;
@@ -2945,6 +3222,88 @@ impl SessionManager {
                 }),
             )
             .await;
+        }
+
+        Ok(())
+    }
+
+    /// Daemon-aware set_file_input_files: routes each CDP step through send_cdp_command.
+    async fn set_file_input_files_via_cdp(
+        &self,
+        profile_name: Option<&str>,
+        selector: &str,
+        files: &[String],
+    ) -> Result<()> {
+        // 1. Enable DOM
+        let _ = self
+            .send_cdp_command(profile_name, "DOM.enable", serde_json::json!({}))
+            .await;
+
+        // 2. Get document root
+        let doc = self
+            .send_cdp_command(profile_name, "DOM.getDocument", serde_json::json!({}))
+            .await?;
+        let root_id = doc
+            .get("root")
+            .and_then(|r| r.get("nodeId"))
+            .and_then(|n| n.as_i64())
+            .unwrap_or(1);
+
+        // 3. querySelector to find the file input
+        let qs_result = self
+            .send_cdp_command(
+                profile_name,
+                "DOM.querySelector",
+                serde_json::json!({ "nodeId": root_id, "selector": selector }),
+            )
+            .await?;
+        let node_id = qs_result
+            .get("nodeId")
+            .and_then(|n| n.as_i64())
+            .unwrap_or(0);
+        if node_id == 0 {
+            return Err(ActionbookError::ElementNotFound(format!(
+                "File input not found: {}",
+                selector
+            )));
+        }
+
+        // 4. DOM.setFileInputFiles
+        let _ = self
+            .send_cdp_command(
+                profile_name,
+                "DOM.setFileInputFiles",
+                serde_json::json!({ "files": files, "nodeId": node_id }),
+            )
+            .await?;
+
+        // 5. Resolve node to object for event dispatch
+        let resolved = self
+            .send_cdp_command(
+                profile_name,
+                "DOM.resolveNode",
+                serde_json::json!({ "nodeId": node_id }),
+            )
+            .await?;
+
+        let object_id = resolved
+            .get("object")
+            .and_then(|o| o.get("objectId"))
+            .and_then(|id| id.as_str());
+
+        // 6. Dispatch change + input events (best-effort)
+        if let Some(oid) = object_id {
+            let _ = self
+                .send_cdp_command(
+                    profile_name,
+                    "Runtime.callFunctionOn",
+                    serde_json::json!({
+                        "objectId": oid,
+                        "functionDeclaration": "function() { this.dispatchEvent(new Event('input', { bubbles: true })); this.dispatchEvent(new Event('change', { bubbles: true })); }",
+                        "returnByValue": true,
+                    }),
+                )
+                .await;
         }
 
         Ok(())
@@ -3607,6 +3966,7 @@ mod tests {
             config: Config::default(),
             sessions_dir: dir.to_path_buf(),
             stealth_config: None,
+            daemon_enabled: false,
         }
     }
 
@@ -3639,6 +3999,7 @@ mod tests {
             config: Config::default(),
             sessions_dir: sessions_dir.clone(),
             stealth_config: None,
+            daemon_enabled: false,
         };
 
         assert!(!sessions_dir.exists());
@@ -3905,6 +4266,7 @@ mod tests {
             config,
             sessions_dir: dir.path().to_path_buf(),
             stealth_config: None,
+            daemon_enabled: false,
         };
 
         let status = sm.get_status(None).await;
