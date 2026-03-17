@@ -1,6 +1,0 @@
-# Crawl Sites Configuration
-# Each line should contain one URL
-# Lines starting with # are comments and will be ignored
-# Empty lines are also ignored
-
-www.example.com

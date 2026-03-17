@@ -5,13 +5,13 @@ description: "How to contribute to Actionbook"
 
 ## Development
 
-This is a monorepo using [pnpm](https://pnpm.io/) workspaces and [Turborepo](https://turborepo.com/).
+This public repository contains the CLI, SDK, MCP server, JSON UI, docs, and example projects. The internal build pipeline is no longer part of the open-source repo.
 
 ### Prerequisites
 
-- Node.js >= 18 (20+ recommended)
-- pnpm >= 10
-- PostgreSQL database (local or hosted like [Neon](https://neon.tech) / [Supabase](https://supabase.com))
+- Node.js 20+
+- pnpm 10+
+- Rust stable for `packages/actionbook-rs`
 
 ### First-time Setup
 
@@ -21,26 +21,19 @@ This is a monorepo using [pnpm](https://pnpm.io/) workspaces and [Turborepo](htt
 pnpm install
 ```
 
-2. Configure environment variables by copying `.env.example` to `.env` in the following packages:
-   - `services/db`
-   - `apps/api-service`
-   - `services/action-builder` (optional, for recording)
-   - `services/knowledge-builder` (optional, for knowledge extraction)
-
-3. Run database migrations:
+2. Run the checks that match the package you changed:
 
 ```bash
-cd services/db && pnpm migrate
-```
-
-### Start the Development Server
-
-```bash
-pnpm dev
+pnpm --filter @actionbookdev/sdk test
+pnpm --filter @actionbookdev/mcp build
+pnpm --filter @actionbookdev/tools-ai-sdk test
+pnpm --filter @actionbookdev/json-ui build
+cargo test --manifest-path packages/actionbook-rs/Cargo.toml
 ```
 
 ## Contributing
 
+- **[Read the repository guide](https://github.com/actionbook/actionbook/blob/main/CONTRIBUTING.md)** - See branching, commit message, and validation conventions.
 - **[Request a Website](https://actionbook.dev/request-website)** - Suggest websites you want Actionbook to index.
 - **[Join the Community](https://actionbook.dev/discord)** - Join our Discord to get help, share your agents, and discuss ideas.
 - **[Join the Waitlist](https://actionbook.dev)** - We are currently in private beta. Join if you are interested in contributing or using Actionbook.

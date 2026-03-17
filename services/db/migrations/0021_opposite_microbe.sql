@@ -1,1 +1,0 @@
-CREATE INDEX "documents_url_idx" ON "documents" USING btree ("url");

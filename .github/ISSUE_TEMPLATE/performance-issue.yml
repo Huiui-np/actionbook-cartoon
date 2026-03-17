@@ -17,13 +17,13 @@ body:
       label: Affected Component (Optional)
       description: Which component has the performance issue?
       options:
+        - "CLI (@actionbookdev/cli)"
+        - "Rust CLI Core (packages/actionbook-rs)"
         - "SDK (@actionbookdev/sdk)"
         - "MCP Server (@actionbookdev/mcp)"
-        - "Action Builder"
-        - "Knowledge Builder"
-        - "API Service"
-        - "Database (services/db)"
-        - "Website (apps/website)"
+        - "Tools AI SDK (@actionbookdev/tools-ai-sdk)"
+        - "JSON UI (@actionbookdev/json-ui)"
+        - "Dify Plugin (@actionbookdev/dify-plugin)"
         - "Platform-wide"
         - Other
     validations:

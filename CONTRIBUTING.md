@@ -1,21 +1,8 @@
 # Contributing to Actionbook
 
-Thank you for your interest in contributing to Actionbook! This document provides guidelines and instructions for contributing to this project.
-
-## Table of Contents
-
-- [Ways to Contribute](#ways-to-contribute)
-- [Development Setup](#development-setup)
-- [Project Structure](#project-structure)
-- [Commit Message Convention](#commit-message-convention)
-- [Coding Standards](#coding-standards)
-- [Pull Request Process](#pull-request-process)
-- [Testing Guidelines](#testing-guidelines)
-- [Community Guidelines](#community-guidelines)
+Thank you for your interest in contributing to Actionbook. This repository contains the public CLI, SDK, MCP server, JSON UI, docs, and example projects. The internal build pipeline now lives outside this repo.
 
 ## Ways to Contribute
-
-There are many ways to contribute to Actionbook:
 
 - **Report Bugs** - Use our [bug report template](https://github.com/actionbook/actionbook/issues/new?template=bug-report.yml)
 - **Propose Features** - Use our [feature request template](https://github.com/actionbook/actionbook/issues/new?template=feature-request.yml)
@@ -30,15 +17,14 @@ There are many ways to contribute to Actionbook:
 
 Before you begin, ensure you have the following installed:
 
-- **Node.js** 20+ (LTS recommended)
+- **Node.js** 20+
 - **pnpm** 10+
-- **PostgreSQL** with **pgvector** extension (or access to a vector-enabled database like Neon/Supabase)
-- **Rust** (latest stable version, for some native dependencies)
+- **Rust** stable (required for `packages/actionbook-rs`)
 - **Git**
 
 ### Fork and Clone
 
-1. Fork the repository on GitHub
+1. Fork the repository on GitHub.
 2. Clone your fork locally:
 
 ```bash
@@ -58,354 +44,109 @@ git remote add upstream https://github.com/actionbook/actionbook.git
 pnpm install
 ```
 
-### Environment Setup
+### Common Local Checks
 
-Each package has its own `.env.example` file. Copy and configure them:
-
-```bash
-# Database service
-cp services/db/.env.example services/db/.env
-
-# Action builder service
-cp services/action-builder/.env.example services/action-builder/.env
-
-# API service
-cp apps/api-service/.env.example apps/api-service/.env
-
-# Edit each .env file with your credentials
-```
-
-**Key environment variables:**
-
-| Service                      | Required Variables                                       |
-| ---------------------------- | -------------------------------------------------------- |
-| `services/db`                | `DATABASE_URL`                                           |
-| `services/action-builder`    | `DATABASE_URL`, `OPENROUTER_API_KEY`, Stagehand configs  |
-| `services/knowledge-builder` | `DATABASE_URL`, `OPENAI_API_KEY`                         |
-| `apps/api-service`           | `DATABASE_URL`, `OPENAI_API_KEY`                         |
-
-### Database Setup
-
-Actionbook requires PostgreSQL with the **pgvector** extension for vector embeddings.
-
-1. Start local PostgreSQL with pgvector (or use remote database):
+Run the checks that match the package you changed instead of trying to run every tool in the monorepo:
 
 ```bash
-docker-compose up -d postgres
-```
-
-The Docker setup includes pgvector extension. If using a remote database, ensure pgvector is enabled.
-
-2. Run migrations:
-
-```bash
-cd services/db
-pnpm migrate
-```
-
-3. (Optional) Open Drizzle Studio to inspect database:
-
-```bash
-pnpm studio
-```
-
-### Start Development
-
-```bash
-# Start all services in development mode
-pnpm dev
-
-# Or start specific services
-pnpm dev --filter=@actionbookdev/api-service --filter=actionbook-home
-
-# Main development services include:
-# - action-builder: Action recording and validation
-# - knowledge-builder: Scenario knowledge extraction
-# - playbook-builder: Playbook generation and management
+pnpm --filter @actionbookdev/sdk test
+pnpm --filter @actionbookdev/mcp build
+pnpm --filter @actionbookdev/tools-ai-sdk test
+pnpm --filter @actionbookdev/json-ui build
+cargo test --manifest-path packages/actionbook-rs/Cargo.toml
 ```
 
 ## Project Structure
 
-Actionbook is a **monorepo** managed with **pnpm workspaces** and **Turborepo**.
+Actionbook is a monorepo managed with [pnpm](https://pnpm.io/) workspaces and [Turborepo](https://turborepo.com/).
 
-```
+```text
 actionbook/
-├── packages/          # Publishable npm packages
-│   ├── js-sdk/       # @actionbookdev/sdk - Core SDK with types
-│   ├── mcp/          # @actionbookdev/mcp - MCP Server
-│   └── tools-ai-sdk/ # AI SDK tools integration
-├── apps/             # Applications
-│   ├── website/      # Next.js 16 landing page
-│   ├── api-service/  # REST API (Vercel deployment)
-│   └── docs/         # Product documentation
-├── services/         # Internal services (not published)
-│   ├── db/           # @actionbookdev/db - Database schema + types
-│   ├── action-builder/       # Action recording, validation, Eval
-│   ├── knowledge-builder/    # Scenario extraction, Eval
-│   ├── playbook-builder/     # Playbook generation and management
-│   └── common/               # Shared utilities
-├── playground/       # Demo and example projects
-└── old_projects/     # Legacy/archived projects
+├── packages/
+│   ├── actionbook-rs/   # Rust CLI implementation
+│   ├── cli/             # npm wrapper for the CLI binaries
+│   ├── js-sdk/          # @actionbookdev/sdk
+│   ├── mcp/             # @actionbookdev/mcp
+│   ├── tools-ai-sdk/    # AI SDK integration
+│   ├── json-ui/         # JSON UI renderer
+│   └── dify-plugin/     # Dify integration
+├── docs/                # Product documentation source
+├── playground/          # Example projects and experiments
+└── scripts/             # Repository maintenance scripts
 ```
-
-### Package Categories
-
-- **`packages/`** - Published to npm registry (`@actionbookdev/*`)
-- **`apps/`** - Deployed applications (Vercel, etc.)
-- **`services/`** - Internal workspace packages (not published)
-- **`playground/`** - Examples and demos
 
 ## Commit Message Convention
 
-⚠️ **IMPORTANT**: This is a monorepo. All commit messages **MUST** follow this format:
+All commit messages must follow this format:
 
-```
+```text
 [scope]type: description
-
-[optional body]
-
-[optional footer]
 ```
 
 ### Format Rules
 
-- **`[scope]`**: The workspace/package path in square brackets, or `[root]` for root-level files
-  - Workspace examples: `[packages/js-sdk]`, `[apps/api-service]`, `[services/db]`
-  - Root-level: `[root]` (for files like README.md, CONTRIBUTING.md, package.json, etc.)
+- **`[scope]`**: The workspace path in square brackets, or `[root]` for root-level files
+  - Examples: `[packages/js-sdk]`, `[packages/mcp]`, `[packages/actionbook-rs]`, `[root]`
 - **`type`**: Conventional commit type
   - `feat` - New feature
   - `fix` - Bug fix
   - `docs` - Documentation changes
   - `refactor` - Code refactoring
-  - `test` - Adding/updating tests
+  - `test` - Adding or updating tests
   - `chore` - Maintenance tasks
   - `perf` - Performance improvements
-  - `style` - Code style changes (formatting, etc.)
-- **`description`**: Brief description of the change (lowercase, no period at end)
+  - `style` - Formatting-only changes
+- **`description`**: Brief description of the change in lowercase, with no trailing period
 
 ### Examples
 
 ```bash
-# Package changes
-[packages/js-sdk]feat: add new search parameter to search_actions tool
-[packages/mcp]fix: correct ESM export path in package.json
-[services/db]feat: add indexes to improve query performance
-
-# App changes
-[apps/website]fix: correct API endpoint URL in contact form
-[apps/api-service]refactor: migrate to new database client
-
-# Root-level changes
-[root]docs: add CONTRIBUTING.md with development guidelines
-[root]chore: update pnpm-workspace.yaml
-[root]chore: upgrade to pnpm 10
-
-# Multi-package changes - use the primary affected package
-[packages/js-sdk]refactor: align types with database schema
+[packages/js-sdk]feat: add site filter to search actions
+[packages/mcp]fix: align cli output with sdk schema
+[packages/actionbook-rs]refactor: simplify browser session lifecycle
+[root]docs: update public repo contribution guide
 ```
-
-### Why This Matters
-
-- Makes it easy to see which part of the monorepo changed
-- Enables automated changelog generation per package
-- Helps with selective builds and deployments
-- Improves code review efficiency
 
 ## Coding Standards
 
 ### TypeScript
 
-- Use **TypeScript strict mode** (`"strict": true`)
-- Prefer explicit types over `any`
-- Use type inference where appropriate
-- Document complex types with comments
-
-### Data Validation
-
-- Use **Zod** for runtime validation and schema definition
-- Define schemas close to where they're used
-- Export schemas for reuse
-
-```typescript
-import { z } from 'zod'
-
-export const ActionIdSchema = z.string().regex(/^site\/[^/]+\/page\/[^/]+\/element\/[^/]+$/)
-```
+- Use TypeScript strict mode where it already exists.
+- Prefer explicit types over `any`.
+- Use [Zod](https://zod.dev/) for runtime validation and schema definition where applicable.
 
 ### Naming Conventions
 
-- **Files**: `kebab-case.ts` (e.g., `action-builder.ts`)
-- **Components**: `PascalCase.tsx` (e.g., `ActionCard.tsx`)
-- **Functions**: `camelCase` (e.g., `searchActions`)
-- **Constants**: `UPPER_SNAKE_CASE` (e.g., `MAX_RETRIES`)
-- **Types/Interfaces**: `PascalCase` (e.g., `ActionMeta`, `SearchParams`)
+- **Files**: `kebab-case.ts`
+- **Components**: `PascalCase.tsx`
+- **Functions**: `camelCase`
+- **Constants**: `UPPER_SNAKE_CASE`
+- **Types/Interfaces**: `PascalCase`
 
 ### File Organization
 
-- **Development documentation**: Place in `.docs/` directory
-- **Product documentation**: Place in `apps/docs/`
-- **Test files**: Co-locate with source files as `*.test.ts` or `*.spec.ts`
-
-### Code Style
-
-- Use **ESLint** and **Prettier** (configs provided in repository)
-- Run linter before committing: `pnpm lint`
-- Format code: `pnpm format` (if available)
+- **Development documentation**: Place in `.docs/`
+- **Product documentation**: Place in `docs/`
+- **Tests**: Keep them close to the affected package and use the package's existing conventions
 
 ## Pull Request Process
 
-### Before Submitting
+Before opening a pull request:
 
-1. Create a new branch from `main`:
-   ```bash
-   git checkout -b feat/your-feature-name
-   ```
-
-2. Follow the [commit message convention](#commit-message-convention)
-
-3. Ensure all tests pass:
-   ```bash
-   pnpm test
-   ```
-
-4. Check linting:
-   ```bash
-   pnpm lint
-   ```
-
-5. Build successfully:
-   ```bash
-   pnpm build
-   ```
-
-### Submitting a Pull Request
-
-1. Push your branch to your fork:
-   ```bash
-   git push origin feat/your-feature-name
-   ```
-
-2. Open a Pull Request on GitHub
-
-3. Fill out the PR template with:
-   - Clear description of changes
-   - Related issue numbers (e.g., "Closes #123")
-   - Screenshots (for UI changes)
-   - Testing instructions
-
-4. Wait for code review and address feedback
-
-### PR Requirements
-
-- All tests pass
-- Code coverage ≥ 50% for new code
-- No linting errors
-- Clear commit messages following convention
-- Updated documentation (if applicable)
-- Approved by at least one maintainer
+1. Create a branch from `main`.
+2. Keep the change scoped to one problem.
+3. Run the relevant checks for the packages you touched.
+4. Summarize validation steps and any user-facing risk in the PR description.
 
 ## Testing Guidelines
 
-### Running Tests
-
-```bash
-# Run all tests
-pnpm test
-
-# Run tests for specific package
-pnpm test --filter=@actionbookdev/sdk
-
-# Run tests with coverage
-pnpm test:coverage
-```
-
-### Writing Tests
-
-- Use the testing framework configured in each package (usually Vitest or Jest)
-- Aim for **50% minimum code coverage** for new code
-- Test critical paths and edge cases
-- Mock external dependencies (database, APIs, browser automation)
-
-### Test Structure
-
-```typescript
-import { describe, it, expect } from 'vitest'
-
-describe('searchActions', () => {
-  it('should return actions matching keyword', async () => {
-    const result = await searchActions({ keyword: 'login' })
-    expect(result).toHaveLength(3)
-  })
-
-  it('should handle empty results', async () => {
-    const result = await searchActions({ keyword: 'nonexistent' })
-    expect(result).toHaveLength(0)
-  })
-})
-```
-
-### Testing Tools
-
-- **Vitest** - Fast unit testing
-- **Playwright** - Browser automation testing
-- **Zod** - Schema validation testing
+- Prefer targeted package-level checks over broad monorepo runs.
+- For JavaScript and TypeScript packages, use `pnpm --filter <package> <script>`.
+- For Rust CLI changes, use `cargo test --manifest-path packages/actionbook-rs/Cargo.toml`.
+- If a change only affects docs or metadata, say so explicitly in the PR.
 
 ## Community Guidelines
 
-### Code of Conduct
-
-Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md). We are committed to providing a welcoming and inclusive environment for all contributors.
-
-### Communication
-
-- **GitHub Issues** - Bug reports, feature requests, questions
-- **X (Twitter)** - Follow [@actionbookdev](https://x.com/actionbookdev) for updates
-- **Discord** - Join our community at [actionbook.dev/discord](https://actionbook.dev/discord)
-
-### Getting Help
-
-- Check existing [Issues](https://github.com/actionbook/actionbook/issues)
-- Read the [documentation](https://actionbook.dev/docs)
-- Ask questions using the [question template](https://github.com/actionbook/actionbook/issues/new?template=question.yml)
-- Review [CLAUDE.md](CLAUDE.md) for project overview
-
-### Recognition
-
-We value all contributions! Contributors will be:
-- Listed in our README.md contributors section
-- Mentioned in release notes for significant contributions
-- Given credit in documentation they author
-
----
-
-## Quick Reference
-
-```bash
-# Install dependencies
-pnpm install
-
-# Development
-pnpm dev
-
-# Testing
-pnpm test
-pnpm test --filter=@actionbookdev/sdk
-
-# Building
-pnpm build
-pnpm build --filter=@actionbookdev/mcp...
-
-# Linting
-pnpm lint
-
-# Database
-cd services/db
-pnpm migrate
-pnpm studio
-```
-
----
-
-Thank you for contributing to Actionbook!
-
-If you have questions or need help, please don't hesitate to reach out through GitHub Issues.
+- Follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+- Keep issues and pull requests concise and reproducible.
+- Do not include private infrastructure details in public issues or PRs.

@@ -128,7 +128,7 @@ npm install -g @actionbookdev/mcp
 ```
 
 ### 4. Monorepo Internal Integration Testing
-No publishing needed. Reference directly in other workspaces (e.g., `services/action-builder`):
+No publishing needed. Reference directly in other workspaces (e.g., `packages/tools-ai-sdk`):
 1. Add dependency to `package.json`: `"@actionbookdev/mcp": "workspace:*"`
 2. Write test scripts:
 ```typescript

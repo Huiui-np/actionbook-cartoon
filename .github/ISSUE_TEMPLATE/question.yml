@@ -8,7 +8,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Have a question? Check our [Documentation](https://github.com/actionbook/actionbook/wiki) first!
+        Have a question? Check our [Documentation](https://actionbook.dev/docs) first.
         For general discussions, consider using [GitHub Discussions](https://github.com/actionbook/actionbook/discussions) instead.
 
   - type: textarea
@@ -36,13 +36,13 @@ body:
     attributes:
       label: Related Component (Optional)
       options:
+        - "CLI (@actionbookdev/cli)"
+        - "Rust CLI Core (packages/actionbook-rs)"
         - "SDK (@actionbookdev/sdk)"
         - "MCP Server (@actionbookdev/mcp)"
-        - "Action Builder"
-        - "Knowledge Builder"
-        - "API Service"
-        - "Database (services/db)"
-        - "Website (apps/website)"
+        - "Tools AI SDK (@actionbookdev/tools-ai-sdk)"
+        - "JSON UI (@actionbookdev/json-ui)"
+        - "Dify Plugin (@actionbookdev/dify-plugin)"
         - "General / Platform"
         - "Documentation"
         - "Other"

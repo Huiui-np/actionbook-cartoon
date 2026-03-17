@@ -1,1 +1,0 @@
-ALTER TABLE "elements" ADD COLUMN "selectors" jsonb;

@@ -29,7 +29,6 @@ so your agent operates any website instantly without guessing.
 - [Examples](#examples)
 - [Available Tools](#available-tools)
 - [Documentation](#documentation)
-- [Development](#development)
 - [Contributing](#contributing)
 
 ## Why Actionbook?
@@ -150,44 +149,9 @@ Join the community:
 - [Chat with us on Discord](https://actionbook.dev/discord) - Get help, share your agents, and discuss ideas
 - [Follow @ActionbookHQ on X](https://x.com/ActionbookHQ) - Product updates and announcements
 
-## Development
-
-This is a monorepo using [pnpm](https://pnpm.io/) workspaces and [Turborepo](https://turborepo.com/).
-
-### Prerequisites
-
-- Node.js >= 18 (20+ recommended)
-- pnpm >= 10
-- PostgreSQL database (local or hosted like [Neon](https://neon.tech) / [Supabase](https://supabase.com))
-
-### First-time Setup
-
-1. Install dependencies:
-
-```bash
-pnpm install
-```
-
-2. Configure environment variables by copying `.env.example` to `.env` in the following packages:
-   - `services/db`
-   - `apps/api-service`
-   - `services/action-builder` (optional, for recording)
-   - `services/knowledge-builder` (optional, for knowledge extraction)
-
-3. Run database migrations:
-
-```bash
-cd services/db && pnpm migrate
-```
-
-### Start the Development Server
-
-```bash
-pnpm dev
-```
-
 ## Contributing
 
+- **[Read the Contributing Guide](CONTRIBUTING.md)** - See repository setup, package layout, and validation workflows for the public repo.
 - **[Request a Website](https://actionbook.dev/request-website)** - Suggest websites you want Actionbook to index.
 - **[Join the Waitlist](https://actionbook.dev)** - We are currently in private beta. Join if you are interested in contributing or using Actionbook.
 

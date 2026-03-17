@@ -39,13 +39,13 @@ body:
       label: Target Component (Optional)
       description: Which component should this feature be added to?
       options:
+        - "CLI (@actionbookdev/cli)"
+        - "Rust CLI Core (packages/actionbook-rs)"
         - "SDK (@actionbookdev/sdk)"
         - "MCP Server (@actionbookdev/mcp)"
-        - "Action Builder"
-        - "Knowledge Builder"
-        - "API Service"
-        - "Database (services/db)"
-        - "Website (apps/website)"
+        - "Tools AI SDK (@actionbookdev/tools-ai-sdk)"
+        - "JSON UI (@actionbookdev/json-ui)"
+        - "Dify Plugin (@actionbookdev/dify-plugin)"
         - "Documentation"
         - "Platform-wide"
         - "Other"
