@@ -1,0 +1,57 @@
+{
+  "name": "@actionbookdev/actionbook",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Actionbook plugin for OpenClaw - token-efficient browser automation with pre-verified selectors",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "skills",
+    "openclaw.plugin.json"
+  ],
+  "openclaw": {
+    "extensions": ["./dist/index.js"]
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prebuild": "pnpm --filter @actionbookdev/sdk build",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "clean": "rimraf dist",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@actionbookdev/sdk": "workspace:*",
+    "@sinclair/typebox": "^0.34.48",
+    "undici": "^6.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "rimraf": "^5.0.5",
+    "typescript": "^5.6.3",
+    "vitest": "^1.6.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.0"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "Apache-2.0"
+}

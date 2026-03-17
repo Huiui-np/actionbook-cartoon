@@ -122,6 +122,7 @@ jobs:
             "@actionbookdev/mcp:packages/mcp"
             "@actionbookdev/tools-ai-sdk:packages/tools-ai-sdk"
             "@actionbookdev/json-ui:packages/json-ui"
+            "@actionbookdev/actionbook:packages/openclaw-plugin"
           )
 
           for entry in "${PACKAGES[@]}"; do

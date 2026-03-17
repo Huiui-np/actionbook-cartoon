@@ -102,6 +102,8 @@ handbooks/
 .zencoder/
 **/skills/
 !/skills/
+!packages/openclaw-plugin/skills/
+!packages/openclaw-plugin/skills/**
 skills-lock.json
 
 # Browser Profile (Sensitive Session Data)

@@ -1,0 +1,31 @@
+{
+  "id": "actionbook",
+  "name": "Actionbook",
+  "description": "Token-efficient browser automation with pre-verified selectors from Actionbook",
+  "skills": ["./skills"],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "apiKey": {
+        "type": "string",
+        "description": "Actionbook API key (optional, reduces rate limiting)"
+      },
+      "apiUrl": {
+        "type": "string",
+        "description": "Actionbook API base URL (must be a valid URL)"
+      }
+    },
+    "additionalProperties": false
+  },
+  "uiHints": {
+    "apiKey": {
+      "label": "API Key",
+      "sensitive": true,
+      "help": "Optional. Get one at https://actionbook.dev"
+    },
+    "apiUrl": {
+      "label": "API URL",
+      "help": "Default: https://api.actionbook.dev"
+    }
+  }
+}
