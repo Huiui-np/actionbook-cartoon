@@ -70,7 +70,11 @@ function isPrivateHost(hostname: string): boolean {
   ) {
     return true;
   }
-  return PRIVATE_IP_RANGES.some((re) => re.test(hostname));
+  // URL.hostname wraps IPv6 in brackets (e.g. "[fd00::1]") — strip them
+  const bare = hostname.startsWith("[") && hostname.endsWith("]")
+    ? hostname.slice(1, -1)
+    : hostname;
+  return PRIVATE_IP_RANGES.some((re) => re.test(bare));
 }
 
 function resolveApiUrl(value: unknown): string {

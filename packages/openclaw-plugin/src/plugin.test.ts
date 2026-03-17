@@ -203,6 +203,37 @@ describe("resolveApiUrl SSRF protection", () => {
     );
   });
 
+  it("rejects bracketed private IPv6 (e.g. [fd00::1])", () => {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const registerTool = vi.fn();
+    plugin.register(
+      createTestPluginApi({
+        pluginConfig: { apiUrl: "http://[fd00::1]:8080/api" },
+        logger,
+        registerTool,
+      })
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining("private/local addresses")
+    );
+    expect(registerTool).not.toHaveBeenCalled();
+  });
+
+  it("rejects bracketed fe80 link-local IPv6", () => {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const registerTool = vi.fn();
+    plugin.register(
+      createTestPluginApi({
+        pluginConfig: { apiUrl: "http://[fe80::1]/api" },
+        logger,
+        registerTool,
+      })
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining("private/local addresses")
+    );
+  });
+
   it("rejects non-http protocols", () => {
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const registerTool = vi.fn();
