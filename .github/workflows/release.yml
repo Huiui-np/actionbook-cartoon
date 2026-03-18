@@ -134,7 +134,7 @@ jobs:
 
             if [ "$LOCAL_VER" != "$NPM_VER" ]; then
               echo "Publishing ${PKG_NAME}@${LOCAL_VER} (npm has ${NPM_VER})..."
-              (cd "${PKG_DIR}" && npm publish --access public --provenance)
+              (cd "${PKG_DIR}" && pnpm publish --access public --provenance --no-git-checks)
             else
               echo "Skipping ${PKG_NAME}@${LOCAL_VER} (already published)"
             fi
