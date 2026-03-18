@@ -4,6 +4,10 @@
   "private": false,
   "type": "module",
   "description": "Actionbook plugin for OpenClaw - token-efficient browser automation with pre-verified selectors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/actionbook/actionbook.git"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
