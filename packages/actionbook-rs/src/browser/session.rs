@@ -444,9 +444,13 @@ impl SessionManager {
         {
             for shared_state in self.find_shareable_session_states(profile_name) {
                 if self.is_session_alive(&shared_state).await {
+                    // Inherit the parent's active_page_id so the forked session
+                    // targets the same tab, not an arbitrary first page from
+                    // get_active_page_info's fallback.  Once the user runs
+                    // `browser open -S <name>`, a dedicated tab is created and
+                    // persisted, replacing this inherited value.
                     let forked_state = SessionState {
                         profile_name: profile_name.to_string(),
-                        active_page_id: None,
                         current_frame_id: None,
                         ..shared_state
                     };
@@ -4937,7 +4941,7 @@ mod tests {
         assert_eq!(pages[0].url, "https://example.com");
         assert!(pages[0].web_socket_debugger_url.is_none());
 
-        server.await.unwrap();
+        server.abort();
     }
 
     #[tokio::test]
@@ -5005,7 +5009,7 @@ mod tests {
         assert_eq!(forked_state.ws_headers, Some(headers));
         assert!(forked_state.active_page_id.is_none());
 
-        server.await.unwrap();
+        server.abort();
     }
 
     #[tokio::test]
@@ -5069,7 +5073,7 @@ mod tests {
 
         assert!(named_sm.is_remote_session(Some("mixed")).await);
 
-        server.await.unwrap();
+        server.abort();
     }
 
     #[tokio::test]
@@ -5244,7 +5248,7 @@ mod tests {
         .unwrap();
 
         let new_page = sm
-            .new_page(Some("local-stale"), Some("https://example.com"))
+            .new_page(Some("local-stale"), Some("https://example.com"), false)
             .await
             .unwrap();
 
@@ -5266,18 +5270,32 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
 
+        // Accept multiple connections: the first is the liveness probe from
+        // ensure_session_state_for_cdp → is_session_alive, the second is the
+        // actual command from send_browser_command_over_ws.
         let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
 
-            while let Some(msg) = ws.next().await {
-                let msg = msg.unwrap();
-                if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
-                    let req: serde_json::Value = serde_json::from_str(text.as_str()).unwrap();
-                    if req.get("method").and_then(|m| m.as_str()) == Some("Target.createTarget") {
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                        break;
+                let mut got_create_target = false;
+                while let Some(msg) = ws.next().await {
+                    let msg = msg.unwrap();
+                    if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
+                        let req: serde_json::Value =
+                            serde_json::from_str(text.as_str()).unwrap();
+                        if req.get("method").and_then(|m| m.as_str())
+                            == Some("Target.createTarget")
+                        {
+                            // Stall so the caller times out
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            got_create_target = true;
+                            break;
+                        }
                     }
+                }
+                if got_create_target {
+                    break;
                 }
             }
         });
@@ -5292,19 +5310,24 @@ mod tests {
             .new_page_with_timeout(
                 Some("remote-timeout"),
                 Some("https://example.com"),
+                false,
                 Duration::from_millis(50),
             )
             .await
             .unwrap_err();
 
-        assert!(matches!(
-            err,
-            ActionbookError::Timeout(msg)
-                if msg.contains("Page load timed out")
-                    && msg.contains("https://example.com")
-        ));
+        assert!(
+            matches!(
+                &err,
+                ActionbookError::Timeout(msg)
+                    if msg.contains("Page load timed out")
+                        && msg.contains("https://example.com")
+            ),
+            "Expected Timeout error, got: {:?}",
+            err
+        );
 
-        server.await.unwrap();
+        server.abort();
     }
 
     #[tokio::test]
@@ -5315,36 +5338,46 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
 
+        // Accept multiple connections: the first may be a liveness probe from
+        // ensure_session_state_for_cdp → is_session_alive.
         let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
 
-            while let Some(msg) = ws.next().await {
-                let Ok(msg) = msg else {
-                    break;
-                };
-                if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
-                    let req: serde_json::Value = serde_json::from_str(text.as_str()).unwrap();
-                    match req.get("method").and_then(|m| m.as_str()) {
-                        Some("Target.createTarget") => {
-                            let response = serde_json::json!({
-                                "id": req.get("id").cloned().unwrap_or_else(|| serde_json::json!(1)),
-                                "result": {
-                                    "targetId": "page-2"
-                                }
-                            });
-                            ws.send(tokio_tungstenite::tungstenite::Message::Text(
-                                response.to_string().into(),
-                            ))
-                            .await
-                            .unwrap();
+                let mut done = false;
+                while let Some(msg) = ws.next().await {
+                    let Ok(msg) = msg else {
+                        break;
+                    };
+                    if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
+                        let req: serde_json::Value =
+                            serde_json::from_str(text.as_str()).unwrap();
+                        match req.get("method").and_then(|m| m.as_str()) {
+                            Some("Target.createTarget") => {
+                                let response = serde_json::json!({
+                                    "id": req.get("id").cloned().unwrap_or_else(|| serde_json::json!(1)),
+                                    "result": {
+                                        "targetId": "page-2"
+                                    }
+                                });
+                                ws.send(tokio_tungstenite::tungstenite::Message::Text(
+                                    response.to_string().into(),
+                                ))
+                                .await
+                                .unwrap();
+                            }
+                            Some("Target.getTargets") => {
+                                tokio::time::sleep(Duration::from_millis(200)).await;
+                                done = true;
+                                break;
+                            }
+                            _ => {}
                         }
-                        Some("Target.getTargets") => {
-                            tokio::time::sleep(Duration::from_millis(200)).await;
-                            break;
-                        }
-                        _ => {}
                     }
+                }
+                if done {
+                    break;
                 }
             }
         });
@@ -5359,19 +5392,24 @@ mod tests {
             .new_page_with_timeout(
                 Some("remote-timeout"),
                 Some("https://example.com"),
+                false,
                 Duration::from_millis(50),
             )
             .await
             .unwrap_err();
 
-        assert!(matches!(
-            err,
-            ActionbookError::Timeout(msg)
-                if msg.contains("Page load timed out")
-                    && msg.contains("https://example.com")
-        ));
+        assert!(
+            matches!(
+                &err,
+                ActionbookError::Timeout(msg)
+                    if msg.contains("Page load timed out")
+                        && msg.contains("https://example.com")
+            ),
+            "Expected Timeout error, got: {:?}",
+            err
+        );
 
-        server.await.unwrap();
+        server.abort();
     }
 
     #[tokio::test]

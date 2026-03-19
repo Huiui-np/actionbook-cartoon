@@ -592,100 +592,34 @@ fn normalize_navigation_url(raw: &str) -> Result<String> {
     Ok(format!("https://{}", trimmed))
 }
 
-fn is_reusable_initial_blank_page_url(url: &str) -> bool {
-    let normalized = url.trim().to_ascii_lowercase();
-    let normalized = normalized.trim_end_matches('/');
-
-    matches!(
-        normalized,
-        "about:blank"
-            | "about:newtab"
-            | "chrome://newtab"
-            | "chrome://new-tab-page"
-            | "edge://newtab"
-    )
-}
-
-async fn try_open_on_initial_blank_page(
-    session_manager: &SessionManager,
-    profile_name: Option<&str>,
-    normalized_url: &str,
-) -> Result<Option<String>> {
-    let pages = match session_manager.get_pages(profile_name).await {
-        Ok(pages) => pages,
-        Err(e) => {
-            tracing::debug!(
-                "Unable to inspect current tabs for reuse, falling back to new tab: {}",
-                e
-            );
-            return Ok(None);
-        }
-    };
-
-    if pages.len() != 1 || !is_reusable_initial_blank_page_url(&pages[0].url) {
-        return Ok(None);
-    }
-
-    #[cfg(feature = "stealth")]
-    if session_manager.is_stealth_enabled() {
-        if let Err(e) = session_manager.apply_stealth_to_active_page(profile_name).await {
-            tracing::warn!("Failed to apply stealth profile before navigating blank tab: {}", e);
-        } else {
-            tracing::info!("Applied stealth profile to reused blank tab");
-        }
-    }
-
-    match timeout(
-        Duration::from_secs(30),
-        session_manager.goto(profile_name, normalized_url),
-    )
-    .await
-    {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            return Err(ActionbookError::Other(format!(
-                "Failed to open page on initial tab: {}",
-                e
-            )));
-        }
-        Err(_) => {
-            return Err(ActionbookError::Timeout(format!(
-                "Page load timed out after 30 seconds: {}",
-                normalized_url
-            )));
-        }
-    }
-
-    let _ = wait_for_document_complete(session_manager, profile_name, 30_000).await;
-
-    let title = match timeout(
-        Duration::from_secs(5),
-        session_manager.eval_on_page(profile_name, "document.title"),
-    )
-    .await
-    {
-        Ok(Ok(value)) => value.as_str().unwrap_or("").to_string(),
-        _ => String::new(),
-    };
-
-    Ok(Some(title))
-}
-
 /// Persist the active page ID to the session file so the daemon can route
 /// commands to the correct tab. Best-effort — failures are only logged.
-async fn persist_active_page(session_manager: &SessionManager, profile_name: Option<&str>) {
-    match session_manager.get_active_page_info(profile_name).await {
-        Ok(page_info) => {
-            if let Err(e) = session_manager
-                .switch_to_page(profile_name, &page_info.id)
-                .await
-            {
-                tracing::debug!("Failed to persist active page: {}", e);
+///
+/// When `known_page_id` is provided, it is used directly instead of
+/// re-discovering the active page — this avoids saving the wrong tab when
+/// `active_page_id` is still unset (e.g. on a freshly forked named session).
+async fn persist_active_page(
+    session_manager: &SessionManager,
+    profile_name: Option<&str>,
+    known_page_id: Option<&str>,
+) {
+    let page_id = if let Some(id) = known_page_id {
+        id.to_string()
+    } else {
+        match session_manager.get_active_page_info(profile_name).await {
+            Ok(info) => info.id,
+            Err(e) => {
+                tracing::debug!("Failed to get active page info for persistence: {}", e);
+                return;
             }
         }
-        Err(e) => {
-            tracing::debug!("Failed to get active page info for persistence: {}", e);
-        }
+    };
+
+    if let Err(e) = session_manager
+        .switch_to_page(profile_name, &page_id)
+        .await
+    {
+        tracing::debug!("Failed to persist active page: {}", e);
     }
 }
 
@@ -1215,12 +1149,12 @@ pub(crate) async fn open(cli: &Cli, config: &Config, url: &str, new_window: bool
 
     let title = if use_driver_new_page {
         let mut driver = create_browser_driver(cli, config).await?;
-        driver.new_page(Some(&normalized_url), false).await?;
+        let page_info = driver.new_page(Some(&normalized_url), false).await?;
 
         let _ = wait_for_document_complete(&session_manager, profile_arg, 30_000).await;
 
-        // Persist active page ID so the daemon can route to the correct tab
-        persist_active_page(&session_manager, profile_arg).await;
+        // Persist the exact page we just created so the daemon routes to the correct tab
+        persist_active_page(&session_manager, profile_arg, Some(&page_info.id)).await;
 
         match timeout(
             Duration::from_secs(5),
@@ -1269,8 +1203,9 @@ pub(crate) async fn open(cli: &Cli, config: &Config, url: &str, new_window: bool
         // Wait for page to fully load (additional 30 seconds)
         let _ = timeout(Duration::from_secs(30), page.wait_for_navigation()).await;
 
-        // Persist active page ID so the daemon can route to the correct tab
-        persist_active_page(&session_manager, profile_arg).await;
+        // Persist active page ID so the daemon can route to the correct tab.
+        // chromiumoxide makes the new page active, so get_active_page_info is reliable here.
+        persist_active_page(&session_manager, profile_arg, None).await;
 
         // Get page title with timeout
         match timeout(Duration::from_secs(5), page.get_title()).await {
@@ -6086,8 +6021,7 @@ pub(crate) async fn switch_frame(cli: &Cli, config: &Config, target: &str) -> Re
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_profile_name, is_reusable_initial_blank_page_url, normalize_navigation_url,
-        should_use_driver_new_page,
+        effective_profile_name, normalize_navigation_url, should_use_driver_new_page,
     };
     use crate::browser::{BrowserDriver, SessionManager};
     use crate::cli::{BrowserCommands, BrowserMode, Cli, Commands};
@@ -6201,23 +6135,6 @@ mod tests {
     fn normalize_empty_input_returns_error() {
         assert!(normalize_navigation_url("").is_err());
         assert!(normalize_navigation_url("   ").is_err());
-    }
-
-    #[test]
-    fn reusable_initial_blank_page_urls() {
-        assert!(is_reusable_initial_blank_page_url("about:blank"));
-        assert!(is_reusable_initial_blank_page_url(" ABOUT:BLANK "));
-        assert!(is_reusable_initial_blank_page_url("about:newtab"));
-        assert!(is_reusable_initial_blank_page_url("chrome://newtab/"));
-        assert!(is_reusable_initial_blank_page_url("chrome://new-tab-page/"));
-        assert!(is_reusable_initial_blank_page_url("edge://newtab/"));
-    }
-
-    #[test]
-    fn non_reusable_page_urls() {
-        assert!(!is_reusable_initial_blank_page_url(""));
-        assert!(!is_reusable_initial_blank_page_url("https://example.com"));
-        assert!(!is_reusable_initial_blank_page_url("chrome://settings"));
     }
 
     #[test]
