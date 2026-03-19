@@ -817,6 +817,20 @@ default_profile = "{}"
             .stdout(predicate::str::contains("\"profile\":\"cli-profile\""));
     }
 
+    #[test]
+    fn empty_actionbook_session_env_is_treated_as_unset() {
+        let (_tmp, home, config_home, data_home) = setup_config("team");
+        actionbook()
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_DATA_HOME", &data_home)
+            .env("ACTIONBOOK_SESSION", "")
+            .args(["--json", "config", "path"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("\"path\""));
+    }
+
     // ── Cross-cutting flags ─────────────────────────────────────────
 
     #[test]
@@ -945,7 +959,12 @@ mod config_command {
             .env("HOME", &home)
             .env("XDG_CONFIG_HOME", &config_home)
             .env("XDG_DATA_HOME", &data_home)
-            .args(["config", "set", "api.base_url", "https://custom.example.com"])
+            .args([
+                "config",
+                "set",
+                "api.base_url",
+                "https://custom.example.com",
+            ])
             .assert()
             .success();
 
@@ -1202,8 +1221,10 @@ mod extension_command {
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            stdout.contains("running") || stdout.contains("Running")
-                || stdout.contains("not running") || stdout.contains("Not running"),
+            stdout.contains("running")
+                || stdout.contains("Running")
+                || stdout.contains("not running")
+                || stdout.contains("Not running"),
             "Should report bridge state: {}",
             stdout
         );
@@ -1315,12 +1336,7 @@ mod setup_command {
 
     #[test]
     fn setup_reset() {
-        assert_setup_exits_gracefully(&[
-            "setup",
-            "--reset",
-            "--non-interactive",
-            "--json",
-        ]);
+        assert_setup_exits_gracefully(&["setup", "--reset", "--non-interactive", "--json"]);
     }
 }
 
