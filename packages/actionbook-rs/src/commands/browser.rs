@@ -263,6 +263,13 @@ async fn should_use_driver_new_page(
     }
 
     // Ad-hoc/custom profiles rely entirely on saved external session state.
+    // We skip the reachability probe because the remote WSS may require auth
+    // headers that the probe doesn't carry. If the session is truly dead,
+    // the subsequent new_page() call will fail with a connection error.
+    tracing::debug!(
+        "Ad-hoc profile '{}': trusting saved remote session without reachability probe",
+        profile_name
+    );
     true
 }
 
@@ -1152,7 +1159,30 @@ pub(crate) async fn open(cli: &Cli, config: &Config, url: &str, new_window: bool
 
     let title = if use_driver_new_page {
         let mut driver = create_browser_driver(cli, config).await?;
-        let page_info = driver.new_page(Some(&normalized_url), false).await?;
+        let page_info = match driver.new_page(Some(&normalized_url), false).await {
+            Ok(info) => info,
+            Err(e) => {
+                // For ad-hoc profiles with a dead remote session, log a
+                // reconnect hint but preserve the original error type so
+                // JSON callers keep machine-readable error codes.
+                if config.get_profile(profile_name).is_err() {
+                    let session_flag = cli
+                        .session
+                        .as_deref()
+                        .filter(|s| *s != "default")
+                        .map(|s| format!(" -S {}", s))
+                        .unwrap_or_default();
+                    tracing::warn!(
+                        "Remote session for '{}' appears unreachable. \
+                         Try: actionbook browser connect <endpoint> -P {}{}",
+                        profile_name,
+                        profile_name,
+                        session_flag
+                    );
+                }
+                return Err(e);
+            }
+        };
 
         let _ = wait_for_document_complete(&session_manager, profile_arg, 30_000).await;
 

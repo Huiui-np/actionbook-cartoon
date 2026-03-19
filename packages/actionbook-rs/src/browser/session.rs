@@ -473,6 +473,13 @@ impl SessionManager {
             return Some(state);
         }
 
+        // Named sessions (not "default") can inherit from the parent/default
+        // session.  We must keep the `!= "default"` guard here because the
+        // execution paths (ensure_session_state_for_cdp, get_or_create_session)
+        // also skip forking when the session name is "default".  If we detected
+        // shareable state here but the execution path refused to use it, callers
+        // like should_use_driver_new_page() would route into the remote-driver
+        // path only to fail later.
         if self
             .active_session
             .as_deref()
@@ -5069,6 +5076,59 @@ mod tests {
 
         assert!(named_sm.has_saved_session_state(Some("remote")));
         assert!(named_sm.session_uses_remote_ws(Some("remote")));
+    }
+
+    #[test]
+    fn default_session_does_not_match_shareable_state_from_other_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Save a remote session under profile "remote" with a named session "work"
+        let mut work_sm = test_session_manager(dir.path());
+        work_sm.set_active_session("work");
+        work_sm
+            .save_external_session_full(
+                "remote",
+                9222,
+                "wss://agent.example.com/automation",
+                None,
+                None,
+            )
+            .unwrap();
+
+        // A SessionManager with active_session="default" must NOT detect the
+        // "work" session as shareable, because the execution paths
+        // (ensure_session_state_for_cdp, get_or_create_session) skip forking
+        // when the session name is "default".  Detection must match execution.
+        let mut sm_default = test_session_manager(dir.path());
+        sm_default.set_active_session("default");
+
+        // The exact default session file doesn't exist, and shareable fallback
+        // is skipped for "default" — so no session state is found.
+        assert!(!sm_default.has_saved_session_state(Some("remote")));
+    }
+
+    #[test]
+    fn default_session_finds_its_own_saved_state() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Save a remote session under profile "remote" with the default session
+        let default_sm = test_session_manager(dir.path());
+        default_sm
+            .save_external_session_full(
+                "remote",
+                9222,
+                "wss://agent.example.com/automation",
+                None,
+                None,
+            )
+            .unwrap();
+
+        // active_session="default" should find its own file via load_session_state
+        let mut sm_default = test_session_manager(dir.path());
+        sm_default.set_active_session("default");
+
+        assert!(sm_default.has_saved_session_state(Some("remote")));
+        assert!(sm_default.session_uses_remote_ws(Some("remote")));
     }
 
     #[tokio::test]
