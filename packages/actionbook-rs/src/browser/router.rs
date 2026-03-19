@@ -3,7 +3,8 @@
 //! Routes commands to either CDP (Chrome/Edge/Brave) or Camoufox backend based on configuration.
 
 use super::{
-    session::SessionManager,
+    session::{SessionManager, StealthConfig},
+    stealth::build_stealth_profile,
     BrowserBackend,
 };
 
@@ -87,7 +88,18 @@ impl BrowserDriver {
 
         match backend {
             BrowserBackend::Cdp => {
-                let mut session_mgr = SessionManager::new(config.clone());
+                let mut session_mgr = if cli.stealth {
+                    let stealth_profile =
+                        build_stealth_profile(cli.stealth_os.as_deref(), cli.stealth_gpu.as_deref());
+                    let stealth_config = StealthConfig {
+                        enabled: true,
+                        headless: cli.headless,
+                        profile: stealth_profile,
+                    };
+                    SessionManager::with_stealth(config.clone(), stealth_config)
+                } else {
+                    SessionManager::new(config.clone())
+                };
                 session_mgr.set_daemon_enabled(!cli.no_daemon);
                 session_mgr.set_active_profile(&active_profile);
                 Ok(Self::Cdp(session_mgr))

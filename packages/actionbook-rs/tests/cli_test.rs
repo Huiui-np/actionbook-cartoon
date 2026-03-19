@@ -184,6 +184,10 @@ mod sources_command {
 
 mod browser_command {
     use super::*;
+    use futures::{SinkExt, StreamExt};
+    use serial_test::serial;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     fn setup_config(default_profile: &str) -> (tempfile::TempDir, String, String, String) {
         let tmp = tempfile::tempdir().unwrap();
@@ -230,6 +234,178 @@ default_profile = "{}"
             config_home.to_string_lossy().to_string(),
             data_home.to_string_lossy().to_string(),
         )
+    }
+
+    fn write_session_state(
+        home: &str,
+        profile: &str,
+        cdp_url: &str,
+        ws_headers: Option<serde_json::Value>,
+    ) {
+        let sessions_dir = std::path::Path::new(home)
+            .join(".actionbook")
+            .join("sessions");
+        fs::create_dir_all(&sessions_dir).unwrap();
+        let mut state = serde_json::json!({
+            "profile_name": profile,
+            "cdp_port": 9222,
+            "pid": serde_json::Value::Null,
+            "cdp_url": cdp_url,
+            "active_page_id": "page-1",
+        });
+        if let Some(ws_headers) = ws_headers {
+            state["ws_headers"] = ws_headers;
+        }
+        fs::write(
+            sessions_dir.join(format!("{profile}.json")),
+            serde_json::to_vec_pretty(&state).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn spawn_remote_cdp_server(
+    ) -> (u16, Arc<Mutex<Vec<serde_json::Value>>>, std::thread::JoinHandle<()>) {
+        spawn_remote_cdp_server_with_initial_url("https://existing.example")
+    }
+
+    fn spawn_remote_cdp_server_with_initial_url(
+        initial_url: &str,
+    ) -> (u16, Arc<Mutex<Vec<serde_json::Value>>>, std::thread::JoinHandle<()>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let server_requests = Arc::clone(&requests);
+        let initial_url = initial_url.to_string();
+
+        let handle = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                tx.send(listener.local_addr().unwrap().port()).unwrap();
+
+                let mut pages = vec![serde_json::json!({
+                    "targetId": "page-1",
+                    "type": "page",
+                    "title": if initial_url == "about:blank" { "Blank Page" } else { "Existing Page" },
+                    "url": initial_url,
+                })];
+                let mut next_page_id = 2usize;
+
+                loop {
+                    let accepted =
+                        tokio::time::timeout(Duration::from_secs(2), listener.accept()).await;
+                    let Ok(Ok((stream, _))) = accepted else {
+                        break;
+                    };
+
+                    let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+
+                    while let Some(message) = ws.next().await {
+                        let message = match message {
+                            Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => text,
+                            Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => break,
+                            Ok(_) => continue,
+                            Err(_) => break,
+                        };
+
+                        let request: serde_json::Value =
+                            serde_json::from_str(message.as_str()).unwrap();
+                        server_requests.lock().unwrap().push(request.clone());
+                        let method = request
+                            .get("method")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("");
+
+                        let response = match method {
+                            "Target.getTargets" => serde_json::json!({
+                                "id": request.get("id").cloned().unwrap_or_else(|| serde_json::json!(1)),
+                                "result": {
+                                    "targetInfos": pages.clone()
+                                }
+                            }),
+                            "Target.attachToTarget" => serde_json::json!({
+                                "id": request.get("id").cloned().unwrap_or_else(|| serde_json::json!(1)),
+                                "result": {
+                                    "sessionId": "session-1"
+                                }
+                            }),
+                            "Target.createTarget" => {
+                                if request.get("sessionId").is_some() {
+                                    serde_json::json!({
+                                        "id": request.get("id").cloned().unwrap_or_else(|| serde_json::json!(2)),
+                                        "error": {
+                                            "message": "Target.createTarget must be sent without sessionId"
+                                        }
+                                    })
+                                } else {
+                                    let new_page_id = format!("page-{}", next_page_id);
+                                    next_page_id += 1;
+                                    let url = request
+                                        .get("params")
+                                        .and_then(|params| params.get("url"))
+                                        .and_then(|value| value.as_str())
+                                        .unwrap_or("about:blank")
+                                        .to_string();
+                                    pages.push(serde_json::json!({
+                                        "targetId": new_page_id,
+                                        "type": "page",
+                                        "title": "Opened Page",
+                                        "url": url,
+                                    }));
+                                    serde_json::json!({
+                                        "id": request.get("id").cloned().unwrap_or_else(|| serde_json::json!(2)),
+                                        "result": {
+                                            "targetId": format!("page-{}", next_page_id - 1)
+                                        }
+                                    })
+                                }
+                            }
+                            "Page.addScriptToEvaluateOnNewDocument" => serde_json::json!({
+                                "id": request.get("id").cloned().unwrap_or_else(|| serde_json::json!(2)),
+                                "result": {
+                                    "identifier": "stealth-script"
+                                }
+                            }),
+                            "Runtime.evaluate" => {
+                                let expression = request
+                                    .get("params")
+                                    .and_then(|params| params.get("expression"))
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or("");
+                                let value = if expression.contains("document.readyState") {
+                                    serde_json::json!("complete")
+                                } else if expression.contains("document.title") {
+                                    serde_json::json!("Opened Page")
+                                } else {
+                                    serde_json::Value::Null
+                                };
+                                serde_json::json!({
+                                    "id": request.get("id").cloned().unwrap_or_else(|| serde_json::json!(2)),
+                                    "result": {
+                                        "result": {
+                                            "value": value
+                                        }
+                                    }
+                                })
+                            }
+                            _ => serde_json::json!({
+                                "id": request.get("id").cloned().unwrap_or_else(|| serde_json::json!(1)),
+                                "error": {
+                                    "message": format!("unsupported method: {method}")
+                                }
+                            }),
+                        };
+
+                        ws.send(tokio_tungstenite::tungstenite::Message::Text(
+                            response.to_string().into(),
+                        ))
+                        .await
+                        .unwrap();
+                    }
+                }
+            });
+        });
+
+        (rx.recv().unwrap(), requests, handle)
     }
 
     // ── Subcommand requirement ──────────────────────────────────────
@@ -815,6 +991,147 @@ default_profile = "{}"
             .assert()
             .failure()
             .stdout(predicate::str::contains("\"profile\":\"cli-profile\""));
+    }
+
+    #[test]
+    #[serial]
+    fn browser_open_reuses_connected_remote_session_with_headers() {
+        let (_tmp, home, config_home, data_home) = setup_config("team");
+        let (port, _requests, server) = spawn_remote_cdp_server();
+        let ws_url = format!("ws://127.0.0.1:{port}/automation");
+        write_session_state(
+            &home,
+            "team",
+            &ws_url,
+            Some(serde_json::json!({ "x-test-auth": "secret" })),
+        );
+
+        actionbook()
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_DATA_HOME", &data_home)
+            .args(["--no-daemon", "browser", "open", "https://example.com"])
+            .timeout(Duration::from_secs(10))
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("https://example.com"));
+
+        server.join().unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn browser_open_reuses_connected_remote_session_without_headers() {
+        let (_tmp, home, config_home, data_home) = setup_config("team");
+        let (port, _requests, server) = spawn_remote_cdp_server();
+        let ws_url = format!("ws://127.0.0.1:{port}/automation");
+        write_session_state(&home, "team", &ws_url, None);
+
+        actionbook()
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_DATA_HOME", &data_home)
+            .args(["--no-daemon", "browser", "open", "https://example.com"])
+            .timeout(Duration::from_secs(10))
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("https://example.com"));
+
+        server.join().unwrap();
+    }
+
+    #[cfg(feature = "stealth")]
+    #[test]
+    #[serial]
+    fn browser_open_remote_session_with_headers_preserves_stealth() {
+        let (_tmp, home, config_home, data_home) = setup_config("team");
+        let (port, requests, server) = spawn_remote_cdp_server();
+        let ws_url = format!("ws://127.0.0.1:{port}/automation");
+        write_session_state(
+            &home,
+            "team",
+            &ws_url,
+            Some(serde_json::json!({ "x-test-auth": "secret" })),
+        );
+
+        actionbook()
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_DATA_HOME", &data_home)
+            .args([
+                "--no-daemon",
+                "--stealth",
+                "browser",
+                "open",
+                "https://example.com",
+            ])
+            .timeout(Duration::from_secs(10))
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("https://example.com"));
+
+        server.join().unwrap();
+
+        let requests = requests.lock().unwrap();
+        assert!(requests.iter().any(|request| {
+            request.get("method").and_then(|value| value.as_str())
+                == Some("Page.addScriptToEvaluateOnNewDocument")
+        }));
+        assert!(requests.iter().any(|request| {
+            request.get("method").and_then(|value| value.as_str()) == Some("Runtime.evaluate")
+                && request
+                    .get("params")
+                    .and_then(|params| params.get("expression"))
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|expression| expression.contains("navigator, 'webdriver'"))
+        }));
+    }
+
+    #[cfg(feature = "stealth")]
+    #[test]
+    #[serial]
+    fn browser_open_reused_initial_blank_remote_tab_preserves_stealth() {
+        let (_tmp, home, config_home, data_home) = setup_config("team");
+        let (port, requests, server) = spawn_remote_cdp_server_with_initial_url("about:blank");
+        let ws_url = format!("ws://127.0.0.1:{port}/automation");
+        write_session_state(
+            &home,
+            "team",
+            &ws_url,
+            Some(serde_json::json!({ "x-test-auth": "secret" })),
+        );
+
+        actionbook()
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_DATA_HOME", &data_home)
+            .args([
+                "--no-daemon",
+                "--stealth",
+                "browser",
+                "open",
+                "https://example.com",
+            ])
+            .timeout(Duration::from_secs(10))
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("https://example.com"));
+
+        server.join().unwrap();
+
+        let requests = requests.lock().unwrap();
+        assert!(requests.iter().any(|request| {
+            request.get("method").and_then(|value| value.as_str())
+                == Some("Page.addScriptToEvaluateOnNewDocument")
+        }));
+        assert!(requests.iter().any(|request| {
+            request.get("method").and_then(|value| value.as_str()) == Some("Runtime.evaluate")
+                && request
+                    .get("params")
+                    .and_then(|params| params.get("expression"))
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|expression| expression.contains("navigator, 'webdriver'"))
+        }));
     }
 
     // ── Cross-cutting flags ─────────────────────────────────────────

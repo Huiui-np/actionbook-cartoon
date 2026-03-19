@@ -107,6 +107,89 @@ impl StealthProfile {
     }
 }
 
+#[cfg(feature = "stealth")]
+fn platform_for_os(os: StealthOs) -> &'static str {
+    match os {
+        StealthOs::Windows => "Win32",
+        StealthOs::MacOsIntel | StealthOs::MacOsArm => "MacIntel",
+        StealthOs::Linux => "Linux x86_64",
+    }
+}
+
+#[cfg(feature = "stealth")]
+fn webgl_vendor_for_gpu(gpu: StealthGpu) -> &'static str {
+    match gpu {
+        StealthGpu::NvidiaRtx4080 | StealthGpu::NvidiaRtx3080 | StealthGpu::NvidiaGtx1660 =>
+            "NVIDIA Corporation",
+        StealthGpu::AmdRadeonRx6800 => "AMD",
+        StealthGpu::IntelUhd630 | StealthGpu::IntelIrisXe => "Intel Inc.",
+        StealthGpu::AppleM1Pro | StealthGpu::AppleM2Max | StealthGpu::AppleM4Max =>
+            "Apple Inc.",
+    }
+}
+
+#[cfg(feature = "stealth")]
+fn webgl_renderer_for_gpu(gpu: StealthGpu) -> &'static str {
+    match gpu {
+        StealthGpu::NvidiaRtx4080 => "NVIDIA GeForce RTX 4080",
+        StealthGpu::NvidiaRtx3080 => "NVIDIA GeForce RTX 3080",
+        StealthGpu::NvidiaGtx1660 => "NVIDIA GeForce GTX 1660",
+        StealthGpu::AmdRadeonRx6800 => "AMD Radeon RX 6800",
+        StealthGpu::IntelUhd630 => "Intel UHD Graphics 630",
+        StealthGpu::IntelIrisXe => "Intel Iris Xe Graphics",
+        StealthGpu::AppleM1Pro => "Apple M1 Pro",
+        StealthGpu::AppleM2Max => "Apple M2 Max",
+        StealthGpu::AppleM4Max => "Apple M4 Max",
+    }
+}
+
+#[cfg(feature = "stealth")]
+pub(crate) fn build_stealth_script(profile: &StealthProfile) -> String {
+    format!(
+        r#"
+        Object.defineProperty(navigator, 'webdriver', {{ get: () => undefined }});
+        Object.defineProperty(navigator, 'platform', {{ get: () => '{}' }});
+        Object.defineProperty(navigator, 'hardwareConcurrency', {{ get: () => {} }});
+        Object.defineProperty(navigator, 'deviceMemory', {{ get: () => {} }});
+        Object.defineProperty(navigator, 'language', {{ get: () => '{}' }});
+        Object.defineProperty(navigator, 'languages', {{ get: () => ['{}', 'en'] }});
+
+        const getParameter = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(parameter) {{
+            if (parameter === 37445) return '{}';
+            if (parameter === 37446) return '{}';
+            return getParameter.apply(this, arguments);
+        }};
+
+        delete navigator.__proto__.webdriver;
+
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) => (
+            parameters.name === 'notifications'
+                ? Promise.resolve({{ state: Notification.permission }})
+                : originalQuery(parameters)
+        );
+
+        window.chrome = {{ runtime: {{}} }};
+
+        Object.defineProperty(navigator, 'plugins', {{
+            get: () => [
+                {{ name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' }},
+                {{ name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' }},
+                {{ name: 'Native Client', filename: 'internal-nacl-plugin' }}
+            ]
+        }});
+        "#,
+        platform_for_os(profile.os),
+        profile.cpu_cores,
+        profile.memory_gb,
+        &profile.locale,
+        &profile.locale,
+        webgl_vendor_for_gpu(profile.gpu),
+        webgl_renderer_for_gpu(profile.gpu),
+    )
+}
+
 /// Apply stealth profile to a chromiumoxide page
 /// This wraps the page in ChaserPage and applies anti-detection measures
 #[cfg(feature = "stealth")]
@@ -118,100 +201,12 @@ pub async fn apply_stealth_to_page(
 
     // Convert to ChaserPage and apply profile
     // Note: ChaserPage requires ownership, so we clone the page handle
-    let chaser_profile = profile.to_chaser_profile();
+    let _chaser_profile = profile.to_chaser_profile();
+    let script = build_stealth_script(profile);
 
-    // Apply stealth via CDP commands directly
-    // This is done via JavaScript injection to avoid ChaserPage ownership issues
-
-    // 1. Override navigator properties
-    let navigator_override = format!(
-        r#"
-        Object.defineProperty(navigator, 'webdriver', {{ get: () => undefined }});
-        Object.defineProperty(navigator, 'platform', {{ get: () => '{}' }});
-        Object.defineProperty(navigator, 'hardwareConcurrency', {{ get: () => {} }});
-        Object.defineProperty(navigator, 'deviceMemory', {{ get: () => {} }});
-        Object.defineProperty(navigator, 'language', {{ get: () => '{}' }});
-        Object.defineProperty(navigator, 'languages', {{ get: () => ['{}', 'en'] }});
-        "#,
-        match profile.os {
-            StealthOs::Windows => "Win32",
-            StealthOs::MacOsIntel | StealthOs::MacOsArm => "MacIntel",
-            StealthOs::Linux => "Linux x86_64",
-        },
-        profile.cpu_cores,
-        profile.memory_gb,
-        &profile.locale,
-        &profile.locale,
-    );
-
-    page.evaluate(navigator_override).await.map_err(|e| {
-        ActionbookError::Other(format!("Failed to apply navigator override: {}", e))
-    })?;
-
-    // 2. Override WebGL renderer
-    let webgl_override = format!(
-        r#"
-        const getParameter = WebGLRenderingContext.prototype.getParameter;
-        WebGLRenderingContext.prototype.getParameter = function(parameter) {{
-            if (parameter === 37445) return '{}';
-            if (parameter === 37446) return '{}';
-            return getParameter.apply(this, arguments);
-        }};
-        "#,
-        match profile.gpu {
-            StealthGpu::NvidiaRtx4080 | StealthGpu::NvidiaRtx3080 | StealthGpu::NvidiaGtx1660 =>
-                "NVIDIA Corporation",
-            StealthGpu::AmdRadeonRx6800 => "AMD",
-            StealthGpu::IntelUhd630 | StealthGpu::IntelIrisXe => "Intel Inc.",
-            StealthGpu::AppleM1Pro | StealthGpu::AppleM2Max | StealthGpu::AppleM4Max =>
-                "Apple Inc.",
-        },
-        match profile.gpu {
-            StealthGpu::NvidiaRtx4080 => "NVIDIA GeForce RTX 4080",
-            StealthGpu::NvidiaRtx3080 => "NVIDIA GeForce RTX 3080",
-            StealthGpu::NvidiaGtx1660 => "NVIDIA GeForce GTX 1660",
-            StealthGpu::AmdRadeonRx6800 => "AMD Radeon RX 6800",
-            StealthGpu::IntelUhd630 => "Intel UHD Graphics 630",
-            StealthGpu::IntelIrisXe => "Intel Iris Xe Graphics",
-            StealthGpu::AppleM1Pro => "Apple M1 Pro",
-            StealthGpu::AppleM2Max => "Apple M2 Max",
-            StealthGpu::AppleM4Max => "Apple M4 Max",
-        },
-    );
-
-    page.evaluate(webgl_override)
+    page.evaluate(script)
         .await
-        .map_err(|e| ActionbookError::Other(format!("Failed to apply WebGL override: {}", e)))?;
-
-    // 3. Hide automation indicators
-    let automation_hide = r#"
-        // Remove webdriver property
-        delete navigator.__proto__.webdriver;
-
-        // Override permissions
-        const originalQuery = window.navigator.permissions.query;
-        window.navigator.permissions.query = (parameters) => (
-            parameters.name === 'notifications' ?
-                Promise.resolve({ state: Notification.permission }) :
-                originalQuery(parameters)
-        );
-
-        // Fix chrome object
-        window.chrome = { runtime: {} };
-
-        // Fix plugins
-        Object.defineProperty(navigator, 'plugins', {
-            get: () => [
-                { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-                { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-                { name: 'Native Client', filename: 'internal-nacl-plugin' }
-            ]
-        });
-    "#;
-
-    page.evaluate(automation_hide)
-        .await
-        .map_err(|e| ActionbookError::Other(format!("Failed to hide automation: {}", e)))?;
+        .map_err(|e| ActionbookError::Other(format!("Failed to apply stealth profile: {}", e)))?;
 
     tracing::debug!("Applied stealth profile to page: {:?}", profile.os);
     Ok(())
