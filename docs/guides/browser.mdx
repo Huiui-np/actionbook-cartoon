@@ -57,7 +57,7 @@ Works out of the box — no setup required. The CLI launches a temporary Chrome 
 # If isolated is your default mode (or not configured)
 actionbook browser open "https://example.com"
 actionbook browser click "button[type='submit']"
-actionbook browser fill "#search" "actionbook"
+actionbook browser fill "actionbook" "#search"
 actionbook browser screenshot output.png
 ```
 
@@ -131,7 +131,7 @@ actionbook browser wait-nav              # wait for navigation to complete
 
 ```bash
 actionbook browser click "button[type='submit']"
-actionbook browser fill "#username" "demo"
+actionbook browser fill "demo" "#username"
 actionbook browser type "hello" "#search"    # append text (does not clear)
 actionbook browser select "#country" "US"
 actionbook browser hover ".menu-item"
@@ -360,7 +360,7 @@ actionbook get "<area_id>"
 
 # 3. Execute (uses your configured mode)
 actionbook browser open "https://github.com"
-actionbook browser fill "#query-builder-test" "actionbook"
+actionbook browser fill "actionbook" "#query-builder-test"
 actionbook browser click "button[type='submit']"
 ```
 
