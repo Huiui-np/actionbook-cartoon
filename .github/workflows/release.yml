@@ -441,8 +441,14 @@ jobs:
           for suffix in darwin-arm64 darwin-x64 linux-x64 linux-arm64 win32-x64 win32-arm64; do
             pkg_dir="${PLATFORM_PKG_DIRS[$suffix]}"
             pkg_name="${PLATFORM_PKG_NAMES[$suffix]}"
-            echo "Publishing ${pkg_name}..."
-            (cd "${pkg_dir}" && npm publish --access public --provenance)
+            LOCAL_VER=$(node -e "console.log(JSON.parse(require('fs').readFileSync('${pkg_dir}/package.json','utf8')).version)")
+            NPM_VER=$(npm view "${pkg_name}" version 2>/dev/null || echo "0.0.0")
+            if [ "$LOCAL_VER" != "$NPM_VER" ]; then
+              echo "Publishing ${pkg_name}@${LOCAL_VER} (npm has ${NPM_VER})..."
+              (cd "${pkg_dir}" && npm publish --access public --provenance)
+            else
+              echo "Skipping ${pkg_name}@${LOCAL_VER} (already published)"
+            fi
           done
 
       - name: Replace workspace protocol in CLI package
@@ -464,8 +470,14 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          echo "Publishing @actionbookdev/cli..."
-          (cd packages/cli && npm publish --access public --provenance)
+          LOCAL_VER="${{ steps.version.outputs.version }}"
+          NPM_VER=$(npm view @actionbookdev/cli version 2>/dev/null || echo "0.0.0")
+          if [ "$LOCAL_VER" != "$NPM_VER" ]; then
+            echo "Publishing @actionbookdev/cli@${LOCAL_VER} (npm has ${NPM_VER})..."
+            (cd packages/cli && npm publish --access public --provenance)
+          else
+            echo "Skipping @actionbookdev/cli@${LOCAL_VER} (already published)"
+          fi
 
       - name: Create CLI GitHub Release
         uses: softprops/action-gh-release@v2
