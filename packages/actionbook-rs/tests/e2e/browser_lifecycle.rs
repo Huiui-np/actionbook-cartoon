@@ -3,7 +3,9 @@
 //! Each test is self-contained: start → operate → assert → close.
 //! Uses daemon v2 CLI format with --session and --tab addressing.
 
-use crate::harness::{assert_failure, assert_success, headless, headless_json, skip, stdout_str};
+use crate::harness::{
+    assert_failure, assert_success, ensure_no_sessions, headless, headless_json, skip, stdout_str,
+};
 
 // ---------------------------------------------------------------------------
 // 1. lifecycle_open_and_close
@@ -14,6 +16,7 @@ fn lifecycle_open_and_close() {
     if skip() {
         return;
     }
+    ensure_no_sessions();
 
     // Start a headless browser session
     let out = headless(&["browser", "start", "--mode", "local", "--headless"], 30);
@@ -43,6 +46,7 @@ fn lifecycle_open_headless() {
     if skip() {
         return;
     }
+    ensure_no_sessions();
 
     // Start headless — should succeed
     let out = headless(&["browser", "start", "--mode", "local", "--headless"], 30);
@@ -62,6 +66,7 @@ fn lifecycle_open_with_url() {
     if skip() {
         return;
     }
+    ensure_no_sessions();
 
     // Start session with a URL
     let out = headless(
@@ -199,6 +204,7 @@ fn lifecycle_close_after_operations() {
     if skip() {
         return;
     }
+    ensure_no_sessions();
 
     // Start session
     let out = headless(
@@ -248,6 +254,7 @@ fn lifecycle_close_s1t2_closes_all() {
     if skip() {
         return;
     }
+    ensure_no_sessions();
 
     // Start session
     let out = headless(
@@ -282,6 +289,7 @@ fn lifecycle_double_close() {
     if skip() {
         return;
     }
+    ensure_no_sessions();
 
     // Start session
     let out = headless(&["browser", "start", "--mode", "local", "--headless"], 30);
