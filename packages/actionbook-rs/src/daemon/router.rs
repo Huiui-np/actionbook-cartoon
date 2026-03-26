@@ -17,7 +17,7 @@ use super::action_result::ActionResult;
 use super::backend::{AttachSpec, BrowserBackendFactory, StartSpec, TargetInfo};
 use super::registry::{SessionHandle, SessionRegistry, SessionState};
 use super::session_actor::{ActionRequest, SessionActor};
-use super::types::{Mode, SessionId};
+use super::types::{Mode, SessionId, TabId};
 
 // ---------------------------------------------------------------------------
 // Router
@@ -158,6 +158,30 @@ impl Router {
         cdp_endpoint: Option<String>,
         ws_headers: Option<HashMap<String, String>>,
     ) -> ActionResult {
+        self.handle_start_session_inner(
+            mode,
+            profile,
+            headless,
+            open_url,
+            cdp_endpoint,
+            ws_headers,
+            None,
+        )
+        .await
+    }
+
+    /// Inner implementation that optionally reuses a specific session ID (for restart).
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_start_session_inner(
+        &self,
+        mode: Mode,
+        profile: Option<String>,
+        headless: bool,
+        open_url: Option<String>,
+        cdp_endpoint: Option<String>,
+        ws_headers: Option<HashMap<String, String>>,
+        reuse_id: Option<SessionId>,
+    ) -> ActionResult {
         let factory = match self.factories.get(&mode) {
             Some(f) => Arc::clone(f),
             None => {
@@ -211,12 +235,13 @@ impl Router {
             }
 
             // Reserve a slot with state=Starting so concurrent requests see it.
-            let id = registry.next_session_id();
+            let id = reuse_id.unwrap_or_else(|| registry.next_session_id());
             let (placeholder_tx, _placeholder_rx) = tokio::sync::mpsc::channel(1);
             let placeholder = SessionHandle {
                 tx: placeholder_tx,
                 profile: profile_name.clone(),
                 mode,
+                headless,
                 state: SessionState::Starting,
                 tab_count: 0,
                 created_at: std::time::Instant::now(),
@@ -224,6 +249,10 @@ impl Router {
             registry.register(id, placeholder);
             id
         }; // lock released — backend start can proceed without holding it.
+
+        // Save open_url before it's moved into StartSpec, so we can update
+        // the tab registry after session creation.
+        let open_url_for_registry = open_url.clone();
 
         // Create backend session based on mode.
         let backend = match mode {
@@ -311,6 +340,7 @@ impl Router {
             tx,
             profile: profile_name,
             mode,
+            headless,
             state: SessionState::Ready,
             tab_count: tab_ids.len(),
             created_at: std::time::Instant::now(),
@@ -324,6 +354,19 @@ impl Router {
 
         // Save state after session creation.
         self.trigger_save(&registry);
+        drop(registry); // release lock before sending Goto
+
+        // If open_url was specified, send a Goto to update the tab registry URL.
+        // The backend already navigated during start, but the tab registry
+        // recorded the pre-navigation URL from target discovery.
+        if let Some(ref url) = open_url_for_registry {
+            let goto = Action::Goto {
+                session: session_id,
+                tab: TabId(0),
+                url: url.clone(),
+            };
+            let _ = self.forward_to_session(session_id, goto).await;
+        }
 
         ActionResult::ok(serde_json::json!({
             "session_id": session_id.to_string(),
@@ -338,7 +381,7 @@ impl Router {
         let (profile, mode, headless) = {
             let registry = self.registry.lock().await;
             match registry.get(session_id) {
-                Some(h) => (h.profile.clone(), h.mode, false), // headless is not stored; default to false
+                Some(h) => (h.profile.clone(), h.mode, h.headless),
                 None => {
                     return ActionResult::fatal(
                         "session_not_found",
@@ -368,12 +411,17 @@ impl Router {
             registry.remove(session_id);
         }
 
-        // 4. Start a new session with the same profile/mode.
-        //    `handle_start_session` allocates the next ID — because we just
-        //    removed the old one (and the registry may have reset), the new
-        //    session should get the same ID when the registry is empty.
-        self.handle_start_session(mode, Some(profile), headless, None, None, None)
-            .await
+        // 4. Start a new session with the same profile/mode, reusing the original ID.
+        self.handle_start_session_inner(
+            mode,
+            Some(profile),
+            headless,
+            None,
+            None,
+            None,
+            Some(session_id),
+        )
+        .await
     }
 
     /// Trigger a state save (best-effort, errors are logged).
@@ -547,6 +595,7 @@ mod tests {
             tx,
             profile: "default".into(),
             mode: Mode::Local,
+            headless: false,
             state: SessionState::Ready,
             tab_count: 1,
             created_at: Instant::now(),
@@ -647,6 +696,7 @@ mod tests {
                 tx,
                 profile: "dead".into(),
                 mode: Mode::Local,
+                headless: false,
                 state: SessionState::Ready,
                 tab_count: 0,
                 created_at: Instant::now(),

@@ -4,6 +4,8 @@
 //! The CLI is stateless: it parses args, constructs an [`Action`], sends it
 //! to the daemon via [`DaemonClient`], and formats the [`ActionResult`].
 
+mod commands;
+
 use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Duration;
@@ -16,7 +18,12 @@ use super::action::Action;
 use super::client::{self, DaemonClient};
 use super::daemon_main::DaemonConfig;
 use super::formatter;
-use super::types::{Mode, QueryMode, SameSite, SessionId, StorageKind, TabId};
+use super::types::{Mode, QueryCardinality, SessionId, StorageKind, TabId};
+
+use commands::{
+    CliMode, CookiesCmd, LocalStorageCmd, QueryCmd, ScrollCmd, SessionStorageCmd, StorageSubCmd,
+    WaitCmd,
+};
 
 /// Actionbook CLI v2 — browser automation via daemon
 #[derive(Parser, Debug)]
@@ -116,6 +123,16 @@ enum BrowserCmd {
         /// Session ID (e.g. s0)
         #[arg(short = 's', long)]
         session: SessionId,
+    },
+
+    /// Close a specific tab
+    CloseTab {
+        /// Session ID (e.g. s0)
+        #[arg(short = 's', long)]
+        session: SessionId,
+        /// Tab ID (e.g. t0)
+        #[arg(short = 't', long)]
+        tab: TabId,
     },
 
     // =======================================================================
@@ -219,6 +236,8 @@ enum BrowserCmd {
 
     /// Fill an input field (set value directly)
     Fill {
+        /// CSS selector of target element
+        selector: String,
         /// Value to fill
         text: String,
         /// Session ID (e.g. s0)
@@ -227,8 +246,6 @@ enum BrowserCmd {
         /// Tab ID (e.g. t0)
         #[arg(short = 't', long)]
         tab: TabId,
-        /// CSS selector of target element
-        selector: Option<String>,
     },
 
     /// Evaluate JavaScript in the page context
@@ -278,6 +295,31 @@ enum BrowserCmd {
         tab: TabId,
     },
 
+    /// Get the outer HTML of an element
+    Html {
+        /// CSS selector
+        selector: String,
+        /// Session ID (e.g. s0)
+        #[arg(short = 's', long)]
+        session: SessionId,
+        /// Tab ID (e.g. t0)
+        #[arg(short = 't', long)]
+        tab: TabId,
+    },
+
+    /// Get the inner text of an element
+    #[command(name = "text")]
+    TextCmd {
+        /// CSS selector
+        selector: String,
+        /// Session ID (e.g. s0)
+        #[arg(short = 's', long)]
+        session: SessionId,
+        /// Tab ID (e.g. t0)
+        #[arg(short = 't', long)]
+        tab: TabId,
+    },
+
     /// Get the value of an input element
     Value {
         /// CSS selector
@@ -295,7 +337,6 @@ enum BrowserCmd {
         /// CSS selector
         selector: String,
         /// Attribute name
-        #[arg(long)]
         name: String,
         /// Session ID (e.g. s0)
         #[arg(short = 's', long)]
@@ -376,20 +417,9 @@ enum BrowserCmd {
         tab: TabId,
     },
 
-    /// Query elements matching a selector
-    Query {
-        /// Selector string
-        selector: String,
-        /// Session ID (e.g. s0)
-        #[arg(short = 's', long)]
-        session: SessionId,
-        /// Tab ID (e.g. t0)
-        #[arg(short = 't', long)]
-        tab: TabId,
-        /// Query mode: css, xpath, or text
-        #[arg(short = 'm', long, value_enum, default_value = "css")]
-        mode: CliQueryMode,
-    },
+    /// Query elements matching a selector with cardinality constraint
+    #[command(subcommand)]
+    Query(QueryCmd),
 
     /// Inspect the element at a point on the page
     InspectPoint {
@@ -428,148 +458,20 @@ enum BrowserCmd {
     // =======================================================================
     // Data commands — Cookies (require -s)
     // =======================================================================
-    /// List all cookies
-    CookiesList {
-        /// Session ID (e.g. s0)
-        #[arg(short = 's', long)]
-        session: SessionId,
-        /// Filter by domain
-        #[arg(long)]
-        domain: Option<String>,
-    },
-
-    /// Get a specific cookie by name
-    CookiesGet {
-        /// Cookie name
-        name: String,
-        /// Session ID (e.g. s0)
-        #[arg(short = 's', long)]
-        session: SessionId,
-    },
-
-    /// Set a cookie
-    CookiesSet {
-        /// Cookie name
-        name: String,
-        /// Cookie value
-        value: String,
-        /// Session ID (e.g. s0)
-        #[arg(short = 's', long)]
-        session: SessionId,
-        /// Cookie domain
-        #[arg(long)]
-        domain: Option<String>,
-        /// Cookie path
-        #[arg(long)]
-        path: Option<String>,
-        /// Secure flag
-        #[arg(long)]
-        secure: bool,
-        /// HttpOnly flag
-        #[arg(long)]
-        http_only: bool,
-        /// SameSite attribute
-        #[arg(long, value_enum)]
-        same_site: Option<CliSameSite>,
-        /// Expiration timestamp (seconds since epoch)
-        #[arg(long)]
-        expires: Option<f64>,
-    },
-
-    /// Delete a cookie by name
-    CookiesDelete {
-        /// Cookie name
-        name: String,
-        /// Session ID (e.g. s0)
-        #[arg(short = 's', long)]
-        session: SessionId,
-    },
-
-    /// Clear all cookies
-    CookiesClear {
-        /// Session ID (e.g. s0)
-        #[arg(short = 's', long)]
-        session: SessionId,
-        /// Filter by domain
-        #[arg(long)]
-        domain: Option<String>,
-    },
+    /// Cookie operations (list, get, set, delete, clear)
+    #[command(subcommand)]
+    Cookies(CookiesCmd),
 
     // =======================================================================
     // Data commands — Storage (require -s and -t)
     // =======================================================================
-    /// List all keys in web storage
-    StorageList {
-        /// Session ID (e.g. s0)
-        #[arg(short = 's', long)]
-        session: SessionId,
-        /// Tab ID (e.g. t0)
-        #[arg(short = 't', long)]
-        tab: TabId,
-        /// Storage kind: local or session
-        #[arg(short = 'k', long, value_enum)]
-        kind: CliStorageKind,
-    },
+    /// Local storage operations (list, get, set, delete, clear)
+    #[command(subcommand)]
+    LocalStorage(LocalStorageCmd),
 
-    /// Get a value from web storage
-    StorageGet {
-        /// Storage key
-        key: String,
-        /// Session ID (e.g. s0)
-        #[arg(short = 's', long)]
-        session: SessionId,
-        /// Tab ID (e.g. t0)
-        #[arg(short = 't', long)]
-        tab: TabId,
-        /// Storage kind: local or session
-        #[arg(short = 'k', long, value_enum)]
-        kind: CliStorageKind,
-    },
-
-    /// Set a value in web storage
-    StorageSet {
-        /// Storage key
-        key: String,
-        /// Storage value
-        value: String,
-        /// Session ID (e.g. s0)
-        #[arg(short = 's', long)]
-        session: SessionId,
-        /// Tab ID (e.g. t0)
-        #[arg(short = 't', long)]
-        tab: TabId,
-        /// Storage kind: local or session
-        #[arg(short = 'k', long, value_enum)]
-        kind: CliStorageKind,
-    },
-
-    /// Delete a key from web storage
-    StorageDelete {
-        /// Storage key
-        key: String,
-        /// Session ID (e.g. s0)
-        #[arg(short = 's', long)]
-        session: SessionId,
-        /// Tab ID (e.g. t0)
-        #[arg(short = 't', long)]
-        tab: TabId,
-        /// Storage kind: local or session
-        #[arg(short = 'k', long, value_enum)]
-        kind: CliStorageKind,
-    },
-
-    /// Clear all web storage of a given kind
-    StorageClear {
-        /// Session ID (e.g. s0)
-        #[arg(short = 's', long)]
-        session: SessionId,
-        /// Tab ID (e.g. t0)
-        #[arg(short = 't', long)]
-        tab: TabId,
-        /// Storage kind: local or session
-        #[arg(short = 'k', long, value_enum)]
-        kind: CliStorageKind,
-    },
+    /// Session storage operations (list, get, set, delete, clear)
+    #[command(subcommand)]
+    SessionStorage(SessionStorageCmd),
 
     // =======================================================================
     // Interaction commands — require -s and -t
@@ -631,10 +533,8 @@ enum BrowserCmd {
     /// Drag an element to another element
     Drag {
         /// Selector of the element to drag
-        #[arg(long)]
         from: String,
         /// Selector of the drop target
-        #[arg(long)]
         to: String,
         /// Session ID (e.g. s0)
         #[arg(short = 's', long)]
@@ -660,29 +560,13 @@ enum BrowserCmd {
     },
 
     /// Scroll the page or an element
-    Scroll {
-        /// Direction: up, down, left, right
-        direction: String,
-        /// Session ID (e.g. s0)
-        #[arg(short = 's', long)]
-        session: SessionId,
-        /// Tab ID (e.g. t0)
-        #[arg(short = 't', long)]
-        tab: TabId,
-        /// Amount in pixels (default: 300)
-        #[arg(long)]
-        amount: Option<i32>,
-        /// Optional CSS selector to scroll within
-        #[arg(long)]
-        selector: Option<String>,
-    },
+    #[command(subcommand)]
+    Scroll(ScrollCmd),
 
-    /// Move the mouse to absolute coordinates
+    /// Move the mouse to absolute coordinates (e.g. "200,300")
     MouseMove {
-        /// X coordinate
-        x: f64,
-        /// Y coordinate
-        y: f64,
+        /// Coordinates as "x,y"
+        coords: String,
         /// Session ID (e.g. s0)
         #[arg(short = 's', long)]
         session: SessionId,
@@ -704,49 +588,9 @@ enum BrowserCmd {
     // =======================================================================
     // Waiting commands — require -s and -t
     // =======================================================================
-    /// Wait for a navigation to complete
-    WaitNavigation {
-        /// Session ID (e.g. s0)
-        #[arg(short = 's', long)]
-        session: SessionId,
-        /// Tab ID (e.g. t0)
-        #[arg(short = 't', long)]
-        tab: TabId,
-        /// Timeout in milliseconds (default: 30000)
-        #[arg(long)]
-        timeout: Option<u64>,
-    },
-
-    /// Wait for network to become idle
-    WaitNetworkIdle {
-        /// Session ID (e.g. s0)
-        #[arg(short = 's', long)]
-        session: SessionId,
-        /// Tab ID (e.g. t0)
-        #[arg(short = 't', long)]
-        tab: TabId,
-        /// Timeout in milliseconds (default: 30000)
-        #[arg(long)]
-        timeout: Option<u64>,
-        /// Idle time in milliseconds (default: 500)
-        #[arg(long)]
-        idle_time: Option<u64>,
-    },
-
-    /// Wait for a JS expression to become truthy
-    WaitCondition {
-        /// JavaScript expression that should return a truthy value
-        expression: String,
-        /// Session ID (e.g. s0)
-        #[arg(short = 's', long)]
-        session: SessionId,
-        /// Tab ID (e.g. t0)
-        #[arg(short = 't', long)]
-        tab: TabId,
-        /// Timeout in milliseconds (default: 30000)
-        #[arg(long)]
-        timeout: Option<u64>,
-    },
+    /// Wait for an element, navigation, network idle, or condition
+    #[command(subcommand)]
+    Wait(WaitCmd),
 
     // =======================================================================
     // Session management
@@ -757,76 +601,6 @@ enum BrowserCmd {
         #[arg(short = 's', long)]
         session: SessionId,
     },
-}
-
-/// CLI-facing mode enum (maps to protocol [`Mode`]).
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum CliMode {
-    Local,
-    Extension,
-    Cloud,
-}
-
-impl From<CliMode> for Mode {
-    fn from(m: CliMode) -> Mode {
-        match m {
-            CliMode::Local => Mode::Local,
-            CliMode::Extension => Mode::Extension,
-            CliMode::Cloud => Mode::Cloud,
-        }
-    }
-}
-
-/// CLI-facing query mode enum.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum CliQueryMode {
-    Css,
-    Xpath,
-    Text,
-}
-
-impl From<CliQueryMode> for QueryMode {
-    fn from(m: CliQueryMode) -> QueryMode {
-        match m {
-            CliQueryMode::Css => QueryMode::Css,
-            CliQueryMode::Xpath => QueryMode::Xpath,
-            CliQueryMode::Text => QueryMode::Text,
-        }
-    }
-}
-
-/// CLI-facing storage kind enum.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum CliStorageKind {
-    Local,
-    Session,
-}
-
-impl From<CliStorageKind> for StorageKind {
-    fn from(k: CliStorageKind) -> StorageKind {
-        match k {
-            CliStorageKind::Local => StorageKind::Local,
-            CliStorageKind::Session => StorageKind::Session,
-        }
-    }
-}
-
-/// CLI-facing SameSite enum.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum CliSameSite {
-    Strict,
-    Lax,
-    None,
-}
-
-impl From<CliSameSite> for SameSite {
-    fn from(s: CliSameSite) -> SameSite {
-        match s {
-            CliSameSite::Strict => SameSite::Strict,
-            CliSameSite::Lax => SameSite::Lax,
-            CliSameSite::None => SameSite::None,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -887,6 +661,7 @@ fn build_action(cmd: BrowserCmd) -> Result<(Action, Option<PathBuf>), String> {
             window: None,
         },
         BrowserCmd::Close { session } => Action::CloseSession { session },
+        BrowserCmd::CloseTab { session, tab } => Action::CloseTab { session, tab },
 
         // Tab
         BrowserCmd::Goto { url, session, tab } => Action::Goto { session, tab, url },
@@ -937,14 +712,14 @@ fn build_action(cmd: BrowserCmd) -> Result<(Action, Option<PathBuf>), String> {
             text,
         },
         BrowserCmd::Fill {
+            selector,
             text,
             session,
             tab,
-            selector,
         } => Action::Fill {
             session,
             tab,
-            selector: selector.unwrap_or_default(),
+            selector,
             value: text,
         },
         BrowserCmd::Eval { code, session, tab } => Action::Eval {
@@ -961,6 +736,24 @@ fn build_action(cmd: BrowserCmd) -> Result<(Action, Option<PathBuf>), String> {
         },
         BrowserCmd::Title { session, tab } => Action::Title { session, tab },
         BrowserCmd::Url { session, tab } => Action::Url { session, tab },
+        BrowserCmd::Html {
+            selector,
+            session,
+            tab,
+        } => Action::Html {
+            session,
+            tab,
+            selector: Some(selector),
+        },
+        BrowserCmd::TextCmd {
+            selector,
+            session,
+            tab,
+        } => Action::Text {
+            session,
+            tab,
+            selector: Some(selector),
+        },
         BrowserCmd::Value {
             selector,
             session,
@@ -1027,16 +820,60 @@ fn build_action(cmd: BrowserCmd) -> Result<(Action, Option<PathBuf>), String> {
             selector,
         },
         BrowserCmd::Viewport { session, tab } => Action::Viewport { session, tab },
-        BrowserCmd::Query {
-            selector,
-            session,
-            tab,
-            mode,
-        } => Action::Query {
-            session,
-            tab,
-            selector,
-            mode: mode.into(),
+        BrowserCmd::Query(qcmd) => match qcmd {
+            QueryCmd::One {
+                selector,
+                session,
+                tab,
+                mode,
+            } => Action::Query {
+                session,
+                tab,
+                selector,
+                mode: mode.into(),
+                cardinality: QueryCardinality::One,
+                nth_index: None,
+            },
+            QueryCmd::All {
+                selector,
+                session,
+                tab,
+                mode,
+            } => Action::Query {
+                session,
+                tab,
+                selector,
+                mode: mode.into(),
+                cardinality: QueryCardinality::All,
+                nth_index: None,
+            },
+            QueryCmd::Count {
+                selector,
+                session,
+                tab,
+                mode,
+            } => Action::Query {
+                session,
+                tab,
+                selector,
+                mode: mode.into(),
+                cardinality: QueryCardinality::Count,
+                nth_index: None,
+            },
+            QueryCmd::Nth {
+                n,
+                selector,
+                session,
+                tab,
+                mode,
+            } => Action::Query {
+                session,
+                tab,
+                selector,
+                mode: mode.into(),
+                cardinality: QueryCardinality::Nth,
+                nth_index: Some(n),
+            },
         },
         BrowserCmd::InspectPoint { x, y, session, tab } => {
             Action::InspectPoint { session, tab, x, y }
@@ -1045,78 +882,39 @@ fn build_action(cmd: BrowserCmd) -> Result<(Action, Option<PathBuf>), String> {
         BrowserCmd::LogsErrors { session, tab } => Action::LogsErrors { session, tab },
 
         // Cookies
-        BrowserCmd::CookiesList { session, domain } => Action::CookiesList { session, domain },
-        BrowserCmd::CookiesGet { name, session } => Action::CookiesGet { session, name },
-        BrowserCmd::CookiesSet {
-            name,
-            value,
-            session,
-            domain,
-            path,
-            secure,
-            http_only,
-            same_site,
-            expires,
-        } => Action::CookiesSet {
-            session,
-            name,
-            value,
-            domain,
-            path,
-            secure: if secure { Some(true) } else { None },
-            http_only: if http_only { Some(true) } else { None },
-            same_site: same_site.map(|s| s.into()),
-            expires,
+        BrowserCmd::Cookies(cmd) => match cmd {
+            CookiesCmd::List { session, domain } => Action::CookiesList { session, domain },
+            CookiesCmd::Get { name, session } => Action::CookiesGet { session, name },
+            CookiesCmd::Set {
+                name,
+                value,
+                session,
+                domain,
+                path,
+                secure,
+                http_only,
+                same_site,
+                expires,
+            } => Action::CookiesSet {
+                session,
+                name,
+                value,
+                domain,
+                path,
+                secure: if secure { Some(true) } else { None },
+                http_only: if http_only { Some(true) } else { None },
+                same_site: same_site.map(|s| s.into()),
+                expires,
+            },
+            CookiesCmd::Delete { name, session } => Action::CookiesDelete { session, name },
+            CookiesCmd::Clear { session, domain } => Action::CookiesClear { session, domain },
         },
-        BrowserCmd::CookiesDelete { name, session } => Action::CookiesDelete { session, name },
-        BrowserCmd::CookiesClear { session, domain } => Action::CookiesClear { session, domain },
 
-        // Storage
-        BrowserCmd::StorageList { session, tab, kind } => Action::StorageList {
-            session,
-            tab,
-            kind: kind.into(),
-        },
-        BrowserCmd::StorageGet {
-            key,
-            session,
-            tab,
-            kind,
-        } => Action::StorageGet {
-            session,
-            tab,
-            kind: kind.into(),
-            key,
-        },
-        BrowserCmd::StorageSet {
-            key,
-            value,
-            session,
-            tab,
-            kind,
-        } => Action::StorageSet {
-            session,
-            tab,
-            kind: kind.into(),
-            key,
-            value,
-        },
-        BrowserCmd::StorageDelete {
-            key,
-            session,
-            tab,
-            kind,
-        } => Action::StorageDelete {
-            session,
-            tab,
-            kind: kind.into(),
-            key,
-        },
-        BrowserCmd::StorageClear { session, tab, kind } => Action::StorageClear {
-            session,
-            tab,
-            kind: kind.into(),
-        },
+        // Local Storage
+        BrowserCmd::LocalStorage(cmd) => storage_cmd_to_action(cmd, StorageKind::Local),
+
+        // Session Storage
+        BrowserCmd::SessionStorage(cmd) => storage_cmd_to_action(cmd, StorageKind::Session),
 
         // Interaction
         BrowserCmd::Select {
@@ -1177,53 +975,143 @@ fn build_action(cmd: BrowserCmd) -> Result<(Action, Option<PathBuf>), String> {
             selector,
             files,
         },
-        BrowserCmd::Scroll {
-            direction,
-            session,
-            tab,
-            amount,
-            selector,
-        } => Action::Scroll {
-            session,
-            tab,
-            direction,
-            amount,
-            selector,
+        BrowserCmd::Scroll(scroll_cmd) => match scroll_cmd {
+            ScrollCmd::Up {
+                amount,
+                session,
+                tab,
+            } => Action::Scroll {
+                session,
+                tab,
+                direction: "up".to_string(),
+                amount,
+                selector: None,
+            },
+            ScrollCmd::Down {
+                amount,
+                session,
+                tab,
+            } => Action::Scroll {
+                session,
+                tab,
+                direction: "down".to_string(),
+                amount,
+                selector: None,
+            },
+            ScrollCmd::Left {
+                amount,
+                session,
+                tab,
+            } => Action::Scroll {
+                session,
+                tab,
+                direction: "left".to_string(),
+                amount,
+                selector: None,
+            },
+            ScrollCmd::Right {
+                amount,
+                session,
+                tab,
+            } => Action::Scroll {
+                session,
+                tab,
+                direction: "right".to_string(),
+                amount,
+                selector: None,
+            },
+            ScrollCmd::Top { session, tab } => Action::Scroll {
+                session,
+                tab,
+                direction: "top".to_string(),
+                amount: None,
+                selector: None,
+            },
+            ScrollCmd::Bottom { session, tab } => Action::Scroll {
+                session,
+                tab,
+                direction: "bottom".to_string(),
+                amount: None,
+                selector: None,
+            },
+            ScrollCmd::IntoView {
+                selector,
+                session,
+                tab,
+            } => Action::Scroll {
+                session,
+                tab,
+                direction: "into-view".to_string(),
+                amount: None,
+                selector: Some(selector),
+            },
         },
-        BrowserCmd::MouseMove { x, y, session, tab } => Action::MouseMove { session, tab, x, y },
+        BrowserCmd::MouseMove {
+            coords,
+            session,
+            tab,
+        } => {
+            let parts: Vec<&str> = coords.split(',').collect();
+            let x = parts
+                .first()
+                .and_then(|s| s.trim().parse::<f64>().ok())
+                .ok_or_else(|| {
+                    format!("invalid coordinates '{}': expected format 'x,y'", coords)
+                })?;
+            let y = parts
+                .get(1)
+                .and_then(|s| s.trim().parse::<f64>().ok())
+                .ok_or_else(|| {
+                    format!("invalid coordinates '{}': expected format 'x,y'", coords)
+                })?;
+            Action::MouseMove { session, tab, x, y }
+        }
         BrowserCmd::CursorPosition { session, tab } => Action::CursorPosition { session, tab },
 
         // Waiting
-        BrowserCmd::WaitNavigation {
-            session,
-            tab,
-            timeout,
-        } => Action::WaitNavigation {
-            session,
-            tab,
-            timeout_ms: timeout,
-        },
-        BrowserCmd::WaitNetworkIdle {
-            session,
-            tab,
-            timeout,
-            idle_time,
-        } => Action::WaitNetworkIdle {
-            session,
-            tab,
-            timeout_ms: timeout,
-            idle_time_ms: idle_time,
-        },
-        BrowserCmd::WaitCondition {
-            expression,
-            session,
-            tab,
-            timeout,
-        } => Action::WaitCondition {
-            session,
-            tab,
-            expression,
-            timeout_ms: timeout,
+        BrowserCmd::Wait(wait_cmd) => match wait_cmd {
+            WaitCmd::Element {
+                selector,
+                session,
+                tab,
+                timeout,
+            } => Action::WaitElement {
+                session,
+                tab,
+                selector,
+                timeout_ms: timeout,
+            },
+            WaitCmd::Navigation {
+                session,
+                tab,
+                timeout,
+            } => Action::WaitNavigation {
+                session,
+                tab,
+                timeout_ms: timeout,
+            },
+            WaitCmd::NetworkIdle {
+                session,
+                tab,
+                timeout,
+                idle_time,
+            } => Action::WaitNetworkIdle {
+                session,
+                tab,
+                timeout_ms: timeout,
+                idle_time_ms: idle_time,
+            },
+            WaitCmd::Condition {
+                expression,
+                session,
+                tab,
+                timeout,
+            } => Action::WaitCondition {
+                session,
+                tab,
+                expression,
+                timeout_ms: timeout,
+            },
         },
 
         // Session management
@@ -1231,6 +1119,38 @@ fn build_action(cmd: BrowserCmd) -> Result<(Action, Option<PathBuf>), String> {
     };
 
     Ok((action, screenshot_path))
+}
+
+/// Convert a storage subcommand + kind into an Action.
+fn storage_cmd_to_action(cmd: StorageSubCmd, kind: StorageKind) -> Action {
+    match cmd {
+        StorageSubCmd::List { session, tab } => Action::StorageList { session, tab, kind },
+        StorageSubCmd::Get { key, session, tab } => Action::StorageGet {
+            session,
+            tab,
+            kind,
+            key,
+        },
+        StorageSubCmd::Set {
+            key,
+            value,
+            session,
+            tab,
+        } => Action::StorageSet {
+            session,
+            tab,
+            kind,
+            key,
+            value,
+        },
+        StorageSubCmd::Delete { key, session, tab } => Action::StorageDelete {
+            session,
+            tab,
+            kind,
+            key,
+        },
+        StorageSubCmd::Clear { session, tab, .. } => Action::StorageClear { session, tab, kind },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1573,10 +1493,10 @@ mod tests {
 
     #[test]
     fn build_cookies_list_with_domain() {
-        let (action, _) = build_action(BrowserCmd::CookiesList {
+        let (action, _) = build_action(BrowserCmd::Cookies(CookiesCmd::List {
             session: SessionId(2),
             domain: Some("example.com".into()),
-        })
+        }))
         .unwrap();
         match action {
             Action::CookiesList { session, domain } => {
@@ -1589,10 +1509,10 @@ mod tests {
 
     #[test]
     fn build_cookies_clear_with_domain() {
-        let (action, _) = build_action(BrowserCmd::CookiesClear {
+        let (action, _) = build_action(BrowserCmd::Cookies(CookiesCmd::Clear {
             session: SessionId(3),
             domain: Some(".example.com".into()),
-        })
+        }))
         .unwrap();
         match action {
             Action::CookiesClear { session, domain } => {

@@ -3,7 +3,9 @@
 //! Covers api-reference §13 (Cookies) and §14 (Storage).
 //! Each test is self-contained: start → operate → close.
 
-use crate::harness::{assert_success, headless, headless_json, skip, stdout_str};
+use crate::harness::{
+    assert_success, ensure_no_sessions, headless, headless_json, skip, stdout_str,
+};
 
 fn parse_json_output(out: &std::process::Output) -> serde_json::Value {
     serde_json::from_str(&stdout_str(out)).expect("valid JSON output")
@@ -16,6 +18,7 @@ fn cookies_set_get_delete() {
     if skip() {
         return;
     }
+    ensure_no_sessions();
 
     // Start session
     let out = headless(
@@ -71,6 +74,7 @@ fn cookies_list_and_clear() {
     if skip() {
         return;
     }
+    ensure_no_sessions();
 
     // Start session
     let out = headless(
@@ -177,6 +181,7 @@ fn cookies_s1t2_shared() {
     if skip() {
         return;
     }
+    ensure_no_sessions();
 
     // Start session with first tab
     let out = headless(
@@ -247,6 +252,7 @@ fn storage_local_set_get() {
     if skip() {
         return;
     }
+    ensure_no_sessions();
 
     // Start session
     let out = headless(
@@ -311,6 +317,7 @@ fn storage_local_list_delete_clear() {
     if skip() {
         return;
     }
+    ensure_no_sessions();
 
     // Start session
     let out = headless(
@@ -441,6 +448,7 @@ fn storage_session_roundtrip() {
     if skip() {
         return;
     }
+    ensure_no_sessions();
 
     // Start session
     let out = headless(
@@ -505,6 +513,7 @@ fn storage_session_list_delete_clear() {
     if skip() {
         return;
     }
+    ensure_no_sessions();
 
     // Start session
     let out = headless(
@@ -635,6 +644,7 @@ fn storage_s1t2_isolation() {
     if skip() {
         return;
     }
+    ensure_no_sessions();
 
     // Start session with first tab
     let out = headless(
