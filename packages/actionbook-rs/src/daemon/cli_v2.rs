@@ -433,6 +433,9 @@ enum BrowserCmd {
         /// Session ID (e.g. s0)
         #[arg(short = 's', long)]
         session: SessionId,
+        /// Filter by domain
+        #[arg(long)]
+        domain: Option<String>,
     },
 
     /// Get a specific cookie by name
@@ -487,6 +490,9 @@ enum BrowserCmd {
         /// Session ID (e.g. s0)
         #[arg(short = 's', long)]
         session: SessionId,
+        /// Filter by domain
+        #[arg(long)]
+        domain: Option<String>,
     },
 
     // =======================================================================
@@ -1039,7 +1045,7 @@ fn build_action(cmd: BrowserCmd) -> Result<(Action, Option<PathBuf>), String> {
         BrowserCmd::LogsErrors { session, tab } => Action::LogsErrors { session, tab },
 
         // Cookies
-        BrowserCmd::CookiesList { session } => Action::CookiesList { session },
+        BrowserCmd::CookiesList { session, domain } => Action::CookiesList { session, domain },
         BrowserCmd::CookiesGet { name, session } => Action::CookiesGet { session, name },
         BrowserCmd::CookiesSet {
             name,
@@ -1063,7 +1069,7 @@ fn build_action(cmd: BrowserCmd) -> Result<(Action, Option<PathBuf>), String> {
             expires,
         },
         BrowserCmd::CookiesDelete { name, session } => Action::CookiesDelete { session, name },
-        BrowserCmd::CookiesClear { session } => Action::CookiesClear { session },
+        BrowserCmd::CookiesClear { session, domain } => Action::CookiesClear { session, domain },
 
         // Storage
         BrowserCmd::StorageList { session, tab, kind } => Action::StorageList {
@@ -1345,7 +1351,11 @@ impl CliV2 {
                                     eprintln!("error: failed to write screenshot: {e}");
                                     process::exit(1);
                                 }
-                                println!("screenshot saved to {}", path.display());
+                                if self.json {
+                                    println!("{}", formatter::format_result_json(&result));
+                                } else {
+                                    println!("screenshot saved to {}", path.display());
+                                }
                                 process::exit(0);
                             }
                             Err(e) => {
@@ -1358,7 +1368,11 @@ impl CliV2 {
             }
         }
 
-        let output = formatter::format_result(&result);
+        let output = if self.json {
+            formatter::format_result_json(&result)
+        } else {
+            formatter::format_result(&result)
+        };
         if !output.is_empty() {
             println!("{output}");
         }
@@ -1553,6 +1567,38 @@ mod tests {
         .unwrap();
         match action {
             Action::Eval { expression, .. } => assert_eq!(expression, "document.title"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn build_cookies_list_with_domain() {
+        let (action, _) = build_action(BrowserCmd::CookiesList {
+            session: SessionId(2),
+            domain: Some("example.com".into()),
+        })
+        .unwrap();
+        match action {
+            Action::CookiesList { session, domain } => {
+                assert_eq!(session, SessionId(2));
+                assert_eq!(domain.as_deref(), Some("example.com"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn build_cookies_clear_with_domain() {
+        let (action, _) = build_action(BrowserCmd::CookiesClear {
+            session: SessionId(3),
+            domain: Some(".example.com".into()),
+        })
+        .unwrap();
+        match action {
+            Action::CookiesClear { session, domain } => {
+                assert_eq!(session, SessionId(3));
+                assert_eq!(domain.as_deref(), Some(".example.com"));
+            }
             _ => panic!("wrong variant"),
         }
     }
