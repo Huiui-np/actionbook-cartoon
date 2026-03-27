@@ -343,45 +343,45 @@ pub(crate) enum WaitCmd {
     Element {
         /// CSS selector
         selector: String,
+        /// Timeout in milliseconds (overrides global --timeout)
+        #[arg(long = "timeout")]
+        timeout_ms: Option<u64>,
         #[arg(short = 's', long)]
         session: SessionId,
         #[arg(short = 't', long)]
         tab: TabId,
-        /// Timeout in milliseconds (default: 30000)
-        #[arg(long, default_value = "30000")]
-        timeout: u64,
     },
     /// Wait for a navigation to complete
     Navigation {
+        /// Timeout in milliseconds (overrides global --timeout)
+        #[arg(long = "timeout")]
+        timeout_ms: Option<u64>,
         #[arg(short = 's', long)]
         session: SessionId,
         #[arg(short = 't', long)]
         tab: TabId,
-        /// Timeout in milliseconds (default: 30000)
-        #[arg(long, default_value = "30000")]
-        timeout: u64,
     },
     /// Wait for network to become idle
     NetworkIdle {
+        /// Timeout in milliseconds (overrides global --timeout)
+        #[arg(long = "timeout")]
+        timeout_ms: Option<u64>,
         #[arg(short = 's', long)]
         session: SessionId,
         #[arg(short = 't', long)]
         tab: TabId,
-        /// Timeout in milliseconds (default: 30000)
-        #[arg(long, default_value = "30000")]
-        timeout: u64,
     },
     /// Wait for a JS expression to become truthy
     Condition {
         /// JavaScript expression that should return a truthy value
         expression: String,
+        /// Timeout in milliseconds (overrides global --timeout)
+        #[arg(long = "timeout")]
+        timeout_ms: Option<u64>,
         #[arg(short = 's', long)]
         session: SessionId,
         #[arg(short = 't', long)]
         tab: TabId,
-        /// Timeout in milliseconds (default: 30000)
-        #[arg(long, default_value = "30000")]
-        timeout: u64,
     },
 }
 
