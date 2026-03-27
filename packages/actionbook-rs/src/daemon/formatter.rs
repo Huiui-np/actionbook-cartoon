@@ -42,12 +42,25 @@ pub fn format_result_json(result: &ActionResult) -> String {
 /// normalization where requested and falling back to the legacy formatter
 /// for all other commands.
 pub fn format_cli_result(action: &Action, result: &ActionResult) -> String {
+    format_cli_result_with_duration(action, result, None)
+}
+
+/// Format an [`ActionResult`] for CLI output when the caller also knows the
+/// measured command duration. This is used by the thin CLI so text output can
+/// include PRD fields such as `elapsed_ms` for wait commands.
+pub fn format_cli_result_with_duration(
+    action: &Action,
+    result: &ActionResult,
+    duration_ms: Option<u128>,
+) -> String {
     if result.is_ok() {
         if let Some(output) = format_lifecycle_text(action, result) {
             output
         } else if let Some(output) = format_tab_nav_text(action, result) {
             output
         } else if let Some(output) = format_observation_text(action, result) {
+            output
+        } else if let Some(output) = format_interaction_text(action, result, duration_ms) {
             output
         } else {
             format_result(result)
@@ -107,6 +120,10 @@ pub fn format_cli_result_json(action: &Action, result: &ActionResult, duration_m
                 r#"{"ok":false,"command":"internal.serialization","context":null,"data":null,"error":{"code":"INTERNAL_ERROR","message":"failed to serialize result","retryable":false,"details":{"hint":"retry the command"}},"meta":{"duration_ms":0,"warnings":[],"pagination":null,"truncated":false}}"#.to_string()
             })
         } else if let Some(envelope) = normalize_observation_json(action, result, duration_ms) {
+            serde_json::to_string(&envelope).unwrap_or_else(|_| {
+                r#"{"ok":false,"command":"internal.serialization","context":null,"data":null,"error":{"code":"INTERNAL_ERROR","message":"failed to serialize result","retryable":false,"details":{"hint":"retry the command"}},"meta":{"duration_ms":0,"warnings":[],"pagination":null,"truncated":false}}"#.to_string()
+            })
+        } else if let Some(envelope) = normalize_interaction_json(action, result, duration_ms) {
             serde_json::to_string(&envelope).unwrap_or_else(|_| {
                 r#"{"ok":false,"command":"internal.serialization","context":null,"data":null,"error":{"code":"INTERNAL_ERROR","message":"failed to serialize result","retryable":false,"details":{"hint":"retry the command"}},"meta":{"duration_ms":0,"warnings":[],"pagination":null,"truncated":false}}"#.to_string()
             })
@@ -1467,6 +1484,466 @@ fn format_observation_text(action: &Action, result: &ActionResult) -> Option<Str
 }
 
 // ---------------------------------------------------------------------------
+// Phase B2b: Interaction / Wait / Eval normalization
+// ---------------------------------------------------------------------------
+
+fn interaction_command(action: &Action) -> Option<&'static str> {
+    match action {
+        Action::Click { .. } => Some("browser.click"),
+        Action::Type { .. } => Some("browser.type"),
+        Action::Fill { .. } => Some("browser.fill"),
+        Action::Select { .. } => Some("browser.select"),
+        Action::Hover { .. } => Some("browser.hover"),
+        Action::Focus { .. } => Some("browser.focus"),
+        Action::Press { .. } => Some("browser.press"),
+        Action::Drag { .. } => Some("browser.drag"),
+        Action::Upload { .. } => Some("browser.upload"),
+        Action::Scroll { .. } => Some("browser.scroll"),
+        Action::MouseMove { .. } => Some("browser.mouse-move"),
+        Action::CursorPosition { .. } => Some("browser.cursor-position"),
+        Action::Eval { .. } => Some("browser.eval"),
+        Action::WaitElement { .. } => Some("browser.wait.element"),
+        Action::WaitNavigation { .. } => Some("browser.wait.navigation"),
+        Action::WaitNetworkIdle { .. } => Some("browser.wait.network-idle"),
+        Action::WaitCondition { .. } => Some("browser.wait.condition"),
+        _ => None,
+    }
+}
+
+fn normalize_interaction_json(
+    action: &Action,
+    result: &ActionResult,
+    duration_ms: u128,
+) -> Option<Value> {
+    let command = interaction_command(action)?;
+    let ok = result.is_ok();
+    let data = match result {
+        ActionResult::Ok { data } => normalize_interaction_data(action, data, duration_ms),
+        _ => Value::Null,
+    };
+    let context = match result {
+        ActionResult::Ok { data } => interaction_context(action, data),
+        _ => interaction_context(action, &Value::Null),
+    };
+    let error = match result {
+        ActionResult::Ok { .. } => Value::Null,
+        _ => normalized_error_value(&normalize_error(result)),
+    };
+    Some(serde_json::json!({
+        "ok": ok,
+        "command": command,
+        "context": context.unwrap_or(Value::Null),
+        "data": data,
+        "error": error,
+        "meta": {
+            "duration_ms": duration_ms,
+            "warnings": [],
+            "pagination": null,
+            "truncated": false
+        }
+    }))
+}
+
+fn interaction_context(action: &Action, data: &Value) -> Option<Value> {
+    let session_id = action.session_id()?.to_string();
+    let tab_id = action_tab_id(action).map(|tab| tab.to_string());
+    let (url, title) = match action {
+        Action::WaitNavigation { .. } => (
+            data.get("url").and_then(|v| v.as_str()),
+            data.get("title").and_then(|v| v.as_str()),
+        ),
+        Action::Click { .. } => (
+            data.get("url").and_then(|v| v.as_str()),
+            data.get("title").and_then(|v| v.as_str()),
+        ),
+        _ => (None, None),
+    };
+    Some(serde_json::json!({
+        "session_id": session_id,
+        "tab_id": tab_id,
+        "url": url,
+        "title": title
+    }))
+}
+
+fn normalize_interaction_data(action: &Action, data: &Value, duration_ms: u128) -> Value {
+    match action {
+        Action::Click { selector, .. } => {
+            serde_json::json!({
+                "action": "click",
+                "target": { "selector": selector },
+                "changed": {
+                    "url_changed": data.get("url").and_then(|v| v.as_str()).is_some(),
+                    "focus_changed": false
+                }
+            })
+        }
+        Action::Type { selector, text, .. } => {
+            serde_json::json!({
+                "action": "type",
+                "target": { "selector": selector },
+                "value_summary": {
+                    "text_length": text.chars().count()
+                }
+            })
+        }
+        Action::Fill {
+            selector, value, ..
+        } => {
+            serde_json::json!({
+                "action": "fill",
+                "target": { "selector": selector },
+                "value_summary": {
+                    "text_length": value.chars().count()
+                }
+            })
+        }
+        Action::Select {
+            selector,
+            value,
+            by_text,
+            ..
+        } => {
+            serde_json::json!({
+                "action": "select",
+                "target": { "selector": selector },
+                "value_summary": {
+                    "value": data.get("selected").cloned().unwrap_or_else(|| Value::String(value.clone())),
+                    "by_text": by_text
+                }
+            })
+        }
+        Action::Hover { selector, .. } => {
+            serde_json::json!({
+                "action": "hover",
+                "target": { "selector": selector },
+                "changed": {
+                    "url_changed": false,
+                    "focus_changed": false
+                }
+            })
+        }
+        Action::Focus { selector, .. } => {
+            serde_json::json!({
+                "action": "focus",
+                "target": { "selector": selector }
+            })
+        }
+        Action::Press { key_or_chord, .. } => {
+            serde_json::json!({
+                "action": "press",
+                "keys": key_or_chord
+            })
+        }
+        Action::Drag {
+            from_selector,
+            to_selector,
+            ..
+        } => {
+            serde_json::json!({
+                "action": "drag",
+                "target": {
+                    "from": { "selector": from_selector },
+                    "to": { "selector": to_selector }
+                },
+                "changed": {
+                    "dragged": true
+                }
+            })
+        }
+        Action::Upload {
+            selector, files, ..
+        } => {
+            let count = data
+                .get("uploaded")
+                .cloned()
+                .unwrap_or_else(|| Value::Number(serde_json::Number::from(files.len())));
+            serde_json::json!({
+                "action": "upload",
+                "target": { "selector": selector },
+                "value_summary": {
+                    "files": files,
+                    "count": count
+                }
+            })
+        }
+        Action::Scroll {
+            direction,
+            amount,
+            selector,
+            ..
+        } => {
+            serde_json::json!({
+                "action": "scroll",
+                "target": { "selector": selector },
+                "changed": {
+                    "scroll_changed": true
+                },
+                "direction": direction,
+                "amount": amount
+            })
+        }
+        Action::MouseMove { x, y, .. } => {
+            serde_json::json!({
+                "action": "mouse-move",
+                "target": {
+                    "coordinates": format!("{x},{y}")
+                },
+                "point": {
+                    "x": x,
+                    "y": y
+                }
+            })
+        }
+        Action::CursorPosition { .. } => {
+            let cursor = data.get("cursor").unwrap_or(data);
+            serde_json::json!({
+                "x": cursor.get("x").cloned().unwrap_or(Value::Null),
+                "y": cursor.get("y").cloned().unwrap_or(Value::Null)
+            })
+        }
+        Action::Eval { .. } => {
+            serde_json::json!({
+                "value": data,
+                "type": json_value_type(data),
+                "preview": json_value_preview(data)
+            })
+        }
+        Action::WaitElement { selector, .. } => {
+            serde_json::json!({
+                "kind": "element",
+                "satisfied": true,
+                "elapsed_ms": duration_ms,
+                "observed_value": {
+                    "selector": data
+                        .get("found")
+                        .cloned()
+                        .unwrap_or_else(|| Value::String(selector.clone()))
+                }
+            })
+        }
+        Action::WaitNavigation { .. } => {
+            serde_json::json!({
+                "kind": "navigation",
+                "satisfied": true,
+                "elapsed_ms": duration_ms,
+                "observed_value": {
+                    "url": data.get("url").cloned().unwrap_or(Value::Null),
+                    "ready_state": data.get("readyState").cloned().unwrap_or(Value::Null)
+                }
+            })
+        }
+        Action::WaitNetworkIdle { .. } => {
+            serde_json::json!({
+                "kind": "network-idle",
+                "satisfied": true,
+                "elapsed_ms": duration_ms,
+                "observed_value": {
+                    "idle": data
+                        .get("network_idle")
+                        .cloned()
+                        .unwrap_or(Value::Bool(true))
+                }
+            })
+        }
+        Action::WaitCondition { .. } => {
+            serde_json::json!({
+                "kind": "condition",
+                "satisfied": true,
+                "elapsed_ms": duration_ms,
+                "observed_value": data.get("value").cloned().unwrap_or(Value::Null)
+            })
+        }
+        _ => data.clone(),
+    }
+}
+
+fn json_value_type(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+fn json_value_preview(value: &Value) -> String {
+    let raw = if let Some(s) = value.as_str() {
+        s.to_string()
+    } else if value.is_null() {
+        "null".to_string()
+    } else {
+        serde_json::to_string(value).unwrap_or_else(|_| "<unserializable>".to_string())
+    };
+
+    if raw.chars().count() > 120 {
+        raw.chars().take(117).collect::<String>() + "..."
+    } else {
+        raw
+    }
+}
+
+fn format_interaction_text(
+    action: &Action,
+    result: &ActionResult,
+    duration_ms: Option<u128>,
+) -> Option<String> {
+    let command = interaction_command(action)?;
+    let session_id = action.session_id()?.to_string();
+    let tab_id = action_tab_id(action).map(|tab| tab.to_string());
+
+    Some(match result {
+        ActionResult::Ok { data } => {
+            let context = interaction_context(action, data);
+            let prefix = prefixed_header(
+                &session_id,
+                tab_id.as_deref(),
+                context
+                    .as_ref()
+                    .and_then(|ctx| ctx.get("url"))
+                    .and_then(|v| v.as_str()),
+            );
+            match action {
+                Action::Click { selector, .. } => {
+                    format!("{prefix}\nok {command}\ntarget: {selector}")
+                }
+                Action::Type { selector, text, .. } => {
+                    format!(
+                        "{prefix}\nok {command}\ntarget: {selector}\ntext_length: {}",
+                        text.chars().count()
+                    )
+                }
+                Action::Fill {
+                    selector, value, ..
+                } => {
+                    format!(
+                        "{prefix}\nok {command}\ntarget: {selector}\ntext_length: {}",
+                        value.chars().count()
+                    )
+                }
+                Action::Select {
+                    selector, by_text, ..
+                } => {
+                    let value = data.get("selected").and_then(|v| v.as_str()).unwrap_or("");
+                    let mut out =
+                        format!("{prefix}\nok {command}\ntarget: {selector}\nvalue: {value}");
+                    if *by_text {
+                        out.push_str("\nby_text: true");
+                    }
+                    out
+                }
+                Action::Hover { selector, .. } => {
+                    format!("{prefix}\nok {command}\ntarget: {selector}")
+                }
+                Action::Focus { selector, .. } => {
+                    format!("{prefix}\nok {command}\ntarget: {selector}")
+                }
+                Action::Press { key_or_chord, .. } => {
+                    format!("{prefix}\nok {command}\nkeys: {key_or_chord}")
+                }
+                Action::Drag {
+                    from_selector,
+                    to_selector,
+                    ..
+                } => {
+                    format!("{prefix}\nok {command}\nfrom: {from_selector}\nto: {to_selector}")
+                }
+                Action::Upload {
+                    selector, files, ..
+                } => {
+                    format!(
+                        "{prefix}\nok {command}\ntarget: {selector}\ncount: {}",
+                        files.len()
+                    )
+                }
+                Action::Scroll {
+                    direction,
+                    amount,
+                    selector,
+                    ..
+                } => {
+                    let mut out = format!("{prefix}\nok {command}\ndirection: {direction}");
+                    if let Some(px) = amount {
+                        out.push_str(&format!("\namount: {px}"));
+                    }
+                    if let Some(sel) = selector {
+                        out.push_str(&format!("\ntarget: {sel}"));
+                    }
+                    out
+                }
+                Action::MouseMove { x, y, .. } => {
+                    format!("{prefix}\nok {command}\nx: {x}\ny: {y}")
+                }
+                Action::CursorPosition { .. } => {
+                    let cursor = data.get("cursor").unwrap_or(data);
+                    let x = cursor.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let y = cursor.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    format!("{prefix}\nok {command}\nx: {x}\ny: {y}")
+                }
+                Action::Eval { .. } => {
+                    // Eval: output the raw value directly (no ok prefix)
+                    if data.is_string() {
+                        data.as_str().unwrap_or("").to_string()
+                    } else if data.is_null() {
+                        "null".to_string()
+                    } else {
+                        serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string())
+                    }
+                }
+                Action::WaitElement { selector, .. } => {
+                    let mut out = format!("{prefix}\nok {command}");
+                    if let Some(duration_ms) = duration_ms {
+                        out.push_str(&format!("\nelapsed_ms: {duration_ms}"));
+                    }
+                    out.push_str(&format!("\ntarget: {selector}"));
+                    out
+                }
+                Action::WaitNavigation { .. } => {
+                    let url = data.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                    let mut out = format!("{prefix}\nok {command}");
+                    if let Some(duration_ms) = duration_ms {
+                        out.push_str(&format!("\nelapsed_ms: {duration_ms}"));
+                    }
+                    if !url.is_empty() {
+                        out.push_str(&format!("\nurl: {url}"));
+                    }
+                    out
+                }
+                Action::WaitNetworkIdle { .. } => {
+                    let mut out = format!("{prefix}\nok {command}");
+                    if let Some(duration_ms) = duration_ms {
+                        out.push_str(&format!("\nelapsed_ms: {duration_ms}"));
+                    }
+                    out
+                }
+                Action::WaitCondition { .. } => {
+                    let value = data.get("value").cloned().unwrap_or(Value::Null);
+                    let mut out = format!("{prefix}\nok {command}");
+                    if let Some(duration_ms) = duration_ms {
+                        out.push_str(&format!("\nelapsed_ms: {duration_ms}"));
+                    }
+                    out.push_str(&format!("\nobserved_value: {value}"));
+                    out
+                }
+                _ => return None,
+            }
+        }
+        _ => {
+            let err = normalize_error(result);
+            let mut out = String::new();
+            if let Some(prefix) = prefix_for_action(action) {
+                out.push_str(&prefix);
+                out.push('\n');
+            }
+            out.push_str(&format!("error {}: {}", err.code, err.message));
+            out
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -2596,5 +3073,630 @@ mod tests {
         assert_eq!(d["command"], "browser.value");
         assert_eq!(d["data"]["value"], "hello world");
         assert_eq!(d["data"]["target"]["selector"], "#my-input");
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase B2b: Interaction / Wait / Eval JSON envelope tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn interaction_json_click() {
+        let action = Action::Click {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            selector: "#btn".into(),
+            button: None,
+            count: None,
+        };
+        let result = ActionResult::ok(json!({"clicked": "#btn", "x": 100, "y": 200}));
+        let out = format_cli_result_json(&action, &result, 5);
+        let d: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(d["ok"], true);
+        assert_eq!(d["command"], "browser.click");
+        assert_eq!(d["context"]["session_id"], "local-1");
+        assert_eq!(d["context"]["tab_id"], "t0");
+        assert_eq!(d["data"]["action"], "click");
+        assert_eq!(d["data"]["target"]["selector"], "#btn");
+        assert_eq!(d["data"]["changed"]["url_changed"], false);
+        assert_eq!(d["meta"]["duration_ms"], 5);
+    }
+
+    #[test]
+    fn interaction_text_click() {
+        let action = Action::Click {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            selector: "#btn".into(),
+            button: None,
+            count: None,
+        };
+        let result = ActionResult::ok(json!({"clicked": "#btn", "x": 100, "y": 200}));
+        let out = format_cli_result(&action, &result);
+        assert!(out.contains("[local-1 t0]"));
+        assert!(out.contains("ok browser.click"));
+        assert!(out.contains("target: #btn"));
+    }
+
+    #[test]
+    fn interaction_text_type() {
+        let action = Action::Type {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            selector: "#input".into(),
+            text: "hello".into(),
+        };
+        let result = ActionResult::ok(json!({"typed": "hello", "selector": "#input"}));
+        let out = format_cli_result(&action, &result);
+        assert!(out.contains("ok browser.type"));
+        assert!(out.contains("target: #input"));
+        assert!(out.contains("text_length: 5"));
+    }
+
+    #[test]
+    fn interaction_text_fill() {
+        let action = Action::Fill {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            selector: "#email".into(),
+            value: "test@example.com".into(),
+        };
+        let result = ActionResult::ok(json!({"filled": "#email", "value": "test@example.com"}));
+        let out = format_cli_result(&action, &result);
+        assert!(out.contains("ok browser.fill"));
+        assert!(out.contains("target: #email"));
+        assert!(out.contains("text_length: 16"));
+    }
+
+    #[test]
+    fn interaction_text_select() {
+        let action = Action::Select {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            selector: "#dropdown".into(),
+            value: "option-2".into(),
+            by_text: false,
+        };
+        let result = ActionResult::ok(json!({"selected": "option-2", "selector": "#dropdown"}));
+        let out = format_cli_result(&action, &result);
+        assert!(out.contains("ok browser.select"));
+        assert!(out.contains("target: #dropdown"));
+        assert!(out.contains("value: option-2"));
+    }
+
+    #[test]
+    fn interaction_text_hover() {
+        let action = Action::Hover {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            selector: "#menu".into(),
+        };
+        let result = ActionResult::ok(json!({"hovered": "#menu", "x": 50, "y": 60}));
+        let out = format_cli_result(&action, &result);
+        assert!(out.contains("ok browser.hover"));
+        assert!(out.contains("target: #menu"));
+    }
+
+    #[test]
+    fn interaction_text_focus() {
+        let action = Action::Focus {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            selector: "#search".into(),
+        };
+        let result = ActionResult::ok(json!({"focused": "#search"}));
+        let out = format_cli_result(&action, &result);
+        assert!(out.contains("ok browser.focus"));
+        assert!(out.contains("target: #search"));
+    }
+
+    #[test]
+    fn interaction_text_drag() {
+        let action = Action::Drag {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            from_selector: "#source".into(),
+            to_selector: "#target".into(),
+        };
+        let result = ActionResult::ok(json!({
+            "dragged": {"from": "#source", "to": "#target"},
+            "from": {"x": 10, "y": 20},
+            "to": {"x": 100, "y": 200}
+        }));
+        let out = format_cli_result(&action, &result);
+        assert!(out.contains("ok browser.drag"));
+        assert!(out.contains("from: #source"));
+        assert!(out.contains("to: #target"));
+    }
+
+    #[test]
+    fn interaction_text_upload() {
+        let action = Action::Upload {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            selector: "#file-input".into(),
+            files: vec!["a.txt".into(), "b.txt".into()],
+        };
+        let result = ActionResult::ok(json!({"uploaded": 2, "selector": "#file-input"}));
+        let out = format_cli_result(&action, &result);
+        assert!(out.contains("ok browser.upload"));
+        assert!(out.contains("target: #file-input"));
+        assert!(out.contains("count: 2"));
+    }
+
+    #[test]
+    fn interaction_text_mouse_move() {
+        let action = Action::MouseMove {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            x: 150.5,
+            y: 250.0,
+        };
+        let result = ActionResult::ok(json!({"moved": {"x": 150.5, "y": 250.0}}));
+        let out = format_cli_result(&action, &result);
+        assert!(out.contains("ok browser.mouse-move"));
+        assert!(out.contains("x: 150.5"));
+        assert!(out.contains("y: 250"));
+    }
+
+    #[test]
+    fn interaction_json_type() {
+        let action = Action::Type {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            selector: "#input".into(),
+            text: "hello".into(),
+        };
+        let result = ActionResult::ok(json!({"typed": "hello", "selector": "#input"}));
+        let out = format_cli_result_json(&action, &result, 3);
+        let d: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(d["ok"], true);
+        assert_eq!(d["command"], "browser.type");
+        assert_eq!(d["data"]["action"], "type");
+        assert_eq!(d["data"]["target"]["selector"], "#input");
+        assert_eq!(d["data"]["value_summary"]["text_length"], 5);
+    }
+
+    #[test]
+    fn interaction_json_fill() {
+        let action = Action::Fill {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            selector: "#email".into(),
+            value: "test@example.com".into(),
+        };
+        let result = ActionResult::ok(json!({"filled": "#email", "value": "test@example.com"}));
+        let out = format_cli_result_json(&action, &result, 4);
+        let d: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(d["ok"], true);
+        assert_eq!(d["command"], "browser.fill");
+        assert_eq!(d["data"]["action"], "fill");
+        assert_eq!(d["data"]["target"]["selector"], "#email");
+        assert_eq!(d["data"]["value_summary"]["text_length"], 16);
+    }
+
+    #[test]
+    fn interaction_json_select() {
+        let action = Action::Select {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            selector: "#dropdown".into(),
+            value: "option-2".into(),
+            by_text: false,
+        };
+        let result = ActionResult::ok(json!({"selected": "option-2", "selector": "#dropdown"}));
+        let out = format_cli_result_json(&action, &result, 2);
+        let d: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(d["ok"], true);
+        assert_eq!(d["command"], "browser.select");
+        assert_eq!(d["data"]["action"], "select");
+        assert_eq!(d["data"]["target"]["selector"], "#dropdown");
+        assert_eq!(d["data"]["value_summary"]["value"], "option-2");
+        assert_eq!(d["data"]["value_summary"]["by_text"], false);
+    }
+
+    #[test]
+    fn interaction_json_hover() {
+        let action = Action::Hover {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            selector: "#menu".into(),
+        };
+        let result = ActionResult::ok(json!({"hovered": "#menu", "x": 50, "y": 60}));
+        let out = format_cli_result_json(&action, &result, 1);
+        let d: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(d["ok"], true);
+        assert_eq!(d["command"], "browser.hover");
+        assert_eq!(d["data"]["action"], "hover");
+        assert_eq!(d["data"]["target"]["selector"], "#menu");
+    }
+
+    #[test]
+    fn interaction_json_focus() {
+        let action = Action::Focus {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            selector: "#search".into(),
+        };
+        let result = ActionResult::ok(json!({"focused": "#search"}));
+        let out = format_cli_result_json(&action, &result, 1);
+        let d: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(d["ok"], true);
+        assert_eq!(d["command"], "browser.focus");
+        assert_eq!(d["data"]["action"], "focus");
+        assert_eq!(d["data"]["target"]["selector"], "#search");
+    }
+
+    #[test]
+    fn interaction_json_press() {
+        let action = Action::Press {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            key_or_chord: "Enter".into(),
+        };
+        let result = ActionResult::ok(json!({"pressed": "Enter"}));
+        let out = format_cli_result_json(&action, &result, 1);
+        let d: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(d["ok"], true);
+        assert_eq!(d["command"], "browser.press");
+        assert_eq!(d["data"]["action"], "press");
+        assert_eq!(d["data"]["keys"], "Enter");
+    }
+
+    #[test]
+    fn interaction_text_press() {
+        let action = Action::Press {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            key_or_chord: "Control+c".into(),
+        };
+        let result = ActionResult::ok(json!({"pressed": "Control+c"}));
+        let out = format_cli_result(&action, &result);
+        assert!(out.contains("ok browser.press"));
+        assert!(out.contains("keys: Control+c"));
+    }
+
+    #[test]
+    fn interaction_json_drag() {
+        let action = Action::Drag {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            from_selector: "#source".into(),
+            to_selector: "#target".into(),
+        };
+        let result = ActionResult::ok(json!({
+            "dragged": {"from": "#source", "to": "#target"},
+            "from": {"x": 10, "y": 20},
+            "to": {"x": 100, "y": 200}
+        }));
+        let out = format_cli_result_json(&action, &result, 10);
+        let d: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(d["ok"], true);
+        assert_eq!(d["command"], "browser.drag");
+        assert_eq!(d["data"]["action"], "drag");
+        assert_eq!(d["data"]["target"]["from"]["selector"], "#source");
+        assert_eq!(d["data"]["target"]["to"]["selector"], "#target");
+    }
+
+    #[test]
+    fn interaction_json_upload() {
+        let action = Action::Upload {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            selector: "#file-input".into(),
+            files: vec!["a.txt".into(), "b.txt".into()],
+        };
+        let result = ActionResult::ok(json!({"uploaded": 2, "selector": "#file-input"}));
+        let out = format_cli_result_json(&action, &result, 5);
+        let d: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(d["ok"], true);
+        assert_eq!(d["command"], "browser.upload");
+        assert_eq!(d["data"]["action"], "upload");
+        assert_eq!(d["data"]["target"]["selector"], "#file-input");
+        assert_eq!(d["data"]["value_summary"]["count"], 2);
+    }
+
+    #[test]
+    fn interaction_json_scroll() {
+        let action = Action::Scroll {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            direction: "down".into(),
+            amount: Some(300),
+            selector: None,
+        };
+        let result = ActionResult::ok(json!({"scrolled": "down", "amount": 300}));
+        let out = format_cli_result_json(&action, &result, 2);
+        let d: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(d["ok"], true);
+        assert_eq!(d["command"], "browser.scroll");
+        assert_eq!(d["data"]["action"], "scroll");
+        assert_eq!(d["data"]["direction"], "down");
+        assert_eq!(d["data"]["amount"], 300);
+        assert_eq!(d["data"]["changed"]["scroll_changed"], true);
+    }
+
+    #[test]
+    fn interaction_text_scroll_into_view() {
+        let action = Action::Scroll {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            direction: "into-view".into(),
+            amount: None,
+            selector: Some("#footer".into()),
+        };
+        let result = ActionResult::ok(json!({"scrolled": "into-view", "selector": "#footer"}));
+        let out = format_cli_result(&action, &result);
+        assert!(out.contains("ok browser.scroll"));
+        assert!(out.contains("direction: into-view"));
+        assert!(out.contains("target: #footer"));
+    }
+
+    #[test]
+    fn interaction_json_mouse_move() {
+        let action = Action::MouseMove {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            x: 150.5,
+            y: 250.0,
+        };
+        let result = ActionResult::ok(json!({"moved": {"x": 150.5, "y": 250.0}}));
+        let out = format_cli_result_json(&action, &result, 1);
+        let d: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(d["ok"], true);
+        assert_eq!(d["command"], "browser.mouse-move");
+        assert_eq!(d["data"]["action"], "mouse-move");
+        assert_eq!(d["data"]["point"]["x"], 150.5);
+        assert_eq!(d["data"]["point"]["y"], 250.0);
+    }
+
+    #[test]
+    fn interaction_json_cursor_position() {
+        let action = Action::CursorPosition {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+        };
+        let result = ActionResult::ok(json!({"cursor": {"x": 42.0, "y": 99.0}}));
+        let out = format_cli_result_json(&action, &result, 1);
+        let d: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(d["ok"], true);
+        assert_eq!(d["command"], "browser.cursor-position");
+        assert_eq!(d["data"]["x"], 42.0);
+        assert_eq!(d["data"]["y"], 99.0);
+    }
+
+    #[test]
+    fn interaction_text_cursor_position() {
+        let action = Action::CursorPosition {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+        };
+        let result = ActionResult::ok(json!({"cursor": {"x": 42.0, "y": 99.0}}));
+        let out = format_cli_result(&action, &result);
+        assert!(out.contains("ok browser.cursor-position"));
+        assert!(out.contains("x: 42"));
+        assert!(out.contains("y: 99"));
+    }
+
+    #[test]
+    fn interaction_json_eval() {
+        let action = Action::Eval {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            expression: "1 + 1".into(),
+        };
+        let result = ActionResult::ok(json!(2));
+        let out = format_cli_result_json(&action, &result, 3);
+        let d: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(d["ok"], true);
+        assert_eq!(d["command"], "browser.eval");
+        assert_eq!(d["data"]["value"], 2);
+        assert_eq!(d["data"]["type"], "number");
+        assert_eq!(d["data"]["preview"], "2");
+    }
+
+    #[test]
+    fn interaction_text_eval() {
+        let action = Action::Eval {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            expression: "document.title".into(),
+        };
+        let result = ActionResult::ok(json!("My Page"));
+        let out = format_cli_result(&action, &result);
+        assert_eq!(out, "My Page");
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase B2b: Wait command JSON envelope tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn wait_json_element() {
+        let action = Action::WaitElement {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            selector: "#ready".into(),
+            timeout_ms: Some(5000),
+        };
+        let result = ActionResult::ok(json!({"found": "#ready"}));
+        let out = format_cli_result_json(&action, &result, 120);
+        let d: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(d["ok"], true);
+        assert_eq!(d["command"], "browser.wait.element");
+        assert_eq!(d["data"]["kind"], "element");
+        assert_eq!(d["data"]["satisfied"], true);
+        assert_eq!(d["data"]["elapsed_ms"], 120);
+        assert_eq!(d["data"]["observed_value"]["selector"], "#ready");
+        assert_eq!(d["meta"]["duration_ms"], 120);
+    }
+
+    #[test]
+    fn wait_text_element() {
+        let action = Action::WaitElement {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            selector: "#ready".into(),
+            timeout_ms: Some(5000),
+        };
+        let result = ActionResult::ok(json!({"found": "#ready"}));
+        let out = format_cli_result_with_duration(&action, &result, Some(120));
+        assert!(out.contains("ok browser.wait.element"));
+        assert!(out.contains("elapsed_ms: 120"));
+        assert!(out.contains("target: #ready"));
+    }
+
+    #[test]
+    fn wait_json_navigation() {
+        let action = Action::WaitNavigation {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            timeout_ms: Some(10000),
+        };
+        let result = ActionResult::ok(json!({
+            "navigated": true,
+            "url": "https://actionbook.dev/page2",
+            "readyState": "complete"
+        }));
+        let out = format_cli_result_json(&action, &result, 250);
+        let d: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(d["ok"], true);
+        assert_eq!(d["command"], "browser.wait.navigation");
+        assert_eq!(d["context"]["url"], "https://actionbook.dev/page2");
+        assert_eq!(d["data"]["kind"], "navigation");
+        assert_eq!(d["data"]["satisfied"], true);
+        assert_eq!(d["data"]["elapsed_ms"], 250);
+        assert_eq!(
+            d["data"]["observed_value"]["url"],
+            "https://actionbook.dev/page2"
+        );
+        assert_eq!(d["data"]["observed_value"]["ready_state"], "complete");
+    }
+
+    #[test]
+    fn wait_text_navigation() {
+        let action = Action::WaitNavigation {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            timeout_ms: None,
+        };
+        let result = ActionResult::ok(json!({
+            "navigated": true,
+            "url": "https://actionbook.dev/page2",
+            "readyState": "complete"
+        }));
+        let out = format_cli_result_with_duration(&action, &result, Some(250));
+        assert!(out.contains("ok browser.wait.navigation"));
+        assert!(out.contains("elapsed_ms: 250"));
+        assert!(out.contains("url: https://actionbook.dev/page2"));
+    }
+
+    #[test]
+    fn wait_json_network_idle() {
+        let action = Action::WaitNetworkIdle {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            timeout_ms: Some(30000),
+            idle_time_ms: Some(500),
+        };
+        let result = ActionResult::ok(json!({"network_idle": true}));
+        let out = format_cli_result_json(&action, &result, 600);
+        let d: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(d["ok"], true);
+        assert_eq!(d["command"], "browser.wait.network-idle");
+        assert_eq!(d["data"]["kind"], "network-idle");
+        assert_eq!(d["data"]["satisfied"], true);
+        assert_eq!(d["data"]["elapsed_ms"], 600);
+        assert_eq!(d["data"]["observed_value"]["idle"], true);
+    }
+
+    #[test]
+    fn wait_text_network_idle() {
+        let action = Action::WaitNetworkIdle {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            timeout_ms: None,
+            idle_time_ms: None,
+        };
+        let result = ActionResult::ok(json!({"network_idle": true}));
+        let out = format_cli_result_with_duration(&action, &result, Some(600));
+        assert!(out.contains("ok browser.wait.network-idle"));
+        assert!(out.contains("elapsed_ms: 600"));
+    }
+
+    #[test]
+    fn wait_json_condition() {
+        let action = Action::WaitCondition {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            expression: "document.readyState === 'complete'".into(),
+            timeout_ms: Some(5000),
+        };
+        let result = ActionResult::ok(json!({"condition_met": true, "value": true}));
+        let out = format_cli_result_json(&action, &result, 80);
+        let d: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(d["ok"], true);
+        assert_eq!(d["command"], "browser.wait.condition");
+        assert_eq!(d["data"]["kind"], "condition");
+        assert_eq!(d["data"]["satisfied"], true);
+        assert_eq!(d["data"]["elapsed_ms"], 80);
+        assert_eq!(d["data"]["observed_value"], true);
+    }
+
+    #[test]
+    fn wait_text_condition() {
+        let action = Action::WaitCondition {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            expression: "window.loaded".into(),
+            timeout_ms: None,
+        };
+        let result = ActionResult::ok(json!({"condition_met": true, "value": true}));
+        let out = format_cli_result_with_duration(&action, &result, Some(80));
+        assert!(out.contains("ok browser.wait.condition"));
+        assert!(out.contains("elapsed_ms: 80"));
+        assert!(out.contains("observed_value: true"));
+    }
+
+    #[test]
+    fn interaction_json_error_envelope() {
+        let action = Action::Click {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            selector: "#missing".into(),
+            button: None,
+            count: None,
+        };
+        let result = ActionResult::fatal(
+            "element_not_found",
+            "no element matches #missing",
+            "check the selector",
+        );
+        let out = format_cli_result_json(&action, &result, 3);
+        let d: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(d["ok"], false);
+        assert_eq!(d["command"], "browser.click");
+        assert!(d["error"]["code"]
+            .as_str()
+            .unwrap()
+            .contains("ELEMENT_NOT_FOUND"));
+    }
+
+    #[test]
+    fn interaction_text_error() {
+        let action = Action::Click {
+            session: SessionId::new_unchecked("local-1"),
+            tab: TabId(0),
+            selector: "#missing".into(),
+            button: None,
+            count: None,
+        };
+        let result = ActionResult::fatal(
+            "element_not_found",
+            "no element matches #missing",
+            "check the selector",
+        );
+        let out = format_cli_result(&action, &result);
+        assert!(out.contains("ELEMENT_NOT_FOUND"));
+        assert!(out.contains("#missing"));
     }
 }
