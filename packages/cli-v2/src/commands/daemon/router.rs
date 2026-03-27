@@ -89,13 +89,28 @@ async fn handle_start(
                     let tab_info = (tab.id, tab.target_id.clone());
                     // Release lock for CDP I/O
                     drop(reg);
-                    if let Some(ws) = ws_url {
-                        let _ = cdp_navigate(&ws, &final_url).await;
+                    if let Some(ref ws) = ws_url {
+                        if let Err(e) = cdp_navigate(ws, &final_url).await {
+                            return ActionResult::fatal("NAVIGATION_FAILED", format!("reuse navigate failed: {e}"));
+                        }
+                        // Wait for page to load
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     }
-                    // Re-acquire to update URL and build response
+                    // Refresh tab info from Chrome after navigation
                     let mut reg = registry.lock().await;
                     let entry = reg.get_mut(&session_id).unwrap();
-                    if let Some(tab) = entry.tabs.iter_mut().find(|t| t.id == tab_info.0) {
+                    if let Ok(targets) = browser::list_targets(entry.cdp_port).await {
+                        for target in &targets {
+                            let tid = target.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                            if tid == tab_info.1 {
+                                if let Some(tab) = entry.tabs.iter_mut().find(|t| t.id == tab_info.0) {
+                                    tab.url = target.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                    tab.title = target.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                }
+                                break;
+                            }
+                        }
+                    } else if let Some(tab) = entry.tabs.iter_mut().find(|t| t.id == tab_info.0) {
                         tab.url = final_url.clone();
                     }
                     let tab = entry.tabs.first().unwrap();
