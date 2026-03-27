@@ -3,10 +3,9 @@ use std::time::Instant;
 use clap::Parser;
 use serde_json::json;
 
-use actionbook_cli::action::Action;
 use actionbook_cli::action_result::ActionResult;
 use actionbook_cli::cli::{BrowserCommands, Cli, Commands};
-use actionbook_cli::output::{self, JsonEnvelope, ResponseContext};
+use actionbook_cli::output::{self, JsonEnvelope};
 use actionbook_cli::utils::client::DaemonClient;
 
 #[tokio::main]
@@ -20,7 +19,7 @@ async fn main() {
 
     // Internal: daemon auto-start passes a hidden arg before clap parsing
     if std::env::args().nth(1).as_deref() == Some("__serve") {
-        if let Err(e) = actionbook_cli::commands::daemon::server::run_daemon().await {
+        if let Err(e) = actionbook_cli::daemon::server::run_daemon().await {
             eprintln!("daemon error: {e}");
             std::process::exit(1);
         }
@@ -85,40 +84,41 @@ async fn handle_browser(
     json_mode: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
+    let command_name = command.command_name().to_string();
 
     // Build action from CLI args
-    let action = match build_action(&command) {
+    let action = match command.to_action() {
         Some(a) => a,
         None => {
-            let cmd_name = format!("browser.{}", command_label(&command));
             let result = ActionResult::fatal(
                 "UNSUPPORTED_OPERATION",
-                format!("{cmd_name} is not yet implemented"),
+                format!("{command_name} is not yet implemented"),
             );
             let duration = start.elapsed();
+            let context = command.context(&result);
             if json_mode {
-                let envelope = JsonEnvelope::from_result(&cmd_name, None, &result, duration);
+                let envelope =
+                    JsonEnvelope::from_result(&command_name, context, &result, duration);
                 println!("{}", serde_json::to_string(&envelope)?);
             } else {
-                let text = output::format_text(&cmd_name, &None, &result);
+                let text = output::format_text(&command_name, &context, &result);
                 println!("{text}");
             }
             std::process::exit(1);
         }
     };
-    let command_name = action.command_name().to_string();
 
     // Connect to daemon and execute
     let mut client = DaemonClient::connect().await?;
     let result = client.send_action(&action).await?;
-
     let duration = start.elapsed();
 
-    // Build context based on command type and result
-    let context = build_context(&command, &result);
+    // Build context from command + result
+    let context = command.context(&result);
 
     if json_mode {
-        let envelope = JsonEnvelope::from_result(&command_name, context.clone(), &result, duration);
+        let envelope =
+            JsonEnvelope::from_result(&command_name, context.clone(), &result, duration);
         println!("{}", serde_json::to_string(&envelope)?);
     } else {
         let text = output::format_text(&command_name, &context, &result);
@@ -130,185 +130,6 @@ async fn handle_browser(
     }
 
     Ok(())
-}
-
-fn command_label(command: &BrowserCommands) -> &'static str {
-    match command {
-        BrowserCommands::Start { .. } => "start",
-        BrowserCommands::ListSessions => "list-sessions",
-        BrowserCommands::Status { .. } => "status",
-        BrowserCommands::Close { .. } => "close",
-        BrowserCommands::Restart { .. } => "restart",
-        BrowserCommands::ListTabs { .. } => "list-tabs",
-        BrowserCommands::NewTab { .. } => "new-tab",
-        BrowserCommands::Open { .. } => "open",
-        BrowserCommands::CloseTab { .. } => "close-tab",
-        BrowserCommands::Goto { .. } => "goto",
-        BrowserCommands::Back { .. } => "back",
-        BrowserCommands::Forward { .. } => "forward",
-        BrowserCommands::Reload { .. } => "reload",
-        BrowserCommands::Snapshot { .. } => "snapshot",
-        BrowserCommands::Screenshot { .. } => "screenshot",
-        BrowserCommands::Eval { .. } => "eval",
-        BrowserCommands::Click { .. } => "click",
-        BrowserCommands::Fill { .. } => "fill",
-        BrowserCommands::Type { .. } => "type",
-    }
-}
-
-/// Build Action for implemented commands, None for unimplemented.
-fn build_action(command: &BrowserCommands) -> Option<Action> {
-    match command {
-        BrowserCommands::Start {
-            mode,
-            headless,
-            profile,
-            open_url,
-            cdp_endpoint,
-            set_session_id,
-            ..
-        } => Some(Action::StartSession {
-            mode: mode.clone().into(),
-            headless: *headless,
-            profile: profile.clone(),
-            open_url: open_url.clone(),
-            cdp_endpoint: cdp_endpoint.clone(),
-            set_session_id: set_session_id.clone(),
-        }),
-        BrowserCommands::ListSessions => Some(Action::ListSessions),
-        BrowserCommands::Status { session } => Some(Action::SessionStatus {
-            session_id: session.clone(),
-        }),
-        BrowserCommands::Close { session } => Some(Action::Close {
-            session_id: session.clone(),
-        }),
-        BrowserCommands::Restart { session } => Some(Action::Restart {
-            session_id: session.clone(),
-        }),
-        // Implemented in daemon but not fully tested yet
-        BrowserCommands::Goto { url, session, tab } => Some(Action::Goto {
-            session_id: session.clone(),
-            tab_id: tab.clone(),
-            url: url.clone(),
-        }),
-        BrowserCommands::NewTab {
-            url,
-            session,
-            new_window,
-            ..
-        }
-        | BrowserCommands::Open {
-            url,
-            session,
-            new_window,
-            ..
-        } => Some(Action::NewTab {
-            session_id: session.clone(),
-            url: url.clone(),
-            new_window: *new_window,
-        }),
-        BrowserCommands::CloseTab { session, tab } => Some(Action::CloseTab {
-            session_id: session.clone(),
-            tab_id: tab.clone(),
-        }),
-        BrowserCommands::ListTabs { session } => Some(Action::ListTabs {
-            session_id: session.clone(),
-        }),
-        BrowserCommands::Snapshot { session, tab } => Some(Action::Snapshot {
-            session_id: session.clone(),
-            tab_id: tab.clone(),
-        }),
-        BrowserCommands::Eval {
-            expression,
-            session,
-            tab,
-        } => Some(Action::Eval {
-            session_id: session.clone(),
-            tab_id: tab.clone(),
-            expression: expression.clone(),
-        }),
-        // Not yet implemented
-        _ => None,
-    }
-}
-
-fn build_context(command: &BrowserCommands, result: &ActionResult) -> Option<ResponseContext> {
-    match command {
-        // Global commands that create a session return context
-        BrowserCommands::Start { .. } => {
-            if let ActionResult::Ok { data } = result {
-                Some(ResponseContext {
-                    session_id: data["session"]["session_id"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string(),
-                    tab_id: Some(data["tab"]["tab_id"].as_str().unwrap_or("t1").to_string()),
-                    window_id: None,
-                    url: data["tab"]["url"].as_str().map(|s| s.to_string()),
-                    title: data["tab"]["title"].as_str().map(|s| s.to_string()),
-                })
-            } else {
-                None
-            }
-        }
-        // Global commands with no session
-        BrowserCommands::ListSessions => None,
-        // Session-level commands
-        BrowserCommands::Status { session }
-        | BrowserCommands::Close { session }
-        | BrowserCommands::Restart { session } => {
-            let mut ctx = ResponseContext {
-                session_id: session.clone(),
-                tab_id: None,
-                window_id: None,
-                url: None,
-                title: None,
-            };
-            // restart returns tab info per §7.5
-            if matches!(command, BrowserCommands::Restart { .. })
-                && let ActionResult::Ok { data } = result
-            {
-                if let Some(tab_id) = data
-                    .pointer("/session/tab_id")
-                    .or_else(|| data.pointer("/tab/tab_id"))
-                    .and_then(|v| v.as_str())
-                {
-                    ctx.tab_id = Some(tab_id.to_string());
-                } else {
-                    ctx.tab_id = Some("t1".to_string());
-                }
-            }
-            Some(ctx)
-        }
-        // Tab-level commands
-        BrowserCommands::Goto { session, tab, .. }
-        | BrowserCommands::Back { session, tab }
-        | BrowserCommands::Forward { session, tab }
-        | BrowserCommands::Reload { session, tab }
-        | BrowserCommands::Snapshot { session, tab }
-        | BrowserCommands::Screenshot { session, tab, .. }
-        | BrowserCommands::Eval { session, tab, .. }
-        | BrowserCommands::Click { session, tab, .. }
-        | BrowserCommands::Fill { session, tab, .. }
-        | BrowserCommands::Type { session, tab, .. }
-        | BrowserCommands::CloseTab { session, tab } => Some(ResponseContext {
-            session_id: session.clone(),
-            tab_id: Some(tab.clone()),
-            window_id: None,
-            url: None,
-            title: None,
-        }),
-        // Session-level commands
-        BrowserCommands::NewTab { session, .. }
-        | BrowserCommands::Open { session, .. }
-        | BrowserCommands::ListTabs { session } => Some(ResponseContext {
-            session_id: session.clone(),
-            tab_id: None,
-            window_id: None,
-            url: None,
-            title: None,
-        }),
-    }
 }
 
 fn handle_version(json_mode: bool) {

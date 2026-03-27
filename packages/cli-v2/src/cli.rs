@@ -1,4 +1,19 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand};
+
+use crate::action::Action;
+use crate::action_result::ActionResult;
+use crate::browser::{interaction, navigation, observation, session, tab};
+use crate::output::ResponseContext;
+
+fn tab_context(session: &str, tab: &str) -> Option<ResponseContext> {
+    Some(ResponseContext {
+        session_id: session.to_string(),
+        tab_id: Some(tab.to_string()),
+        window_id: None,
+        url: None,
+        title: None,
+    })
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -35,144 +50,53 @@ pub enum Commands {
     Help,
 }
 
+/// Unimplemented tab-level command args.
+#[derive(Args, Debug, Clone)]
+pub struct TabArgs {
+    /// Session ID
+    #[arg(long)]
+    pub session: String,
+    /// Tab ID
+    #[arg(long)]
+    pub tab: String,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum BrowserCommands {
+    // ── Session lifecycle ──────────────────────────────────────
     /// Start or attach a browser session
-    Start {
-        /// Browser mode
-        #[arg(long, value_enum, default_value = "local")]
-        mode: CliMode,
-        /// Headless mode
-        #[arg(long)]
-        headless: bool,
-        /// Profile name
-        #[arg(long)]
-        profile: Option<String>,
-        /// Open this URL on start
-        #[arg(long)]
-        open_url: Option<String>,
-        /// Connect to existing CDP endpoint
-        #[arg(long)]
-        cdp_endpoint: Option<String>,
-        /// Header for CDP endpoint (KEY:VALUE)
-        #[arg(long)]
-        header: Option<String>,
-        /// Specify a semantic session ID
-        #[arg(long)]
-        set_session_id: Option<String>,
-    },
+    Start(session::start::Cmd),
     /// List all active sessions
-    ListSessions,
+    ListSessions(session::list::Cmd),
     /// Show session status
-    Status {
-        /// Session ID
-        #[arg(long)]
-        session: String,
-    },
+    Status(session::status::Cmd),
     /// Close a session
-    Close {
-        /// Session ID
-        #[arg(long)]
-        session: String,
-    },
+    Close(session::close::Cmd),
     /// Restart a session
-    Restart {
-        /// Session ID
-        #[arg(long)]
-        session: String,
-    },
+    Restart(session::restart::Cmd),
+
+    // ── Tab management ─────────────────────────────────────────
     /// List tabs in a session
-    ListTabs {
-        /// Session ID
-        #[arg(long)]
-        session: String,
-    },
+    ListTabs(tab::list::Cmd),
     /// Open a new tab
-    #[command(name = "new-tab")]
-    NewTab {
-        /// URL to open
-        url: String,
-        /// Session ID
-        #[arg(long)]
-        session: String,
-        /// Open in new window
-        #[arg(long)]
-        new_window: bool,
-        /// Window ID
-        #[arg(long)]
-        window: Option<String>,
-    },
-    /// Open a URL (alias for new-tab)
-    Open {
-        /// URL to open
-        url: String,
-        /// Session ID
-        #[arg(long)]
-        session: String,
-        /// Open in new window
-        #[arg(long)]
-        new_window: bool,
-        /// Window ID
-        #[arg(long)]
-        window: Option<String>,
-    },
+    #[command(alias = "open")]
+    NewTab(tab::open::Cmd),
     /// Close a tab
-    #[command(name = "close-tab")]
-    CloseTab {
-        /// Session ID
-        #[arg(long)]
-        session: String,
-        /// Tab ID
-        #[arg(long)]
-        tab: String,
-    },
+    CloseTab(tab::close::Cmd),
+
+    // ── Navigation ─────────────────────────────────────────────
     /// Navigate to URL
-    Goto {
-        /// Target URL
-        url: String,
-        /// Session ID
-        #[arg(long)]
-        session: String,
-        /// Tab ID
-        #[arg(long)]
-        tab: String,
-    },
+    Goto(navigation::goto::Cmd),
     /// Go back
-    Back {
-        /// Session ID
-        #[arg(long)]
-        session: String,
-        /// Tab ID
-        #[arg(long)]
-        tab: String,
-    },
+    Back(TabArgs),
     /// Go forward
-    Forward {
-        /// Session ID
-        #[arg(long)]
-        session: String,
-        /// Tab ID
-        #[arg(long)]
-        tab: String,
-    },
+    Forward(TabArgs),
     /// Reload page
-    Reload {
-        /// Session ID
-        #[arg(long)]
-        session: String,
-        /// Tab ID
-        #[arg(long)]
-        tab: String,
-    },
+    Reload(TabArgs),
+
+    // ── Observation ────────────────────────────────────────────
     /// Capture accessibility snapshot
-    Snapshot {
-        /// Session ID
-        #[arg(long)]
-        session: String,
-        /// Tab ID
-        #[arg(long)]
-        tab: String,
-    },
+    Snapshot(observation::snapshot::Cmd),
     /// Take screenshot
     Screenshot {
         /// Output file path
@@ -184,25 +108,16 @@ pub enum BrowserCommands {
         #[arg(long)]
         tab: String,
     },
+
+    // ── Interaction ────────────────────────────────────────────
     /// Evaluate JavaScript
-    Eval {
-        /// JavaScript expression
-        expression: String,
-        /// Session ID
-        #[arg(long)]
-        session: String,
-        /// Tab ID
-        #[arg(long)]
-        tab: String,
-    },
+    Eval(interaction::eval::Cmd),
     /// Click an element
     Click {
         /// Selector
         selector: String,
-        /// Session ID
         #[arg(long)]
         session: String,
-        /// Tab ID
         #[arg(long)]
         tab: String,
     },
@@ -212,10 +127,8 @@ pub enum BrowserCommands {
         selector: String,
         /// Value to fill
         value: String,
-        /// Session ID
         #[arg(long)]
         session: String,
-        /// Tab ID
         #[arg(long)]
         tab: String,
     },
@@ -223,28 +136,77 @@ pub enum BrowserCommands {
     Type {
         /// Text to type
         text: String,
-        /// Session ID
         #[arg(long)]
         session: String,
-        /// Tab ID
         #[arg(long)]
         tab: String,
     },
 }
 
-#[derive(ValueEnum, Clone, Debug)]
-pub enum CliMode {
-    Local,
-    Extension,
-    Cloud,
-}
+impl BrowserCommands {
+    /// Convert to wire Action. Returns None for unimplemented commands.
+    pub fn to_action(&self) -> Option<Action> {
+        Some(match self {
+            Self::Start(cmd) => Action::StartSession(cmd.clone()),
+            Self::ListSessions(cmd) => Action::ListSessions(cmd.clone()),
+            Self::Status(cmd) => Action::SessionStatus(cmd.clone()),
+            Self::Close(cmd) => Action::Close(cmd.clone()),
+            Self::Restart(cmd) => Action::Restart(cmd.clone()),
+            Self::ListTabs(cmd) => Action::ListTabs(cmd.clone()),
+            Self::NewTab(cmd) => Action::NewTab(cmd.clone()),
+            Self::CloseTab(cmd) => Action::CloseTab(cmd.clone()),
+            Self::Goto(cmd) => Action::Goto(cmd.clone()),
+            Self::Snapshot(cmd) => Action::Snapshot(cmd.clone()),
+            Self::Eval(cmd) => Action::Eval(cmd.clone()),
+            _ => return None,
+        })
+    }
 
-impl From<CliMode> for crate::types::Mode {
-    fn from(m: CliMode) -> Self {
-        match m {
-            CliMode::Local => crate::types::Mode::Local,
-            CliMode::Extension => crate::types::Mode::Extension,
-            CliMode::Cloud => crate::types::Mode::Cloud,
+    /// Normalized command name for the JSON envelope.
+    pub fn command_name(&self) -> &str {
+        match self {
+            Self::Start(_) => session::start::COMMAND_NAME,
+            Self::ListSessions(_) => session::list::COMMAND_NAME,
+            Self::Status(_) => session::status::COMMAND_NAME,
+            Self::Close(_) => session::close::COMMAND_NAME,
+            Self::Restart(_) => session::restart::COMMAND_NAME,
+            Self::ListTabs(_) => tab::list::COMMAND_NAME,
+            Self::NewTab(_) => tab::open::COMMAND_NAME,
+            Self::CloseTab(_) => tab::close::COMMAND_NAME,
+            Self::Goto(_) => navigation::goto::COMMAND_NAME,
+            Self::Back(_) => "browser.back",
+            Self::Forward(_) => "browser.forward",
+            Self::Reload(_) => "browser.reload",
+            Self::Snapshot(_) => observation::snapshot::COMMAND_NAME,
+            Self::Screenshot { .. } => "browser.screenshot",
+            Self::Eval(_) => interaction::eval::COMMAND_NAME,
+            Self::Click { .. } => "browser.click",
+            Self::Fill { .. } => "browser.fill",
+            Self::Type { .. } => "browser.type",
+        }
+    }
+
+    /// Build response context from command args and result.
+    pub fn context(&self, result: &ActionResult) -> Option<ResponseContext> {
+        match self {
+            Self::Start(cmd) => session::start::context(cmd, result),
+            Self::ListSessions(cmd) => session::list::context(cmd, result),
+            Self::Status(cmd) => session::status::context(cmd, result),
+            Self::Close(cmd) => session::close::context(cmd, result),
+            Self::Restart(cmd) => session::restart::context(cmd, result),
+            Self::ListTabs(cmd) => tab::list::context(cmd, result),
+            Self::NewTab(cmd) => tab::open::context(cmd, result),
+            Self::CloseTab(cmd) => tab::close::context(cmd, result),
+            Self::Goto(cmd) => navigation::goto::context(cmd, result),
+            Self::Snapshot(cmd) => observation::snapshot::context(cmd, result),
+            Self::Eval(cmd) => interaction::eval::context(cmd, result),
+            Self::Back(a) | Self::Forward(a) | Self::Reload(a) => {
+                tab_context(&a.session, &a.tab)
+            }
+            Self::Screenshot { session, tab, .. }
+            | Self::Click { session, tab, .. }
+            | Self::Fill { session, tab, .. }
+            | Self::Type { session, tab, .. } => tab_context(session, tab),
         }
     }
 }

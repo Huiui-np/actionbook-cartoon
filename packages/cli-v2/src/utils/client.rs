@@ -4,7 +4,7 @@ use tokio::net::UnixStream;
 
 use crate::action::Action;
 use crate::action_result::ActionResult;
-use crate::commands::daemon::server;
+use crate::daemon::server;
 use crate::error::CliError;
 use crate::utils::wire;
 
