@@ -42,13 +42,16 @@ fn lifecycle_open_and_close_json() {
     assert_eq!(v["data"]["tab"]["tab_id"], "t1");
     assert!(v["data"]["tab"]["url"].is_string());
     assert!(v["data"]["tab"]["title"].is_string());
-    // §7.1: native_tab_id key must be present (number or null)
+    // §7.1: native_tab_id key must be present
     assert!(
         v["data"]["tab"].as_object().map_or(false, |o| o.contains_key("native_tab_id")),
         "native_tab_id key must be present in tab object per §7.1"
     );
     let ntid = &v["data"]["tab"]["native_tab_id"];
-    assert!(ntid.is_number() || ntid.is_null(), "native_tab_id must be number or null");
+    assert!(
+        ntid.is_string() || ntid.is_number() || ntid.is_null(),
+        "native_tab_id must be string, number, or null"
+    );
     // data.reused
     assert_eq!(v["data"]["reused"], false);
     // context (special: start returns context after session creation)
@@ -888,4 +891,71 @@ fn lifecycle_start_reuse_existing_text() {
 
     let out = headless(&["browser", "close", "--session", "local-1"], 30);
     assert_success(&out, "close");
+}
+
+// ===========================================================================
+// 14. lifecycle_start_reuse_with_open_url — reuse navigates to URL
+// ===========================================================================
+
+#[test]
+fn lifecycle_start_reuse_with_open_url_json() {
+    if skip() {
+        return;
+    }
+    let _guard = SessionGuard::new();
+
+    // First start
+    let out = headless_json(
+        &[
+            "browser", "start", "--mode", "local", "--headless",
+            "--open-url", TEST_URL,
+        ],
+        30,
+    );
+    assert_success(&out, "first start");
+    let v = parse_json(&out);
+    assert_eq!(v["data"]["reused"], false);
+
+    // Second start with different URL — should reuse and navigate
+    let out = headless_json(
+        &[
+            "browser", "start", "--mode", "local", "--headless",
+            "--open-url", "https://arxiv.org",
+        ],
+        30,
+    );
+    assert_success(&out, "second start (reuse + navigate)");
+    let v = parse_json(&out);
+    assert_eq!(v["data"]["reused"], true, "should be reused");
+    assert_eq!(v["data"]["session"]["session_id"], "local-1");
+    // tab URL should be updated to the new URL
+    assert!(
+        v["data"]["tab"]["url"]
+            .as_str()
+            .unwrap_or("")
+            .contains("arxiv.org"),
+        "tab url should contain arxiv.org after navigate, got: {}",
+        v["data"]["tab"]["url"]
+    );
+
+    // Verify via eval
+    let out = headless_json(
+        &[
+            "browser", "eval", "window.location.href",
+            "--session", "local-1", "--tab", "t1",
+        ],
+        30,
+    );
+    assert_success(&out, "eval location");
+    let v = parse_json(&out);
+    assert!(
+        v["data"]["value"]
+            .as_str()
+            .unwrap_or("")
+            .contains("arxiv.org"),
+        "actual URL should be arxiv.org"
+    );
+
+    let out = headless(&["browser", "close", "--session", "local-1"], 30);
+    assert_success(&out, "close reuse");
 }

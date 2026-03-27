@@ -111,7 +111,7 @@ async fn handle_start(
                             "tab_id": tab.id.to_string(),
                             "url": tab.url,
                             "title": tab.title,
-                            "native_tab_id": serde_json::Value::Null,
+                            "native_tab_id": if tab.target_id.is_empty() { serde_json::Value::Null } else { json!(tab.target_id) },
                         },
                         "reused": true,
                     }));
@@ -133,7 +133,7 @@ async fn handle_start(
                     "tab_id": first_tab.map(|t| t.id.to_string()).unwrap_or_else(|| "t1".to_string()),
                     "url": first_tab.map(|t| t.url.as_str()).unwrap_or(""),
                     "title": first_tab.map(|t| t.title.as_str()).unwrap_or(""),
-                    "native_tab_id": serde_json::Value::Null,
+                    "native_tab_id": first_tab.map(|t| if t.target_id.is_empty() { serde_json::Value::Null } else { json!(t.target_id) }).unwrap_or(serde_json::Value::Null),
                 },
                 "reused": true,
             }));
@@ -254,7 +254,7 @@ async fn handle_start(
             "tab_id": first_tab.id.to_string(),
             "url": first_tab.url,
             "title": first_tab.title,
-            "native_tab_id": serde_json::Value::Null,
+            "native_tab_id": if first_tab.target_id.is_empty() { serde_json::Value::Null } else { json!(first_tab.target_id) },
         },
         "reused": false,
     }))
