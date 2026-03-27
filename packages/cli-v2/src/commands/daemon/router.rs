@@ -69,15 +69,65 @@ async fn handle_start(
 
     // Local mode: 1 profile = max 1 session. Reuse existing if same profile.
     if mode == crate::types::Mode::Local {
-        let existing = reg.list().iter().find(|s| s.profile == profile_name && s.mode == mode).map(|s| {
-            let first_tab = s.tabs.first();
-            json!({
+        if let Some(session_id) = reg.list().iter()
+            .find(|s| s.profile == profile_name && s.mode == mode)
+            .map(|s| s.id.as_str().to_string())
+        {
+            // If open_url is provided, navigate or open a new tab in the existing session
+            if let Some(url) = open_url {
+                let final_url = ensure_scheme(url);
+                let entry = reg.get_mut(&session_id).unwrap();
+                let first_tab = entry.tabs.first();
+
+                if let Some(tab) = first_tab {
+                    // Navigate the first tab to the requested URL
+                    let ws_url = if !tab.target_id.is_empty() {
+                        Some(format!("ws://127.0.0.1:{}/devtools/page/{}", entry.cdp_port, tab.target_id))
+                    } else {
+                        None
+                    };
+                    let tab_info = (tab.id, tab.target_id.clone());
+                    // Release lock for CDP I/O
+                    drop(reg);
+                    if let Some(ws) = ws_url {
+                        let _ = cdp_navigate(&ws, &final_url).await;
+                    }
+                    // Re-acquire to update URL and build response
+                    let mut reg = registry.lock().await;
+                    let entry = reg.get_mut(&session_id).unwrap();
+                    if let Some(tab) = entry.tabs.iter_mut().find(|t| t.id == tab_info.0) {
+                        tab.url = final_url.clone();
+                    }
+                    let tab = entry.tabs.first().unwrap();
+                    return ActionResult::ok(json!({
+                        "session": {
+                            "session_id": entry.id.as_str(),
+                            "mode": entry.mode.to_string(),
+                            "status": entry.status,
+                            "headless": entry.headless,
+                            "cdp_endpoint": entry.ws_url,
+                        },
+                        "tab": {
+                            "tab_id": tab.id.to_string(),
+                            "url": tab.url,
+                            "title": tab.title,
+                            "native_tab_id": serde_json::Value::Null,
+                        },
+                        "reused": true,
+                    }));
+                }
+            }
+
+            // No open_url — just return existing session info
+            let entry = reg.get(&session_id).unwrap();
+            let first_tab = entry.tabs.first();
+            return ActionResult::ok(json!({
                 "session": {
-                    "session_id": s.id.as_str(),
-                    "mode": s.mode.to_string(),
-                    "status": s.status,
-                    "headless": s.headless,
-                    "cdp_endpoint": s.ws_url,
+                    "session_id": entry.id.as_str(),
+                    "mode": entry.mode.to_string(),
+                    "status": entry.status,
+                    "headless": entry.headless,
+                    "cdp_endpoint": entry.ws_url,
                 },
                 "tab": {
                     "tab_id": first_tab.map(|t| t.id.to_string()).unwrap_or_else(|| "t1".to_string()),
@@ -86,10 +136,7 @@ async fn handle_start(
                     "native_tab_id": serde_json::Value::Null,
                 },
                 "reused": true,
-            })
-        });
-        if let Some(data) = existing {
-            return ActionResult::ok(data);
+            }));
         }
     }
 
@@ -142,7 +189,18 @@ async fn handle_start(
         }
     };
 
-    let targets = browser::list_targets(port).await.unwrap_or_default();
+    // If open_url was specified, give the page time to load before reading targets
+    if open_url.is_some() {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    let mut targets = browser::list_targets(port).await.unwrap_or_default();
+
+    // Retry once if title is empty (page still loading)
+    if targets.first().and_then(|t| t.get("title")).and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        targets = browser::list_targets(port).await.unwrap_or(targets);
+    }
+
     let mut tabs = Vec::new();
     let mut next_tab_id = 1u32;
     for t in &targets {
