@@ -691,6 +691,12 @@ pub enum BrowserCommands {
         #[command(subcommand)]
         command: SessionCommands,
     },
+
+    /// Handle JavaScript dialogs (alert, confirm, prompt, beforeunload)
+    Dialog {
+        #[command(subcommand)]
+        command: DialogCommands,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -704,6 +710,19 @@ pub enum SessionCommands {
         /// Session name to destroy
         name: String,
     },
+}
+
+#[derive(Subcommand, Clone)]
+pub enum DialogCommands {
+    /// Accept the current dialog (with optional prompt text)
+    Accept {
+        /// Text to enter for prompt dialogs
+        text: Option<String>,
+    },
+    /// Dismiss/cancel the current dialog
+    Dismiss,
+    /// Check if a JavaScript dialog is currently open
+    Status,
 }
 
 #[derive(Subcommand, Clone)]
