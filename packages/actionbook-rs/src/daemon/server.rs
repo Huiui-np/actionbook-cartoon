@@ -230,9 +230,10 @@ struct WsState {
     /// arrivals see the current state without missing a signal.
     ready_tx: watch::Sender<bool>,
     ready_rx: watch::Receiver<bool>,
-    /// Tracks the currently open JavaScript dialog (alert/confirm/prompt/beforeunload).
+    /// Tracks currently open JavaScript dialogs per CDP session ID.
     /// Updated by CDP events Page.javascriptDialogOpening / Page.javascriptDialogClosed.
-    pending_dialog: Arc<Mutex<Option<PendingDialog>>>,
+    /// Keyed by CDP sessionId so multi-session flows don't cross-contaminate.
+    pending_dialogs: Arc<Mutex<HashMap<String, PendingDialog>>>,
 }
 
 /// Command sent to the WS writer task.
@@ -255,7 +256,7 @@ impl WsState {
             profile,
             ready_tx,
             ready_rx,
-            pending_dialog: Arc::new(Mutex::new(None)),
+            pending_dialogs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -530,14 +531,36 @@ impl WsState {
             cdp_session_id
         );
 
-        let mut sessions = self.sessions.lock().await;
-        sessions.insert(
-            session_name.to_string(),
-            SessionEntry {
-                cdp_session_id,
-                target_id: target_id.to_string(),
-            },
-        );
+        let cdp_session_id_clone = cdp_session_id.clone();
+        {
+            let mut sessions = self.sessions.lock().await;
+            sessions.insert(
+                session_name.to_string(),
+                SessionEntry {
+                    cdp_session_id,
+                    target_id: target_id.to_string(),
+                },
+            );
+        }
+
+        // Enable Page domain events on the new session for dialog tracking.
+        // Fire-and-forget — don't block command flow if this fails.
+        {
+            let page_enable_id = self.next_ws_id.fetch_add(1, Ordering::Relaxed);
+            let (pe_tx, _pe_rx) = oneshot::channel();
+            {
+                let mut pending = self.pending.lock().await;
+                pending.insert(page_enable_id, pe_tx);
+            }
+            let _ = tx
+                .send(WsCommand {
+                    ws_id: page_enable_id,
+                    method: "Page.enable".to_string(),
+                    params: serde_json::json!({}),
+                    session_id: Some(cdp_session_id_clone),
+                })
+                .await;
+        }
 
         Ok(())
     }
@@ -686,7 +709,7 @@ impl WsState {
     /// Handle internal `__actionbook.*` control methods.
     async fn handle_internal_method(
         &self,
-        _session_name: &str,
+        session_name: &str,
         method: &str,
         params: &Value,
     ) -> std::result::Result<Value, String> {
@@ -744,8 +767,18 @@ impl WsState {
                 }
             }
             "__actionbook.dialogStatus" => {
-                let dialog = self.pending_dialog.lock().await;
-                match dialog.as_ref() {
+                // Look up dialog for the requesting session's CDP session ID
+                let cdp_session_id = {
+                    let sessions = self.sessions.lock().await;
+                    sessions
+                        .get(session_name)
+                        .map(|e| e.cdp_session_id.clone())
+                };
+                let dialogs = self.pending_dialogs.lock().await;
+                let dialog = cdp_session_id
+                    .as_deref()
+                    .and_then(|sid| dialogs.get(sid));
+                match dialog {
                     Some(d) => Ok(serde_json::json!({
                         "hasDialog": true,
                         "type": d.dialog_type,
@@ -776,8 +809,16 @@ impl WsState {
                     .send_cdp_to_ws(session_name, "Page.handleJavaScriptDialog", cdp_params)
                     .await?;
 
-                // Clear pending dialog state on success
-                *self.pending_dialog.lock().await = None;
+                // Clear pending dialog state for this session
+                {
+                    let sessions = self.sessions.lock().await;
+                    if let Some(entry) = sessions.get(session_name) {
+                        self.pending_dialogs
+                            .lock()
+                            .await
+                            .remove(&entry.cdp_session_id);
+                    }
+                }
 
                 Ok(serde_json::json!({ "handled": true, "accepted": accept, "result": result }))
             }
@@ -785,15 +826,24 @@ impl WsState {
         }
     }
 
-    /// Build dialog warning string from pending_dialog state, if any.
-    async fn dialog_warning(&self) -> Option<String> {
-        let dialog = self.pending_dialog.lock().await;
-        dialog.as_ref().map(|d| {
-            format!(
-                "A JavaScript {} dialog is blocking the page: \"{}\" — use `browser dialog accept` or `browser dialog dismiss` to resolve it",
-                d.dialog_type, d.message
-            )
-        })
+    /// Build dialog warning string for a specific session, if a dialog is pending.
+    async fn dialog_warning_for_session(&self, session_name: &str) -> Option<String> {
+        let cdp_session_id = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(session_name)
+                .map(|e| e.cdp_session_id.clone())
+        };
+        let dialogs = self.pending_dialogs.lock().await;
+        cdp_session_id
+            .as_deref()
+            .and_then(|sid| dialogs.get(sid))
+            .map(|d| {
+                format!(
+                    "A JavaScript {} dialog is blocking the page: \"{}\" — use `browser dialog accept` or `browser dialog dismiss` to resolve it",
+                    d.dialog_type, d.message
+                )
+            })
     }
 }
 
@@ -895,7 +945,7 @@ async fn ws_connection_loop(
                     *ws_state.tx.lock().await = None;
                     ws_state.sessions.lock().await.clear();
                     let _ = ws_state.ready_tx.send(false);
-                    *ws_state.pending_dialog.lock().await = None;
+                    ws_state.pending_dialogs.lock().await.clear();
 
                     // Drain pending requests
                     {
@@ -1368,7 +1418,7 @@ async fn connect_and_run(
 
     // Reader task: reads WS messages and routes responses by ID
     let pending = ws_state.pending.clone();
-    let pending_dialog = ws_state.pending_dialog.clone();
+    let pending_dialogs = ws_state.pending_dialogs.clone();
     let reader_result: std::result::Result<(), String> = loop {
         tokio::select! {
             msg = ws_read.next() => {
@@ -1388,26 +1438,35 @@ async fn connect_and_run(
                                     let _ = tx.send(result);
                                 }
                             } else if let Some(method) = obj.get("method").and_then(|v| v.as_str()) {
-                                // CDP Event — check for dialog events
+                                // CDP Event — check for dialog events.
+                                // In flatten mode, events carry a top-level "sessionId".
+                                let event_session_id = obj
+                                    .get("sessionId")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
                                 let params = obj.get("params").cloned().unwrap_or(Value::Null);
                                 match method {
                                     "Page.javascriptDialogOpening" => {
                                         if let Ok(event) = serde_json::from_value::<JavascriptDialogOpeningEvent>(params) {
                                             tracing::info!(
-                                                "JavaScript {} dialog opened: \"{}\"",
-                                                event.dialog_type, event.message
+                                                "JavaScript {} dialog opened (session {}): \"{}\"",
+                                                event.dialog_type, event_session_id, event.message
                                             );
-                                            *pending_dialog.lock().await = Some(PendingDialog {
-                                                dialog_type: event.dialog_type,
-                                                message: event.message,
-                                                url: event.url,
-                                                default_prompt: event.default_prompt,
-                                            });
+                                            pending_dialogs.lock().await.insert(
+                                                event_session_id,
+                                                PendingDialog {
+                                                    dialog_type: event.dialog_type,
+                                                    message: event.message,
+                                                    url: event.url,
+                                                    default_prompt: event.default_prompt,
+                                                },
+                                            );
                                         }
                                     }
                                     "Page.javascriptDialogClosed" => {
-                                        tracing::info!("JavaScript dialog closed");
-                                        *pending_dialog.lock().await = None;
+                                        tracing::info!("JavaScript dialog closed (session {})", event_session_id);
+                                        pending_dialogs.lock().await.remove(&event_session_id);
                                     }
                                     _ => {
                                         tracing::trace!("Skipping CDP Event: {}", method);
@@ -1487,7 +1546,7 @@ async fn handle_uds_client(
 
         // Inject dialog warning for non-dialog commands
         let resp = if !method.contains("dialog") && !method.contains("Dialog") {
-            resp.with_warning(ws_state.dialog_warning().await)
+            resp.with_warning(ws_state.dialog_warning_for_session(session_name).await)
         } else {
             resp
         };
