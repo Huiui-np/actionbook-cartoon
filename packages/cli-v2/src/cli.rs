@@ -29,12 +29,6 @@ pub enum Commands {
     },
     /// Show help
     Help,
-    /// Internal: daemon serve (not user-facing)
-    #[command(hide = true)]
-    Daemon {
-        #[command(subcommand)]
-        command: DaemonCommands,
-    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -154,12 +148,6 @@ pub enum BrowserCommands {
         #[arg(long)]
         tab: String,
     },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum DaemonCommands {
-    /// Start daemon in foreground
-    Serve,
 }
 
 #[derive(ValueEnum, Clone, Debug)]

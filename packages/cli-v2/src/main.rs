@@ -5,7 +5,7 @@ use serde_json::json;
 
 use actionbook_cli::action::Action;
 use actionbook_cli::action_result::ActionResult;
-use actionbook_cli::cli::{BrowserCommands, Cli, Commands, DaemonCommands};
+use actionbook_cli::cli::{BrowserCommands, Cli, Commands};
 use actionbook_cli::output::{self, JsonEnvelope, ResponseContext};
 use actionbook_cli::utils::client::DaemonClient;
 
@@ -18,6 +18,15 @@ async fn main() {
         )
         .with_writer(std::io::stderr)
         .init();
+
+    // Internal: daemon auto-start passes a hidden arg before clap parsing
+    if std::env::args().nth(1).as_deref() == Some("__serve") {
+        if let Err(e) = actionbook_cli::commands::daemon::server::run_daemon().await {
+            eprintln!("daemon error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     let cli = Cli::parse();
     let json_output = cli.json;
@@ -70,9 +79,6 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Help => {
             handle_help(json_mode);
-        }
-        Commands::Daemon { command } => {
-            handle_daemon(command).await?;
         }
     }
     Ok(())
@@ -291,11 +297,3 @@ fn handle_help(json_mode: bool) {
     }
 }
 
-async fn handle_daemon(command: DaemonCommands) -> Result<(), Box<dyn std::error::Error>> {
-    match command {
-        DaemonCommands::Serve => {
-            actionbook_cli::commands::daemon::server::run_daemon().await?;
-        }
-    }
-    Ok(())
-}
