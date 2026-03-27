@@ -99,9 +99,7 @@ impl JsonEnvelope {
         duration: Duration,
     ) -> Self {
         match result {
-            ActionResult::Ok { data } => {
-                Self::success(command, context, data.clone(), duration)
-            }
+            ActionResult::Ok { data } => Self::success(command, context, data.clone(), duration),
             ActionResult::Fatal {
                 code,
                 message,
@@ -199,18 +197,33 @@ pub fn format_text(
 fn format_data_fields(command: &str, data: &Value, lines: &mut Vec<String>) {
     match command {
         "browser.start" => {
-            if let Some(mode) = data.get("session").and_then(|s| s.get("mode")).and_then(|v| v.as_str()) {
+            if let Some(mode) = data
+                .get("session")
+                .and_then(|s| s.get("mode"))
+                .and_then(|v| v.as_str())
+            {
                 lines.push(format!("mode: {mode}"));
             }
-            if let Some(status) = data.get("session").and_then(|s| s.get("status")).and_then(|v| v.as_str()) {
+            if let Some(status) = data
+                .get("session")
+                .and_then(|s| s.get("status"))
+                .and_then(|v| v.as_str())
+            {
                 lines.push(format!("status: {status}"));
             }
-            if let Some(title) = data.get("tab").and_then(|t| t.get("title")).and_then(|v| v.as_str()) {
+            if let Some(title) = data
+                .get("tab")
+                .and_then(|t| t.get("title"))
+                .and_then(|v| v.as_str())
+            {
                 lines.push(format!("title: {title}"));
             }
         }
         "browser.list-sessions" => {
-            let total = data.get("total_sessions").and_then(|v| v.as_u64()).unwrap_or(0);
+            let total = data
+                .get("total_sessions")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             let label = if total == 1 { "session" } else { "sessions" };
             // Prepend count before header (list-sessions has no header)
             lines.insert(0, format!("{total} {label}"));
@@ -244,7 +257,11 @@ fn format_data_fields(command: &str, data: &Value, lines: &mut Vec<String>) {
             }
         }
         "browser.restart" => {
-            if let Some(status) = data.get("session").and_then(|s| s.get("status")).and_then(|v| v.as_str()) {
+            if let Some(status) = data
+                .get("session")
+                .and_then(|s| s.get("status"))
+                .and_then(|v| v.as_str())
+            {
                 lines.push(format!("status: {status}"));
             }
         }

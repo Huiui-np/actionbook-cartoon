@@ -24,12 +24,21 @@ fn api_search_json() {
     // §2.4 envelope: all 5 top-level fields
     assert_eq!(v["ok"], true, "search: ok");
     assert_eq!(v["command"], "search", "search: command");
-    assert!(v["context"].is_null(), "search: non-browser must omit context");
+    assert!(
+        v["context"].is_null(),
+        "search: non-browser must omit context"
+    );
     assert!(v["error"].is_null(), "search: error null on success");
     assert!(v["meta"].is_object(), "search: meta required");
-    assert!(v["meta"]["duration_ms"].is_number(), "search: meta.duration_ms");
+    assert!(
+        v["meta"]["duration_ms"].is_number(),
+        "search: meta.duration_ms"
+    );
     assert!(v["meta"]["warnings"].is_array(), "search: meta.warnings");
-    assert!(v["meta"]["truncated"].is_boolean(), "search: meta.truncated");
+    assert!(
+        v["meta"]["truncated"].is_boolean(),
+        "search: meta.truncated"
+    );
 
     // data per §6.1
     assert!(v["data"]["query"].is_string(), "data.query");
@@ -63,7 +72,10 @@ fn api_search_text() {
     assert!(text.contains("result"), "should contain 'result'");
     // verify numbered list format and score when results exist
     if text.contains("1.") {
-        assert!(text.contains("score:"), "search text: should contain 'score:'");
+        assert!(
+            text.contains("score:"),
+            "search text: should contain 'score:'"
+        );
     }
 }
 
@@ -73,10 +85,7 @@ fn api_search_with_domain_filter() {
         return;
     }
 
-    let out = headless_json(
-        &["search", "login", "--domain", "google.com"],
-        30,
-    );
+    let out = headless_json(&["search", "login", "--domain", "google.com"], 30);
     assert_success(&out, "search with domain");
     let v = parse_json(&out);
     assert_eq!(v["ok"], true);
@@ -95,10 +104,7 @@ fn api_search_pagination() {
         return;
     }
 
-    let out = headless_json(
-        &["search", "login", "--page", "1", "--page-size", "2"],
-        30,
-    );
+    let out = headless_json(&["search", "login", "--page", "1", "--page-size", "2"], 30);
     assert_success(&out, "search pagination");
     let v = parse_json(&out);
     assert_eq!(v["ok"], true);
@@ -108,7 +114,10 @@ fn api_search_pagination() {
 
     // §2.4 meta.pagination when paginated
     let pag = &v["meta"]["pagination"];
-    assert!(pag.is_object(), "meta.pagination should be present for paginated results");
+    assert!(
+        pag.is_object(),
+        "meta.pagination should be present for paginated results"
+    );
     assert!(pag["page"].is_number(), "pagination.page");
     assert!(pag["page_size"].is_number(), "pagination.page_size");
     assert!(pag["total"].is_number(), "pagination.total per §2.4");
@@ -196,10 +205,16 @@ fn api_get_text() {
     assert_success(&out, "get text");
     let text = stdout_str(&out);
     assert!(text.contains(area_id), "text should contain area_id");
-    assert!(text.contains("https://") || text.contains("http://"), "text should contain URL");
+    assert!(
+        text.contains("https://") || text.contains("http://"),
+        "text should contain URL"
+    );
     // element format when elements exist
     if text.contains("css:") || text.contains("methods:") {
-        assert!(text.contains("methods:"), "text should contain 'methods:' per §6.2");
+        assert!(
+            text.contains("methods:"),
+            "text should contain 'methods:' per §6.2"
+        );
     }
 }
 

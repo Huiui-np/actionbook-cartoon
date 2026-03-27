@@ -5,8 +5,8 @@
 //! All assertions strictly follow api-reference.md §7.
 
 use crate::harness::{
-    assert_failure, assert_success, headless, headless_json, parse_json, skip, stdout_str,
-    SessionGuard,
+    SessionGuard, assert_failure, assert_success, headless, headless_json, parse_json, skip,
+    stdout_str,
 };
 
 const TEST_URL: &str = "https://example.com";
@@ -23,10 +23,7 @@ fn lifecycle_open_and_close_json() {
     let _guard = SessionGuard::new();
 
     // start: §7.1 JSON
-    let out = headless_json(
-        &["browser", "start", "--mode", "local", "--headless"],
-        30,
-    );
+    let out = headless_json(&["browser", "start", "--mode", "local", "--headless"], 30);
     assert_success(&out, "start");
     let v = parse_json(&out);
     assert_eq!(v["ok"], true);
@@ -44,7 +41,9 @@ fn lifecycle_open_and_close_json() {
     assert!(v["data"]["tab"]["title"].is_string());
     // §7.1: native_tab_id key must be present
     assert!(
-        v["data"]["tab"].as_object().map_or(false, |o| o.contains_key("native_tab_id")),
+        v["data"]["tab"]
+            .as_object()
+            .map_or(false, |o| o.contains_key("native_tab_id")),
         "native_tab_id key must be present in tab object per §7.1"
     );
     let ntid = &v["data"]["tab"]["native_tab_id"];
@@ -61,10 +60,7 @@ fn lifecycle_open_and_close_json() {
     assert!(v["meta"]["duration_ms"].is_number());
 
     // status: §7.3 JSON
-    let out = headless_json(
-        &["browser", "status", "--session", "local-1"],
-        10,
-    );
+    let out = headless_json(&["browser", "status", "--session", "local-1"], 10);
     assert_success(&out, "status");
     let v = parse_json(&out);
     assert_eq!(v["ok"], true);
@@ -72,10 +68,7 @@ fn lifecycle_open_and_close_json() {
     assert_eq!(v["context"]["session_id"], "local-1");
 
     // close: §7.4 JSON
-    let out = headless_json(
-        &["browser", "close", "--session", "local-1"],
-        30,
-    );
+    let out = headless_json(&["browser", "close", "--session", "local-1"], 30);
     assert_success(&out, "close");
     let v = parse_json(&out);
     assert_eq!(v["ok"], true);
@@ -100,39 +93,63 @@ fn lifecycle_open_and_close_text() {
     let _guard = SessionGuard::new();
 
     // start text: "[SID t1] url\nok browser.start\nmode: local\nstatus: running"
-    let out = headless(
-        &["browser", "start", "--mode", "local", "--headless"],
-        30,
-    );
+    let out = headless(&["browser", "start", "--mode", "local", "--headless"], 30);
     assert_success(&out, "start text");
     let text = stdout_str(&out);
-    assert!(text.contains("[local-1"), "start text: should contain [local-1");
-    assert!(text.contains("ok browser.start"), "start text: should contain 'ok browser.start'");
-    assert!(text.contains("mode: local"), "start text: should contain 'mode: local'");
-    assert!(text.contains("status: running"), "start text: should contain 'status: running'");
-    assert!(text.contains("title:"), "start text: should contain 'title:' per §7.1");
+    assert!(
+        text.contains("[local-1"),
+        "start text: should contain [local-1"
+    );
+    assert!(
+        text.contains("ok browser.start"),
+        "start text: should contain 'ok browser.start'"
+    );
+    assert!(
+        text.contains("mode: local"),
+        "start text: should contain 'mode: local'"
+    );
+    assert!(
+        text.contains("status: running"),
+        "start text: should contain 'status: running'"
+    );
+    assert!(
+        text.contains("title:"),
+        "start text: should contain 'title:' per §7.1"
+    );
 
     // status text: "[SID]\nstatus: running\nmode: local\ntabs: N"
-    let out = headless(
-        &["browser", "status", "--session", "local-1"],
-        10,
-    );
+    let out = headless(&["browser", "status", "--session", "local-1"], 10);
     assert_success(&out, "status text");
     let text = stdout_str(&out);
-    assert!(text.contains("[local-1]"), "status text: should contain [local-1]");
-    assert!(text.contains("status: running"), "status text: should contain 'status: running'");
-    assert!(text.contains("mode: local"), "status text: should contain 'mode: local'");
+    assert!(
+        text.contains("[local-1]"),
+        "status text: should contain [local-1]"
+    );
+    assert!(
+        text.contains("status: running"),
+        "status text: should contain 'status: running'"
+    );
+    assert!(
+        text.contains("mode: local"),
+        "status text: should contain 'mode: local'"
+    );
 
     // close text: "[SID]\nok browser.close\nclosed_tabs: N"
-    let out = headless(
-        &["browser", "close", "--session", "local-1"],
-        30,
-    );
+    let out = headless(&["browser", "close", "--session", "local-1"], 30);
     assert_success(&out, "close text");
     let text = stdout_str(&out);
-    assert!(text.contains("[local-1]"), "close text: should contain [local-1]");
-    assert!(text.contains("ok browser.close"), "close text: should contain 'ok browser.close'");
-    assert!(text.contains("closed_tabs:"), "close text: should contain 'closed_tabs:'");
+    assert!(
+        text.contains("[local-1]"),
+        "close text: should contain [local-1]"
+    );
+    assert!(
+        text.contains("ok browser.close"),
+        "close text: should contain 'ok browser.close'"
+    );
+    assert!(
+        text.contains("closed_tabs:"),
+        "close text: should contain 'closed_tabs:'"
+    );
 }
 
 // ===========================================================================
@@ -146,10 +163,7 @@ fn lifecycle_open_headless_json() {
     }
     let _guard = SessionGuard::new();
 
-    let out = headless_json(
-        &["browser", "start", "--mode", "local", "--headless"],
-        30,
-    );
+    let out = headless_json(&["browser", "start", "--mode", "local", "--headless"], 30);
     assert_success(&out, "start headless");
     let v = parse_json(&out);
     assert_eq!(v["ok"], true);
@@ -172,8 +186,13 @@ fn lifecycle_open_with_url_json() {
 
     let out = headless_json(
         &[
-            "browser", "start", "--mode", "local", "--headless",
-            "--open-url", TEST_URL,
+            "browser",
+            "start",
+            "--mode",
+            "local",
+            "--headless",
+            "--open-url",
+            TEST_URL,
         ],
         30,
     );
@@ -202,15 +221,23 @@ fn lifecycle_open_with_url_text() {
 
     let out = headless(
         &[
-            "browser", "start", "--mode", "local", "--headless",
-            "--open-url", TEST_URL,
+            "browser",
+            "start",
+            "--mode",
+            "local",
+            "--headless",
+            "--open-url",
+            TEST_URL,
         ],
         30,
     );
     assert_success(&out, "start with url text");
     let text = stdout_str(&out);
     // text header should contain the URL
-    assert!(text.contains("example.com"), "start text: should contain example.com URL");
+    assert!(
+        text.contains("example.com"),
+        "start text: should contain example.com URL"
+    );
 
     let out = headless(&["browser", "close", "--session", "local-1"], 30);
     assert_success(&out, "close");
@@ -227,16 +254,10 @@ fn lifecycle_status_json() {
     }
     let _guard = SessionGuard::new();
 
-    let out = headless(
-        &["browser", "start", "--mode", "local", "--headless"],
-        30,
-    );
+    let out = headless(&["browser", "start", "--mode", "local", "--headless"], 30);
     assert_success(&out, "start");
 
-    let out = headless_json(
-        &["browser", "status", "--session", "local-1"],
-        10,
-    );
+    let out = headless_json(&["browser", "status", "--session", "local-1"], 10);
     assert_success(&out, "status");
     let v = parse_json(&out);
     assert_eq!(v["ok"], true);
@@ -274,17 +295,11 @@ fn lifecycle_status_text() {
     }
     let _guard = SessionGuard::new();
 
-    let out = headless(
-        &["browser", "start", "--mode", "local", "--headless"],
-        30,
-    );
+    let out = headless(&["browser", "start", "--mode", "local", "--headless"], 30);
     assert_success(&out, "start");
 
     // §7.3 text: "[SID]\nstatus: running\nmode: local\ntabs: N"
-    let out = headless(
-        &["browser", "status", "--session", "local-1"],
-        10,
-    );
+    let out = headless(&["browser", "status", "--session", "local-1"], 10);
     assert_success(&out, "status text");
     let text = stdout_str(&out);
     assert!(text.contains("[local-1]"), "should contain [local-1]");
@@ -307,10 +322,7 @@ fn lifecycle_list_sessions_json() {
     }
     let _guard = SessionGuard::new();
 
-    let out = headless(
-        &["browser", "start", "--mode", "local", "--headless"],
-        30,
-    );
+    let out = headless(&["browser", "start", "--mode", "local", "--headless"], 30);
     assert_success(&out, "start");
 
     let out = headless_json(&["browser", "list-sessions"], 10);
@@ -319,7 +331,10 @@ fn lifecycle_list_sessions_json() {
     assert_eq!(v["ok"], true);
     assert_eq!(v["command"], "browser.list-sessions");
     // Global: no context
-    assert!(v["context"].is_null(), "context should be null for global command");
+    assert!(
+        v["context"].is_null(),
+        "context should be null for global command"
+    );
     // data per §7.2
     assert!(v["data"]["total_sessions"].as_u64().unwrap_or(0) >= 1);
     let sessions = v["data"]["sessions"].as_array().expect("sessions array");
@@ -330,7 +345,10 @@ fn lifecycle_list_sessions_json() {
     assert!(s["headless"].is_boolean());
     assert!(s["tabs_count"].is_number());
     // meta per §2.4
-    assert!(v["meta"]["duration_ms"].is_number(), "list-sessions: meta.duration_ms");
+    assert!(
+        v["meta"]["duration_ms"].is_number(),
+        "list-sessions: meta.duration_ms"
+    );
 
     let out = headless(&["browser", "close", "--session", "local-1"], 30);
     assert_success(&out, "close");
@@ -343,10 +361,7 @@ fn lifecycle_list_sessions_text() {
     }
     let _guard = SessionGuard::new();
 
-    let out = headless(
-        &["browser", "start", "--mode", "local", "--headless"],
-        30,
-    );
+    let out = headless(&["browser", "start", "--mode", "local", "--headless"], 30);
     assert_success(&out, "start");
 
     // §7.2 text: "1 session\n[SID]\nstatus: running\ntabs: N"
@@ -356,7 +371,10 @@ fn lifecycle_list_sessions_text() {
     assert!(text.contains("session"), "should contain 'session'");
     assert!(text.contains("[local-1]"), "should contain [local-1]");
     assert!(text.contains("status: running"));
-    assert!(text.contains("tabs:"), "list-sessions text: should contain 'tabs:' per §7.2");
+    assert!(
+        text.contains("tabs:"),
+        "list-sessions text: should contain 'tabs:' per §7.2"
+    );
 
     let out = headless(&["browser", "close", "--session", "local-1"], 30);
     assert_success(&out, "close");
@@ -373,16 +391,10 @@ fn lifecycle_restart_json() {
     }
     let _guard = SessionGuard::new();
 
-    let out = headless(
-        &["browser", "start", "--mode", "local", "--headless"],
-        30,
-    );
+    let out = headless(&["browser", "start", "--mode", "local", "--headless"], 30);
     assert_success(&out, "start");
 
-    let out = headless_json(
-        &["browser", "restart", "--session", "local-1"],
-        30,
-    );
+    let out = headless_json(&["browser", "restart", "--session", "local-1"], 30);
     assert_success(&out, "restart");
     let v = parse_json(&out);
     assert_eq!(v["ok"], true);
@@ -400,10 +412,7 @@ fn lifecycle_restart_json() {
     assert!(v["meta"]["duration_ms"].is_number());
 
     // status still works
-    let out = headless_json(
-        &["browser", "status", "--session", "local-1"],
-        10,
-    );
+    let out = headless_json(&["browser", "status", "--session", "local-1"], 10);
     assert_success(&out, "status after restart");
     let v = parse_json(&out);
     assert_eq!(v["data"]["session"]["status"], "running");
@@ -419,22 +428,22 @@ fn lifecycle_restart_text() {
     }
     let _guard = SessionGuard::new();
 
-    let out = headless(
-        &["browser", "start", "--mode", "local", "--headless"],
-        30,
-    );
+    let out = headless(&["browser", "start", "--mode", "local", "--headless"], 30);
     assert_success(&out, "start");
 
     // §7.5 text: "[SID t1]\nok browser.restart\nstatus: running"
-    let out = headless(
-        &["browser", "restart", "--session", "local-1"],
-        30,
-    );
+    let out = headless(&["browser", "restart", "--session", "local-1"], 30);
     assert_success(&out, "restart text");
     let text = stdout_str(&out);
     // §7.5 note: restart text uses [SID t1] format (includes tab_id)
-    assert!(text.contains("[local-1 t"), "restart text: header should include tab_id per §7.5");
-    assert!(text.contains("ok browser.restart"), "should contain 'ok browser.restart'");
+    assert!(
+        text.contains("[local-1 t"),
+        "restart text: header should include tab_id per §7.5"
+    );
+    assert!(
+        text.contains("ok browser.restart"),
+        "should contain 'ok browser.restart'"
+    );
     assert!(text.contains("status: running"));
 
     let out = headless(&["browser", "close", "--session", "local-1"], 30);
@@ -454,8 +463,13 @@ fn lifecycle_close_after_operations() {
 
     let out = headless(
         &[
-            "browser", "start", "--mode", "local", "--headless",
-            "--open-url", TEST_URL,
+            "browser",
+            "start",
+            "--mode",
+            "local",
+            "--headless",
+            "--open-url",
+            TEST_URL,
         ],
         30,
     );
@@ -463,32 +477,34 @@ fn lifecycle_close_after_operations() {
 
     let out = headless(
         &[
-            "browser", "goto", TEST_URL,
-            "--session", "local-1", "--tab", "t1",
+            "browser",
+            "goto",
+            TEST_URL,
+            "--session",
+            "local-1",
+            "--tab",
+            "t1",
         ],
         30,
     );
     assert_success(&out, "goto");
 
     let out = headless(
-        &[
-            "browser", "snapshot",
-            "--session", "local-1", "--tab", "t1",
-        ],
+        &["browser", "snapshot", "--session", "local-1", "--tab", "t1"],
         30,
     );
     assert_success(&out, "snapshot");
 
-    let out = headless_json(
-        &["browser", "close", "--session", "local-1"],
-        30,
-    );
+    let out = headless_json(&["browser", "close", "--session", "local-1"], 30);
     assert_success(&out, "close after operations");
     let v = parse_json(&out);
     assert_eq!(v["ok"], true);
     assert_eq!(v["data"]["status"], "closed");
     assert!(v["data"]["closed_tabs"].as_u64().unwrap_or(0) >= 1);
-    assert_eq!(v["context"]["session_id"], "local-1", "close: context per §4");
+    assert_eq!(
+        v["context"]["session_id"], "local-1",
+        "close: context per §4"
+    );
 }
 
 // ===========================================================================
@@ -504,8 +520,13 @@ fn lifecycle_close_s1t2_closes_all_json() {
 
     let out = headless(
         &[
-            "browser", "start", "--mode", "local", "--headless",
-            "--open-url", TEST_URL,
+            "browser",
+            "start",
+            "--mode",
+            "local",
+            "--headless",
+            "--open-url",
+            TEST_URL,
         ],
         30,
     );
@@ -517,16 +538,16 @@ fn lifecycle_close_s1t2_closes_all_json() {
     );
     assert_success(&out, "new-tab");
 
-    let out = headless_json(
-        &["browser", "close", "--session", "local-1"],
-        30,
-    );
+    let out = headless_json(&["browser", "close", "--session", "local-1"], 30);
     assert_success(&out, "close 2 tabs");
     let v = parse_json(&out);
     assert_eq!(v["ok"], true);
     assert_eq!(v["data"]["status"], "closed");
     assert_eq!(v["data"]["closed_tabs"], serde_json::json!(2));
-    assert_eq!(v["context"]["session_id"], "local-1", "close: context per §4");
+    assert_eq!(
+        v["context"]["session_id"], "local-1",
+        "close: context per §4"
+    );
 }
 
 #[test]
@@ -538,8 +559,13 @@ fn lifecycle_close_s1t2_closes_all_text() {
 
     let out = headless(
         &[
-            "browser", "start", "--mode", "local", "--headless",
-            "--open-url", TEST_URL,
+            "browser",
+            "start",
+            "--mode",
+            "local",
+            "--headless",
+            "--open-url",
+            TEST_URL,
         ],
         30,
     );
@@ -551,14 +577,14 @@ fn lifecycle_close_s1t2_closes_all_text() {
     );
     assert_success(&out, "new-tab");
 
-    let out = headless(
-        &["browser", "close", "--session", "local-1"],
-        30,
-    );
+    let out = headless(&["browser", "close", "--session", "local-1"], 30);
     assert_success(&out, "close 2 tabs text");
     let text = stdout_str(&out);
     assert!(text.contains("ok browser.close"));
-    assert!(text.contains("closed_tabs: 2"), "should show closed_tabs: 2, got: {text}");
+    assert!(
+        text.contains("closed_tabs: 2"),
+        "should show closed_tabs: 2, got: {text}"
+    );
 }
 
 // ===========================================================================
@@ -572,20 +598,14 @@ fn lifecycle_double_close_json() {
     }
     let _guard = SessionGuard::new();
 
-    let out = headless(
-        &["browser", "start", "--mode", "local", "--headless"],
-        30,
-    );
+    let out = headless(&["browser", "start", "--mode", "local", "--headless"], 30);
     assert_success(&out, "start");
 
     let out = headless(&["browser", "close", "--session", "local-1"], 30);
     assert_success(&out, "first close");
 
     // §3.1 error JSON
-    let out = headless_json(
-        &["browser", "close", "--session", "local-1"],
-        30,
-    );
+    let out = headless_json(&["browser", "close", "--session", "local-1"], 30);
     assert_failure(&out, "second close should fail");
     let v = parse_json(&out);
     assert_eq!(v["ok"], false);
@@ -609,20 +629,14 @@ fn lifecycle_double_close_text() {
     }
     let _guard = SessionGuard::new();
 
-    let out = headless(
-        &["browser", "start", "--mode", "local", "--headless"],
-        30,
-    );
+    let out = headless(&["browser", "start", "--mode", "local", "--headless"], 30);
     assert_success(&out, "start");
 
     let out = headless(&["browser", "close", "--session", "local-1"], 30);
     assert_success(&out, "first close");
 
     // §3.1 error text: "error CODE: message"
-    let out = headless(
-        &["browser", "close", "--session", "local-1"],
-        30,
-    );
+    let out = headless(&["browser", "close", "--session", "local-1"], 30);
     assert_failure(&out, "second close text");
     let text = stdout_str(&out);
     assert!(
@@ -642,10 +656,7 @@ fn lifecycle_status_nonexistent_json() {
     }
     let _guard = SessionGuard::new();
 
-    let out = headless_json(
-        &["browser", "status", "--session", "nonexistent"],
-        10,
-    );
+    let out = headless_json(&["browser", "status", "--session", "nonexistent"], 10);
     assert_failure(&out, "status nonexistent");
     let v = parse_json(&out);
     assert_eq!(v["ok"], false);
@@ -667,10 +678,7 @@ fn lifecycle_status_nonexistent_text() {
     }
     let _guard = SessionGuard::new();
 
-    let out = headless(
-        &["browser", "status", "--session", "nonexistent"],
-        10,
-    );
+    let out = headless(&["browser", "status", "--session", "nonexistent"], 10);
     assert_failure(&out, "status nonexistent text");
     let text = stdout_str(&out);
     assert!(
@@ -692,8 +700,15 @@ fn lifecycle_concurrent_two_sessions() {
 
     let out = headless(
         &[
-            "browser", "start", "--mode", "local", "--headless",
-            "--profile", "work", "--set-session-id", "work-session",
+            "browser",
+            "start",
+            "--mode",
+            "local",
+            "--headless",
+            "--profile",
+            "work",
+            "--set-session-id",
+            "work-session",
         ],
         30,
     );
@@ -701,8 +716,15 @@ fn lifecycle_concurrent_two_sessions() {
 
     let out = headless(
         &[
-            "browser", "start", "--mode", "local", "--headless",
-            "--profile", "personal", "--set-session-id", "personal-session",
+            "browser",
+            "start",
+            "--mode",
+            "local",
+            "--headless",
+            "--profile",
+            "personal",
+            "--set-session-id",
+            "personal-session",
         ],
         30,
     );
@@ -722,10 +744,7 @@ fn lifecycle_concurrent_two_sessions() {
 
     // status each
     for sid in &["work-session", "personal-session"] {
-        let out = headless_json(
-            &["browser", "status", "--session", sid],
-            10,
-        );
+        let out = headless_json(&["browser", "status", "--session", sid], 10);
         assert_success(&out, &format!("status {sid}"));
         let v = parse_json(&out);
         assert_eq!(v["data"]["session"]["status"], "running");
@@ -750,9 +769,17 @@ fn lifecycle_concurrent_parallel_operations() {
 
     let out = headless(
         &[
-            "browser", "start", "--mode", "local", "--headless",
-            "--profile", "alpha", "--set-session-id", "alpha-session",
-            "--open-url", "https://example.com",
+            "browser",
+            "start",
+            "--mode",
+            "local",
+            "--headless",
+            "--profile",
+            "alpha",
+            "--set-session-id",
+            "alpha-session",
+            "--open-url",
+            "https://example.com",
         ],
         30,
     );
@@ -760,9 +787,17 @@ fn lifecycle_concurrent_parallel_operations() {
 
     let out = headless(
         &[
-            "browser", "start", "--mode", "local", "--headless",
-            "--profile", "beta", "--set-session-id", "beta-session",
-            "--open-url", "https://example.org",
+            "browser",
+            "start",
+            "--mode",
+            "local",
+            "--headless",
+            "--profile",
+            "beta",
+            "--set-session-id",
+            "beta-session",
+            "--open-url",
+            "https://example.org",
         ],
         30,
     );
@@ -770,12 +805,28 @@ fn lifecycle_concurrent_parallel_operations() {
 
     // Ensure navigation completes before parallel eval
     let out = headless(
-        &["browser", "goto", "https://example.com", "--session", "alpha-session", "--tab", "t1"],
+        &[
+            "browser",
+            "goto",
+            "https://example.com",
+            "--session",
+            "alpha-session",
+            "--tab",
+            "t1",
+        ],
         30,
     );
     assert_success(&out, "goto alpha");
     let out = headless(
-        &["browser", "goto", "https://example.org", "--session", "beta-session", "--tab", "t1"],
+        &[
+            "browser",
+            "goto",
+            "https://example.org",
+            "--session",
+            "beta-session",
+            "--tab",
+            "t1",
+        ],
         30,
     );
     assert_success(&out, "goto beta");
@@ -784,8 +835,13 @@ fn lifecycle_concurrent_parallel_operations() {
     let t1 = std::thread::spawn(|| {
         headless_json(
             &[
-                "browser", "eval", "window.location.href",
-                "--session", "alpha-session", "--tab", "t1",
+                "browser",
+                "eval",
+                "window.location.href",
+                "--session",
+                "alpha-session",
+                "--tab",
+                "t1",
             ],
             30,
         )
@@ -793,8 +849,13 @@ fn lifecycle_concurrent_parallel_operations() {
     let t2 = std::thread::spawn(|| {
         headless_json(
             &[
-                "browser", "eval", "window.location.href",
-                "--session", "beta-session", "--tab", "t1",
+                "browser",
+                "eval",
+                "window.location.href",
+                "--session",
+                "beta-session",
+                "--tab",
+                "t1",
             ],
             30,
         )
@@ -807,8 +868,18 @@ fn lifecycle_concurrent_parallel_operations() {
 
     let v1 = parse_json(&out1);
     let v2 = parse_json(&out2);
-    assert!(v1["data"]["value"].as_str().unwrap_or("").contains("example.com"));
-    assert!(v2["data"]["value"].as_str().unwrap_or("").contains("example.org"));
+    assert!(
+        v1["data"]["value"]
+            .as_str()
+            .unwrap_or("")
+            .contains("example.com")
+    );
+    assert!(
+        v2["data"]["value"]
+            .as_str()
+            .unwrap_or("")
+            .contains("example.org")
+    );
 
     let out = headless(&["browser", "close", "--session", "alpha-session"], 30);
     assert_success(&out, "close alpha");
@@ -828,23 +899,23 @@ fn lifecycle_start_reuse_existing_json() {
     let _guard = SessionGuard::new();
 
     // First start
-    let out = headless_json(
-        &["browser", "start", "--mode", "local", "--headless"],
-        30,
-    );
+    let out = headless_json(&["browser", "start", "--mode", "local", "--headless"], 30);
     assert_success(&out, "first start");
     let v = parse_json(&out);
-    assert_eq!(v["data"]["reused"], false, "first start: reused should be false");
+    assert_eq!(
+        v["data"]["reused"], false,
+        "first start: reused should be false"
+    );
     assert_eq!(v["data"]["session"]["session_id"], "local-1");
 
     // Second start with same profile — should reuse
-    let out = headless_json(
-        &["browser", "start", "--mode", "local", "--headless"],
-        30,
-    );
+    let out = headless_json(&["browser", "start", "--mode", "local", "--headless"], 30);
     assert_success(&out, "second start (reuse)");
     let v = parse_json(&out);
-    assert_eq!(v["data"]["reused"], true, "second start: reused should be true");
+    assert_eq!(
+        v["data"]["reused"], true,
+        "second start: reused should be true"
+    );
     assert_eq!(
         v["data"]["session"]["session_id"], "local-1",
         "second start: should return same session_id"
@@ -872,20 +943,17 @@ fn lifecycle_start_reuse_existing_text() {
     }
     let _guard = SessionGuard::new();
 
-    let out = headless(
-        &["browser", "start", "--mode", "local", "--headless"],
-        30,
-    );
+    let out = headless(&["browser", "start", "--mode", "local", "--headless"], 30);
     assert_success(&out, "first start");
 
     // Second start — text output should show the existing session
-    let out = headless(
-        &["browser", "start", "--mode", "local", "--headless"],
-        30,
-    );
+    let out = headless(&["browser", "start", "--mode", "local", "--headless"], 30);
     assert_success(&out, "second start (reuse) text");
     let text = stdout_str(&out);
-    assert!(text.contains("[local-1"), "should contain existing session id");
+    assert!(
+        text.contains("[local-1"),
+        "should contain existing session id"
+    );
     assert!(text.contains("ok browser.start"));
     assert!(text.contains("status: running"));
 
@@ -907,8 +975,13 @@ fn lifecycle_start_reuse_with_open_url_json() {
     // First start
     let out = headless_json(
         &[
-            "browser", "start", "--mode", "local", "--headless",
-            "--open-url", TEST_URL,
+            "browser",
+            "start",
+            "--mode",
+            "local",
+            "--headless",
+            "--open-url",
+            TEST_URL,
         ],
         30,
     );
@@ -919,8 +992,13 @@ fn lifecycle_start_reuse_with_open_url_json() {
     // Second start with different URL — should reuse and navigate
     let out = headless_json(
         &[
-            "browser", "start", "--mode", "local", "--headless",
-            "--open-url", "https://arxiv.org",
+            "browser",
+            "start",
+            "--mode",
+            "local",
+            "--headless",
+            "--open-url",
+            "https://arxiv.org",
         ],
         30,
     );
@@ -941,8 +1019,13 @@ fn lifecycle_start_reuse_with_open_url_json() {
     // Verify via eval
     let out = headless_json(
         &[
-            "browser", "eval", "window.location.href",
-            "--session", "local-1", "--tab", "t1",
+            "browser",
+            "eval",
+            "window.location.href",
+            "--session",
+            "local-1",
+            "--tab",
+            "t1",
         ],
         30,
     );

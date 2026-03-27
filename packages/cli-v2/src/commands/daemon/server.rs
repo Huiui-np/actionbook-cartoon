@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use tokio::net::UnixListener;
 use tracing::{info, warn};
 
-use crate::utils::wire;
-use super::registry::{new_shared_registry, SharedRegistry};
+use super::registry::{SharedRegistry, new_shared_registry};
 use super::router;
+use crate::utils::wire;
 
 /// Get daemon socket path.
 pub fn socket_path() -> PathBuf {
@@ -79,7 +79,11 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let ready_path = path.with_extension("ready");
 
     // Atomic PID file creation: O_CREAT | O_EXCL prevents race between two daemons
-    match OpenOptions::new().write(true).create_new(true).open(&pid_file) {
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&pid_file)
+    {
         Ok(f) => {
             use std::io::Write;
             let mut f = f;
@@ -93,7 +97,10 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             }
             // Stale PID — remove and retry
             std::fs::remove_file(&pid_file).ok();
-            let mut f = OpenOptions::new().write(true).create_new(true).open(&pid_file)?;
+            let mut f = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&pid_file)?;
             use std::io::Write;
             write!(f, "{}", std::process::id())?;
         }
@@ -152,7 +159,11 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     // Graceful shutdown: kill all Chrome processes
     {
         let mut reg = registry.lock().await;
-        let session_ids: Vec<String> = reg.list().iter().map(|s| s.id.as_str().to_string()).collect();
+        let session_ids: Vec<String> = reg
+            .list()
+            .iter()
+            .map(|s| s.id.as_str().to_string())
+            .collect();
         for sid in session_ids {
             if let Some(mut entry) = reg.remove(&sid) {
                 if let Some(ref mut child) = entry.chrome_process {

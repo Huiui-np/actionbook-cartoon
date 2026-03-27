@@ -18,19 +18,19 @@ pub async fn route(action: &Action, registry: &SharedRegistry) -> ActionResult {
             open_url,
             cdp_endpoint: _,
             set_session_id,
-        } => handle_start(
-            *mode,
-            *headless,
-            profile.as_deref(),
-            open_url.as_deref(),
-            set_session_id.as_deref(),
-            registry,
-        )
-        .await,
-        Action::ListSessions => handle_list_sessions(registry).await,
-        Action::SessionStatus { session_id } => {
-            handle_status(session_id, registry).await
+        } => {
+            handle_start(
+                *mode,
+                *headless,
+                profile.as_deref(),
+                open_url.as_deref(),
+                set_session_id.as_deref(),
+                registry,
+            )
+            .await
         }
+        Action::ListSessions => handle_list_sessions(registry).await,
+        Action::SessionStatus { session_id } => handle_status(session_id, registry).await,
         Action::Close { session_id } => handle_close(session_id, registry).await,
         Action::Restart { session_id } => handle_restart(session_id, registry).await,
         Action::Goto {
@@ -39,19 +39,16 @@ pub async fn route(action: &Action, registry: &SharedRegistry) -> ActionResult {
             url,
         } => handle_goto(session_id, tab_id, url, registry).await,
         Action::NewTab {
-            session_id,
-            url,
-            ..
+            session_id, url, ..
         } => handle_new_tab(session_id, url, registry).await,
         Action::Eval {
             session_id,
             tab_id,
             expression,
         } => handle_cdp_eval(session_id, tab_id, expression, registry).await,
-        Action::Snapshot {
-            session_id,
-            tab_id,
-        } => handle_snapshot(session_id, tab_id, registry).await,
+        Action::Snapshot { session_id, tab_id } => {
+            handle_snapshot(session_id, tab_id, registry).await
+        }
         _ => ActionResult::fatal("UNSUPPORTED_OPERATION", "not yet implemented"),
     }
 }
@@ -69,7 +66,9 @@ async fn handle_start(
 
     // Local mode: 1 profile = max 1 session. Reuse existing if same profile.
     if mode == crate::types::Mode::Local {
-        if let Some(session_id) = reg.list().iter()
+        if let Some(session_id) = reg
+            .list()
+            .iter()
             .find(|s| s.profile == profile_name && s.mode == mode)
             .map(|s| s.id.as_str().to_string())
         {
@@ -82,7 +81,10 @@ async fn handle_start(
                 if let Some(tab) = first_tab {
                     // Navigate the first tab to the requested URL
                     let ws_url = if !tab.target_id.is_empty() {
-                        Some(format!("ws://127.0.0.1:{}/devtools/page/{}", entry.cdp_port, tab.target_id))
+                        Some(format!(
+                            "ws://127.0.0.1:{}/devtools/page/{}",
+                            entry.cdp_port, tab.target_id
+                        ))
                     } else {
                         None
                     };
@@ -91,7 +93,10 @@ async fn handle_start(
                     drop(reg);
                     if let Some(ref ws) = ws_url {
                         if let Err(e) = cdp_navigate(ws, &final_url).await {
-                            return ActionResult::fatal("NAVIGATION_FAILED", format!("reuse navigate failed: {e}"));
+                            return ActionResult::fatal(
+                                "NAVIGATION_FAILED",
+                                format!("reuse navigate failed: {e}"),
+                            );
                         }
                         // Wait for page to load
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -103,9 +108,19 @@ async fn handle_start(
                         for target in &targets {
                             let tid = target.get("id").and_then(|v| v.as_str()).unwrap_or("");
                             if tid == tab_info.1 {
-                                if let Some(tab) = entry.tabs.iter_mut().find(|t| t.id == tab_info.0) {
-                                    tab.url = target.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                    tab.title = target.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                if let Some(tab) =
+                                    entry.tabs.iter_mut().find(|t| t.id == tab_info.0)
+                                {
+                                    tab.url = target
+                                        .get("url")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    tab.title = target
+                                        .get("title")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
                                 }
                                 break;
                             }
@@ -167,14 +182,16 @@ async fn handle_start(
 
     // Validate profile name — reject path traversal
     if profile_name.contains('/') || profile_name.contains('\\') || profile_name.contains("..") {
-        return ActionResult::fatal("INVALID_ARGUMENT", format!("invalid profile name: {profile_name}"));
+        return ActionResult::fatal(
+            "INVALID_ARGUMENT",
+            format!("invalid profile name: {profile_name}"),
+        );
     }
 
-    let data_dir = std::env::var("XDG_DATA_HOME")
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-            format!("{home}/.local/share")
-        });
+    let data_dir = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{home}/.local/share")
+    });
     let user_data_dir = format!("{data_dir}/actionbook/profiles/{profile_name}");
     std::fs::create_dir_all(&user_data_dir).ok();
 
@@ -189,10 +206,11 @@ async fn handle_start(
     }
 
     // Chrome picks its own CDP port (--remote-debugging-port=0)
-    let (mut chrome, port) = match browser::launch_chrome(&executable, headless, &user_data_dir, open_url).await {
-        Ok(c) => c,
-        Err(e) => return ActionResult::fatal(e.error_code(), e.to_string()),
-    };
+    let (mut chrome, port) =
+        match browser::launch_chrome(&executable, headless, &user_data_dir, open_url).await {
+            Ok(c) => c,
+            Err(e) => return ActionResult::fatal(e.error_code(), e.to_string()),
+        };
 
     // Kill Chrome if subsequent setup fails
     let ws_url = match browser::discover_ws_url(port).await {
@@ -211,7 +229,13 @@ async fn handle_start(
     let mut targets = browser::list_targets(port).await.unwrap_or_default();
 
     // Retry once if title is empty (page still loading)
-    if targets.first().and_then(|t| t.get("title")).and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+    if targets
+        .first()
+        .and_then(|t| t.get("title"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .is_empty()
+    {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         targets = browser::list_targets(port).await.unwrap_or(targets);
     }
@@ -219,9 +243,21 @@ async fn handle_start(
     let mut tabs = Vec::new();
     let mut next_tab_id = 1u32;
     for t in &targets {
-        let target_id = t.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let url = t.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let title = t.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let target_id = t
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let url = t
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let title = t
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         tabs.push(TabEntry {
             id: TabId(next_tab_id),
             target_id,
@@ -353,7 +389,9 @@ async fn handle_close(session_id: &str, registry: &SharedRegistry) -> ActionResu
     if let Some(mut child) = entry.chrome_process.take() {
         let _ = child.kill();
         // Avoid blocking async runtime — wait in a blocking thread
-        tokio::task::spawn_blocking(move || { let _ = child.wait(); });
+        tokio::task::spawn_blocking(move || {
+            let _ = child.wait();
+        });
     }
 
     ActionResult::ok(json!({
@@ -428,20 +466,32 @@ async fn handle_goto(
         let reg = registry.lock().await;
         let entry = match reg.get(session_id) {
             Some(e) => e,
-            None => return ActionResult::fatal("SESSION_NOT_FOUND", format!("session '{session_id}' not found")),
+            None => {
+                return ActionResult::fatal(
+                    "SESSION_NOT_FOUND",
+                    format!("session '{session_id}' not found"),
+                );
+            }
         };
         let parsed_tab: TabId = match tab_id.parse() {
             Ok(t) => t,
-            Err(e) => return ActionResult::fatal("INVALID_ARGUMENT", format!("invalid tab id: {e}")),
+            Err(e) => {
+                return ActionResult::fatal("INVALID_ARGUMENT", format!("invalid tab id: {e}"));
+            }
         };
         let tab = match entry.tabs.iter().find(|t| t.id == parsed_tab) {
             Some(t) => t,
-            None => return ActionResult::fatal("TAB_NOT_FOUND", format!("tab '{tab_id}' not found")),
+            None => {
+                return ActionResult::fatal("TAB_NOT_FOUND", format!("tab '{tab_id}' not found"));
+            }
         };
         if tab.target_id.is_empty() {
             None
         } else {
-            Some(format!("ws://127.0.0.1:{}/devtools/page/{}", entry.cdp_port, tab.target_id))
+            Some(format!(
+                "ws://127.0.0.1:{}/devtools/page/{}",
+                entry.cdp_port, tab.target_id
+            ))
         }
     }; // lock released
 
@@ -468,11 +518,7 @@ async fn handle_goto(
     }))
 }
 
-async fn handle_new_tab(
-    session_id: &str,
-    url: &str,
-    registry: &SharedRegistry,
-) -> ActionResult {
+async fn handle_new_tab(session_id: &str, url: &str, registry: &SharedRegistry) -> ActionResult {
     let final_url = ensure_scheme(url);
 
     // Extract port, release lock before HTTP I/O
@@ -480,7 +526,12 @@ async fn handle_new_tab(
         let reg = registry.lock().await;
         match reg.get(session_id) {
             Some(e) => e.cdp_port,
-            None => return ActionResult::fatal("SESSION_NOT_FOUND", format!("session '{session_id}' not found")),
+            None => {
+                return ActionResult::fatal(
+                    "SESSION_NOT_FOUND",
+                    format!("session '{session_id}' not found"),
+                );
+            }
         }
     }; // lock released
 
@@ -505,7 +556,12 @@ async fn handle_new_tab(
         let mut reg = registry.lock().await;
         let entry = match reg.get_mut(session_id) {
             Some(e) => e,
-            None => return ActionResult::fatal("SESSION_NOT_FOUND", format!("session '{session_id}' not found")),
+            None => {
+                return ActionResult::fatal(
+                    "SESSION_NOT_FOUND",
+                    format!("session '{session_id}' not found"),
+                );
+            }
         };
         let tid = TabId(entry.next_tab_id);
         entry.next_tab_id += 1;
@@ -530,14 +586,19 @@ fn resolve_tab_ws_url(
     tab_id: &str,
     entry: &super::registry::SessionEntry,
 ) -> Result<String, ActionResult> {
-    let parsed_tab: TabId = tab_id.parse().map_err(|e| {
-        ActionResult::fatal("INVALID_ARGUMENT", format!("invalid tab id: {e}"))
-    })?;
-    let tab = entry.tabs.iter().find(|t| t.id == parsed_tab).ok_or_else(|| {
-        ActionResult::fatal("TAB_NOT_FOUND", format!("tab '{tab_id}' not found"))
-    })?;
+    let parsed_tab: TabId = tab_id
+        .parse()
+        .map_err(|e| ActionResult::fatal("INVALID_ARGUMENT", format!("invalid tab id: {e}")))?;
+    let tab = entry
+        .tabs
+        .iter()
+        .find(|t| t.id == parsed_tab)
+        .ok_or_else(|| ActionResult::fatal("TAB_NOT_FOUND", format!("tab '{tab_id}' not found")))?;
     Ok(if !tab.target_id.is_empty() {
-        format!("ws://127.0.0.1:{}/devtools/page/{}", entry.cdp_port, tab.target_id)
+        format!(
+            "ws://127.0.0.1:{}/devtools/page/{}",
+            entry.cdp_port, tab.target_id
+        )
     } else {
         entry.ws_url.clone()
     })
@@ -555,7 +616,12 @@ async fn handle_cdp_eval(
         let reg = registry.lock().await;
         let entry = match reg.get(session_id) {
             Some(e) => e,
-            None => return ActionResult::fatal("SESSION_NOT_FOUND", format!("session '{session_id}' not found")),
+            None => {
+                return ActionResult::fatal(
+                    "SESSION_NOT_FOUND",
+                    format!("session '{session_id}' not found"),
+                );
+            }
         };
         match resolve_tab_ws_url(session_id, tab_id, entry) {
             Ok(url) => url,
@@ -579,7 +645,12 @@ async fn handle_snapshot(
         let reg = registry.lock().await;
         let entry = match reg.get(session_id) {
             Some(e) => e,
-            None => return ActionResult::fatal("SESSION_NOT_FOUND", format!("session '{session_id}' not found")),
+            None => {
+                return ActionResult::fatal(
+                    "SESSION_NOT_FOUND",
+                    format!("session '{session_id}' not found"),
+                );
+            }
         };
         match resolve_tab_ws_url(session_id, tab_id, entry) {
             Ok(url) => url,
@@ -619,22 +690,35 @@ async fn cdp_runtime_evaluate(ws_url: &str, expression: &str) -> Result<String, 
         "method": "Runtime.evaluate",
         "params": { "expression": expression, "returnByValue": true }
     });
-    ws.send(ws_text(msg.to_string())).await.map_err(|e| CliError::CdpError(e.to_string()))?;
+    ws.send(ws_text(msg.to_string()))
+        .await
+        .map_err(|e| CliError::CdpError(e.to_string()))?;
 
     while let Some(raw) = ws.next().await {
         let raw = raw.map_err(|e| CliError::CdpError(e.to_string()))?;
         if let Some(text) = msg_to_string(&raw) {
-            let resp: serde_json::Value = serde_json::from_str(&text).map_err(|e| CliError::CdpError(e.to_string()))?;
+            let resp: serde_json::Value =
+                serde_json::from_str(&text).map_err(|e| CliError::CdpError(e.to_string()))?;
             if resp.get("id").and_then(|v| v.as_u64()) == Some(1) {
                 if let Some(result) = resp.get("result").and_then(|r| r.get("result")) {
-                    let value = result.get("value").map(|v| {
-                        if v.is_string() { v.as_str().unwrap().to_string() } else { v.to_string() }
-                    }).unwrap_or_default();
+                    let value = result
+                        .get("value")
+                        .map(|v| {
+                            if v.is_string() {
+                                v.as_str().unwrap().to_string()
+                            } else {
+                                v.to_string()
+                            }
+                        })
+                        .unwrap_or_default();
                     let _ = ws.close(None).await;
                     return Ok(value);
                 }
                 if let Some(exc) = resp.get("result").and_then(|r| r.get("exceptionDetails")) {
-                    let emsg = exc.get("text").and_then(|v| v.as_str()).unwrap_or("expression error");
+                    let emsg = exc
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("expression error");
                     let _ = ws.close(None).await;
                     return Err(CliError::EvalFailed(emsg.to_string()));
                 }
@@ -651,7 +735,9 @@ async fn cdp_navigate(ws_url: &str, url: &str) -> Result<(), CliError> {
         .map_err(|e| CliError::CdpConnectionFailed(e.to_string()))?;
 
     let msg = json!({ "id": 1, "method": "Page.navigate", "params": { "url": url } });
-    ws.send(ws_text(msg.to_string())).await.map_err(|e| CliError::CdpError(e.to_string()))?;
+    ws.send(ws_text(msg.to_string()))
+        .await
+        .map_err(|e| CliError::CdpError(e.to_string()))?;
 
     while let Some(raw) = ws.next().await {
         let raw = raw.map_err(|e| CliError::CdpError(e.to_string()))?;
@@ -673,7 +759,9 @@ async fn cdp_get_ax_tree(ws_url: &str) -> Result<String, CliError> {
         .map_err(|e| CliError::CdpConnectionFailed(e.to_string()))?;
 
     let msg = json!({ "id": 1, "method": "Accessibility.getFullAXTree", "params": {} });
-    ws.send(ws_text(msg.to_string())).await.map_err(|e| CliError::CdpError(e.to_string()))?;
+    ws.send(ws_text(msg.to_string()))
+        .await
+        .map_err(|e| CliError::CdpError(e.to_string()))?;
 
     while let Some(raw) = ws.next().await {
         let raw = raw.map_err(|e| CliError::CdpError(e.to_string()))?;
@@ -691,7 +779,11 @@ async fn cdp_get_ax_tree(ws_url: &str) -> Result<String, CliError> {
 fn ensure_scheme(url: &str) -> String {
     if url.contains("://") {
         url.to_string()
-    } else if url.starts_with("about:") || url.starts_with("data:") || url.starts_with("chrome:") || url.starts_with("javascript:") {
+    } else if url.starts_with("about:")
+        || url.starts_with("data:")
+        || url.starts_with("chrome:")
+        || url.starts_with("javascript:")
+    {
         url.to_string()
     } else {
         format!("https://{url}")

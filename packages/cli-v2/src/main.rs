@@ -13,8 +13,7 @@ use actionbook_cli::utils::client::DaemonClient;
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "warn".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -58,10 +57,7 @@ async fn main() {
                     "",
                     std::time::Duration::ZERO,
                 );
-                println!(
-                    "{}",
-                    serde_json::to_string(&envelope).unwrap_or_default()
-                );
+                println!("{}", serde_json::to_string(&envelope).unwrap_or_default());
             } else {
                 eprintln!("error: {e}");
             }
@@ -195,8 +191,18 @@ fn build_action(command: &BrowserCommands) -> Option<Action> {
             tab_id: tab.clone(),
             url: url.clone(),
         }),
-        BrowserCommands::NewTab { url, session, new_window, .. }
-        | BrowserCommands::Open { url, session, new_window, .. } => Some(Action::NewTab {
+        BrowserCommands::NewTab {
+            url,
+            session,
+            new_window,
+            ..
+        }
+        | BrowserCommands::Open {
+            url,
+            session,
+            new_window,
+            ..
+        } => Some(Action::NewTab {
             session_id: session.clone(),
             url: url.clone(),
             new_window: *new_window,
@@ -212,7 +218,11 @@ fn build_action(command: &BrowserCommands) -> Option<Action> {
             session_id: session.clone(),
             tab_id: tab.clone(),
         }),
-        BrowserCommands::Eval { expression, session, tab } => Some(Action::Eval {
+        BrowserCommands::Eval {
+            expression,
+            session,
+            tab,
+        } => Some(Action::Eval {
             session_id: session.clone(),
             tab_id: tab.clone(),
             expression: expression.clone(),
@@ -222,10 +232,7 @@ fn build_action(command: &BrowserCommands) -> Option<Action> {
     }
 }
 
-fn build_context(
-    command: &BrowserCommands,
-    result: &ActionResult,
-) -> Option<ResponseContext> {
+fn build_context(command: &BrowserCommands, result: &ActionResult) -> Option<ResponseContext> {
     match command {
         // Global commands that create a session return context
         BrowserCommands::Start { .. } => {
@@ -235,12 +242,7 @@ fn build_context(
                         .as_str()
                         .unwrap_or("")
                         .to_string(),
-                    tab_id: Some(
-                        data["tab"]["tab_id"]
-                            .as_str()
-                            .unwrap_or("t1")
-                            .to_string(),
-                    ),
+                    tab_id: Some(data["tab"]["tab_id"].as_str().unwrap_or("t1").to_string()),
                     window_id: None,
                     url: data["tab"]["url"].as_str().map(|s| s.to_string()),
                     title: data["tab"]["title"].as_str().map(|s| s.to_string()),
@@ -312,7 +314,8 @@ fn build_context(
 fn handle_version(json_mode: bool) {
     let version = env!("CARGO_PKG_VERSION");
     if json_mode {
-        let envelope = JsonEnvelope::success("version", None, json!(version), std::time::Duration::ZERO);
+        let envelope =
+            JsonEnvelope::success("version", None, json!(version), std::time::Duration::ZERO);
         println!("{}", serde_json::to_string(&envelope).unwrap_or_default());
     } else {
         println!("{version}");
@@ -323,13 +326,10 @@ fn handle_help(json_mode: bool) {
     let help_text = "actionbook browser <subcommand>\n\nstart         Start or attach a browser session\nlist-sessions List all active sessions\nstatus        Show session status\nclose         Close a session\nrestart       Restart a session\nlist-tabs     List tabs in a session\nnew-tab       Open a new tab\ngoto          Navigate to URL\nsnapshot      Capture accessibility snapshot\neval          Evaluate JavaScript";
 
     if json_mode {
-        let envelope = JsonEnvelope::success("help", None, json!(help_text), std::time::Duration::ZERO);
-        println!(
-            "{}",
-            serde_json::to_string(&envelope).unwrap_or_default()
-        );
+        let envelope =
+            JsonEnvelope::success("help", None, json!(help_text), std::time::Duration::ZERO);
+        println!("{}", serde_json::to_string(&envelope).unwrap_or_default());
     } else {
         println!("{help_text}");
     }
 }
-

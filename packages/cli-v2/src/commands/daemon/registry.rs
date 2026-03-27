@@ -48,12 +48,18 @@ impl SessionRegistry {
         }
     }
 
-    pub fn generate_session_id(&mut self, set_id: Option<&str>, profile: Option<&str>) -> Result<SessionId, crate::error::CliError> {
+    pub fn generate_session_id(
+        &mut self,
+        set_id: Option<&str>,
+        profile: Option<&str>,
+    ) -> Result<SessionId, crate::error::CliError> {
         if let Some(id) = set_id {
             let sid = SessionId::new(id)
                 .map_err(|e| crate::error::CliError::InvalidSessionId(e.to_string()))?;
             if self.sessions.contains_key(sid.as_str()) {
-                return Err(crate::error::CliError::SessionAlreadyExists(sid.to_string()));
+                return Err(crate::error::CliError::SessionAlreadyExists(
+                    sid.to_string(),
+                ));
             }
             return Ok(sid);
         }

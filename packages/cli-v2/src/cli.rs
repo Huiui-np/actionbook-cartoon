@@ -1,7 +1,11 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
-#[command(name = "actionbook", about = "Actionbook CLI - Browser automation for AI agents", disable_version_flag = true)]
+#[command(
+    name = "actionbook",
+    about = "Actionbook CLI - Browser automation for AI agents",
+    disable_version_flag = true
+)]
 pub struct Cli {
     /// JSON output (default is plain text)
     #[arg(long, global = true)]
