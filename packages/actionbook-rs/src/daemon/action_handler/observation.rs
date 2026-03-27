@@ -1,4 +1,5 @@
 use super::*;
+use crate::browser::readability::READABILITY_JS;
 use crate::browser::snapshot::{
     format_compact, parse_ax_tree, remove_empty_leaves, SnapshotFilter,
 };
@@ -88,6 +89,71 @@ async fn ensure_log_capture_initialized(
         Ok(_) => Ok(()),
         Err(e) => Err(cdp_error_to_result(e)),
     }
+}
+
+fn fallback_tab_context(regs: &Registries, tab: TabId) -> (Option<String>, Option<String>) {
+    regs.find_tab(tab)
+        .map(|entry| (Some(entry.url.clone()), Some(entry.title.clone())))
+        .unwrap_or((None, None))
+}
+
+async fn live_tab_context(
+    backend: &mut dyn BackendSession,
+    target_id: &str,
+    regs: &Registries,
+    tab: TabId,
+) -> (Option<String>, Option<String>) {
+    let fallback = fallback_tab_context(regs, tab);
+    let op = BackendOp::Evaluate {
+        target_id: target_id.to_string(),
+        expression: "(() => ({ url: location.href, title: document.title || '' }))()".to_string(),
+        return_by_value: true,
+    };
+
+    match backend.exec(op).await {
+        Ok(result) => {
+            let val = extract_eval_value(&result.value);
+            let url = val
+                .get("url")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or(fallback.0);
+            let title = match val.get("title").and_then(|v| v.as_str()) {
+                Some("") => fallback.1,
+                Some(title) => Some(title.to_string()),
+                None => fallback.1,
+            };
+            (url, title)
+        }
+        Err(_) => fallback,
+    }
+}
+
+async fn ok_with_tab_context(
+    backend: &mut dyn BackendSession,
+    target_id: &str,
+    regs: &Registries,
+    tab: TabId,
+    data: Value,
+) -> ActionResult {
+    let (url, title) = live_tab_context(backend, target_id, regs, tab).await;
+    let mut object = match data {
+        Value::Object(map) => map,
+        other => {
+            let mut map = serde_json::Map::new();
+            map.insert("value".to_string(), other);
+            map
+        }
+    };
+    object.insert(
+        "__ctx_url".to_string(),
+        url.map(Value::String).unwrap_or(Value::Null),
+    );
+    object.insert(
+        "__ctx_title".to_string(),
+        title.map(Value::String).unwrap_or(Value::Null),
+    );
+    ActionResult::ok(Value::Object(object))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -382,6 +448,193 @@ pub(super) async fn handle_eval(
     }
 }
 
+async fn query_context_fields(
+    backend: &mut dyn BackendSession,
+    regs: &Registries,
+    target_id: &str,
+    tab: TabId,
+) -> (String, String) {
+    let registry_fallback = regs
+        .tabs
+        .get(&tab)
+        .map(|entry| (entry.url.clone(), entry.title.clone()))
+        .unwrap_or_default();
+
+    let context_result = backend
+        .exec(BackendOp::Evaluate {
+            target_id: target_id.to_string(),
+            expression:
+                r#"(function(){ return { url: window.location.href, title: document.title }; })()"#
+                    .to_string(),
+            return_by_value: true,
+        })
+        .await;
+
+    let Ok(result) = context_result else {
+        return registry_fallback;
+    };
+
+    let live_context = extract_eval_value(&result.value);
+
+    let live_url = live_context
+        .get("url")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .filter(|value| !value.is_empty());
+    let live_title = live_context
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    (
+        live_url.unwrap_or(registry_fallback.0),
+        live_title.unwrap_or(registry_fallback.1),
+    )
+}
+
+fn with_query_context(
+    ctx_url: &str,
+    ctx_title: &str,
+    value: serde_json::Value,
+) -> serde_json::Value {
+    let mut object = value.as_object().cloned().unwrap_or_default();
+    object.insert("__ctx_url".to_string(), json!(ctx_url));
+    object.insert("__ctx_title".to_string(), json!(ctx_title));
+    serde_json::Value::Object(object)
+}
+
+fn css_query_script(selector_json: &str) -> String {
+    format!(
+        r#"(function() {{
+            const raw = {selector_json};
+
+            function unquote(input) {{
+                const trimmed = String(input || '').trim();
+                if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {{
+                    return trimmed.slice(1, -1);
+                }}
+                return trimmed;
+            }}
+
+            function extractCalls(input, pseudo) {{
+                const marker = ':' + pseudo + '(';
+                const values = [];
+                let remaining = String(input || '').trim();
+                while (true) {{
+                    const start = remaining.indexOf(marker);
+                    if (start === -1) {{
+                        break;
+                    }}
+                    let depth = 0;
+                    let end = -1;
+                    for (let i = start + marker.length - 1; i < remaining.length; i++) {{
+                        const ch = remaining[i];
+                        if (ch === '(') {{
+                            depth += 1;
+                        }} else if (ch === ')') {{
+                            depth -= 1;
+                            if (depth === 0) {{
+                                end = i;
+                                break;
+                            }}
+                        }}
+                    }}
+                    if (end === -1) {{
+                        break;
+                    }}
+                    values.push(remaining.slice(start + marker.length, end));
+                    remaining = (remaining.slice(0, start) + remaining.slice(end + 1)).trim();
+                }}
+                return {{ remaining, values }};
+            }}
+
+            function extractTrailingFlag(input, suffix) {{
+                let remaining = String(input || '').trim();
+                let enabled = false;
+                while (remaining.endsWith(suffix)) {{
+                    enabled = true;
+                    remaining = remaining.slice(0, -suffix.length).trim();
+                }}
+                return {{ remaining, enabled }};
+            }}
+
+            function isVisible(el) {{
+                const rect = el.getBoundingClientRect();
+                const cs = window.getComputedStyle(el);
+                return cs.display !== 'none' && cs.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+            }}
+
+            let working = String(raw || '').trim();
+            const containsInfo = extractCalls(working, 'contains');
+            working = containsInfo.remaining;
+            const hasInfo = extractCalls(working, 'has');
+            working = hasInfo.remaining;
+            const visibleInfo = extractTrailingFlag(working, ':visible');
+            working = visibleInfo.remaining;
+            const enabledInfo = extractTrailingFlag(working, ':enabled');
+            working = enabledInfo.remaining;
+            const disabledInfo = extractTrailingFlag(working, ':disabled');
+            working = disabledInfo.remaining;
+            const checkedInfo = extractTrailingFlag(working, ':checked');
+            working = checkedInfo.remaining;
+
+            const baseSelector = working || '*';
+            const containsTexts = containsInfo.values.map(unquote).filter(Boolean);
+            const hasSelectors = hasInfo.values.map(unquote).filter(Boolean);
+
+            let elements = [];
+            try {{
+                elements = Array.from(document.querySelectorAll(baseSelector));
+            }} catch (_error) {{
+                return [];
+            }}
+
+            return elements
+                .filter((el) => {{
+                    if (visibleInfo.enabled && !isVisible(el)) {{
+                        return false;
+                    }}
+                    if (enabledInfo.enabled && !!el.disabled) {{
+                        return false;
+                    }}
+                    if (disabledInfo.enabled && !el.disabled) {{
+                        return false;
+                    }}
+                    if (checkedInfo.enabled && !el.checked) {{
+                        return false;
+                    }}
+
+                    const text = (el.innerText || el.textContent || '').trim();
+                    if (containsTexts.some((needle) => !text.includes(needle))) {{
+                        return false;
+                    }}
+                    for (const selector of hasSelectors) {{
+                        try {{
+                            if (!el.querySelector(selector)) {{
+                                return false;
+                            }}
+                        }} catch (_error) {{
+                            return false;
+                        }}
+                    }}
+                    return true;
+                }})
+                .slice(0, 500)
+                .map((el, i) => {{
+                    const rect = el.getBoundingClientRect();
+                    const cs = window.getComputedStyle(el);
+                    return {{
+                        selector: raw + ':nth-of-type(' + (i + 1) + ')',
+                        tag: el.tagName.toLowerCase(),
+                        text: isVisible(el) ? (el.innerText || el.textContent || '').trim().substring(0, 80) : '',
+                        visible: cs.display !== 'none' && cs.visibility !== 'hidden' && rect.width > 0 && rect.height > 0,
+                        enabled: !el.disabled
+                    }};
+                }});
+        }})()"#
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_query(
     session_id: SessionId,
@@ -397,6 +650,7 @@ pub(super) async fn handle_query(
         Ok(t) => t,
         Err(r) => return r,
     };
+    let (ctx_url, ctx_title) = query_context_fields(backend, regs, target_id, tab).await;
     let selector_json = match serde_json::to_string(selector) {
         Ok(s) => s,
         Err(e) => {
@@ -406,22 +660,7 @@ pub(super) async fn handle_query(
 
     // Query all matching elements with metadata (PRD §10.7).
     let js = match mode {
-        QueryMode::Css => format!(
-            r#"(function() {{
-                const els = document.querySelectorAll({selector_json});
-                return Array.from(els).slice(0, 500).map((el, i) => {{
-                    const rect = el.getBoundingClientRect();
-                    const cs = window.getComputedStyle(el);
-                    return {{
-                        selector: {selector_json} + ':nth-of-type(' + (i+1) + ')',
-                        tag: el.tagName.toLowerCase(),
-                        text: (el.innerText || '').substring(0, 80),
-                        visible: cs.display !== 'none' && cs.visibility !== 'hidden' && rect.width > 0,
-                        enabled: !el.disabled
-                    }};
-                }});
-            }})()"#
-        ),
+        QueryMode::Css => css_query_script(&selector_json),
         QueryMode::Xpath => format!(
             r#"(function() {{ const result = document.evaluate({selector_json}, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null); const items = []; for (let i = 0; i < Math.min(result.snapshotLength, 500); i++) {{ const el = result.snapshotItem(i); if (el.nodeType === 1) {{ const rect = el.getBoundingClientRect(); const cs = window.getComputedStyle(el); items.push({{ selector: {selector_json}, tag: el.tagName.toLowerCase(), text: (el.innerText || '').substring(0, 80), visible: cs.display !== 'none' && cs.visibility !== 'hidden' && rect.width > 0, enabled: !el.disabled }}); }} }} return items; }})()"#
         ),
@@ -441,57 +680,94 @@ pub(super) async fn handle_query(
             let val = extract_eval_value(&result.value);
             let items = val.as_array().cloned().unwrap_or_default();
             let count = items.len();
+            let sample_selectors: Vec<serde_json::Value> = items
+                .iter()
+                .filter_map(|item| item.get("selector").and_then(|value| value.as_str()))
+                .take(3)
+                .map(|selector| json!(selector))
+                .collect();
 
             match cardinality {
                 QueryCardinality::One => {
                     if count == 0 {
-                        return ActionResult::fatal(
+                        return ActionResult::fatal_with_details(
                             "ELEMENT_NOT_FOUND",
                             format!("no elements match selector '{selector}'"),
                             "check the selector or wait for the element to appear",
+                            json!({
+                                "query": selector,
+                                "count": 0
+                            }),
                         );
                     }
                     if count > 1 {
-                        return ActionResult::fatal(
+                        return ActionResult::fatal_with_details(
                             "MULTIPLE_MATCHES",
                             format!("Query mode 'one' requires exactly 1 match, found {count}"),
                             "use 'query all' or narrow your selector",
+                            json!({
+                                "query": selector,
+                                "count": count,
+                                "sample_selectors": sample_selectors.clone(),
+                            }),
                         );
                     }
-                    ActionResult::ok(json!({
-                        "mode": "one",
-                        "query": selector,
-                        "count": 1,
-                        "item": items[0],
-                    }))
+                    ActionResult::ok(with_query_context(
+                        &ctx_url,
+                        &ctx_title,
+                        json!({
+                            "mode": "one",
+                            "query": selector,
+                            "count": 1,
+                            "item": items[0],
+                        }),
+                    ))
                 }
-                QueryCardinality::All => ActionResult::ok(json!({
-                    "mode": "all",
-                    "query": selector,
-                    "count": count,
-                    "items": items,
-                })),
-                QueryCardinality::Count => ActionResult::ok(json!({
-                    "mode": "count",
-                    "query": selector,
-                    "count": count,
-                })),
+                QueryCardinality::All => ActionResult::ok(with_query_context(
+                    &ctx_url,
+                    &ctx_title,
+                    json!({
+                        "mode": "all",
+                        "query": selector,
+                        "count": count,
+                        "items": items,
+                    }),
+                )),
+                QueryCardinality::Count => ActionResult::ok(with_query_context(
+                    &ctx_url,
+                    &ctx_title,
+                    json!({
+                        "mode": "count",
+                        "query": selector,
+                        "count": count,
+                    }),
+                )),
                 QueryCardinality::Nth => {
                     let n = nth_index.unwrap_or(1) as usize;
                     if n == 0 || n > count {
-                        return ActionResult::fatal(
+                        return ActionResult::fatal_with_details(
                             "INDEX_OUT_OF_RANGE",
                             format!("index {n} out of range (found {count} matches)"),
                             "use 'query count' to check the number of matches first",
+                            json!({
+                                "query": selector,
+                                "count": count,
+                                "index": n,
+                                "sample_selectors": sample_selectors.clone(),
+                            }),
                         );
                     }
-                    ActionResult::ok(json!({
-                        "mode": "nth",
-                        "query": selector,
-                        "index": n,
-                        "count": count,
-                        "item": items[n - 1],
-                    }))
+                    ActionResult::ok(with_query_context(
+                        &ctx_url,
+                        &ctx_title,
+                        json!({
+                            "mode": "nth",
+                            "query": selector,
+                            "index": n,
+                            "count": count,
+                            "item": items[n - 1],
+                        }),
+                    ))
                 }
             }
         }
@@ -546,7 +822,7 @@ return el ? el.outerHTML : null;
             if let Some(sel) = selector.filter(|_| val.is_null()) {
                 element_not_found(sel)
             } else {
-                ActionResult::ok(json!({"html": val}))
+                ok_with_tab_context(backend, target_id, regs, tab, json!({"html": val})).await
             }
         }
         Err(e) => cdp_error_to_result(e),
@@ -559,14 +835,42 @@ pub(super) async fn handle_text(
     regs: &Registries,
     tab: TabId,
     selector: Option<&str>,
+    mode: Option<&str>,
 ) -> ActionResult {
     let target_id = match resolve_tab(session_id, regs, tab) {
         Ok(t) => t,
         Err(r) => return r,
     };
 
-    let js = match selector {
-        Some(sel) => {
+    let js = match (selector, mode) {
+        (Some(sel), Some("readability")) => {
+            let sel_json = match serde_json::to_string(sel) {
+                Ok(s) => s,
+                Err(e) => {
+                    return ActionResult::fatal(
+                        "invalid_selector",
+                        e.to_string(),
+                        "check selector syntax",
+                    )
+                }
+            };
+            format!(
+                r#"(function() {{
+{FIND_ELEMENT_JS}
+const el = __findElement({sel_json});
+if (!el) return null;
+const root = el.cloneNode(true);
+const removeSelectors = ['nav','footer','aside','header','script','style','noscript','template','svg','[hidden]','[aria-hidden="true"]','[style*="display:none"]','[style*="display: none"]'];
+for (const selector of removeSelectors) {{
+  root.querySelectorAll(selector).forEach(node => node.remove());
+}}
+const text = root.innerText || root.textContent || '';
+return text.replace(/\n{{3,}}/g, '\n\n').replace(/[ \t]+/g, ' ').trim();
+}})()"#
+            )
+        }
+        (None, Some("readability")) => READABILITY_JS.to_string(),
+        (Some(sel), _) => {
             let sel_json = match serde_json::to_string(sel) {
                 Ok(s) => s,
                 Err(e) => {
@@ -585,7 +889,7 @@ return el ? el.innerText : null;
 }})()"#
             )
         }
-        None => "document.body.innerText".to_string(),
+        (None, _) => "document.body.innerText".to_string(),
     };
 
     let op = BackendOp::Evaluate {
@@ -600,7 +904,7 @@ return el ? el.innerText : null;
             if let Some(sel) = selector.filter(|_| val.is_null()) {
                 element_not_found(sel)
             } else {
-                ActionResult::ok(json!({"text": val}))
+                ok_with_tab_context(backend, target_id, regs, tab, json!({"text": val})).await
             }
         }
         Err(e) => cdp_error_to_result(e),
@@ -710,7 +1014,14 @@ return el.value;
             if val.is_null() {
                 element_not_found(selector)
             } else {
-                ActionResult::ok(json!({"value": val, "selector": selector}))
+                ok_with_tab_context(
+                    backend,
+                    target_id,
+                    regs,
+                    tab,
+                    json!({"value": val, "selector": selector}),
+                )
+                .await
             }
         }
         Err(e) => cdp_error_to_result(e),
@@ -762,7 +1073,14 @@ return el.getAttribute({attr_json});
             if val.get("__notfound").is_some() {
                 element_not_found(selector)
             } else {
-                ActionResult::ok(json!({"attr": attr_name, "value": val, "selector": selector}))
+                ok_with_tab_context(
+                    backend,
+                    target_id,
+                    regs,
+                    tab,
+                    json!({"attr": attr_name, "value": val, "selector": selector}),
+                )
+                .await
             }
         }
         Err(e) => cdp_error_to_result(e),
@@ -809,7 +1127,14 @@ return attrs;
             if val.is_null() {
                 element_not_found(selector)
             } else {
-                ActionResult::ok(json!({"attributes": val, "selector": selector}))
+                ok_with_tab_context(
+                    backend,
+                    target_id,
+                    regs,
+                    tab,
+                    json!({"attributes": val, "selector": selector}),
+                )
+                .await
             }
         }
         Err(e) => cdp_error_to_result(e),
@@ -887,7 +1212,8 @@ const el = __findElement({selector_json});
 if (!el) return null;
 const rect = el.getBoundingClientRect();
 const style = window.getComputedStyle(el);
-return {{ visible: rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none', enabled: !el.disabled, checked: !!el.checked, selected: !!el.selected, focused: document.activeElement === el, required: !!el.required, readOnly: !!el.readOnly }};
+const editable = !el.disabled && !el.readOnly && (typeof el.value !== 'undefined' || el.isContentEditable);
+return {{ visible: rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none', enabled: !el.disabled, checked: !!el.checked, focused: document.activeElement === el, editable, selected: !!el.selected }};
 }})()"#
     );
 
@@ -902,7 +1228,14 @@ return {{ visible: rect.width > 0 && rect.height > 0 && style.visibility !== 'hi
             if val.is_null() {
                 element_not_found(selector)
             } else {
-                ActionResult::ok(json!({"state": val, "selector": selector}))
+                ok_with_tab_context(
+                    backend,
+                    target_id,
+                    regs,
+                    tab,
+                    json!({"state": val, "selector": selector}),
+                )
+                .await
             }
         }
         Err(e) => cdp_error_to_result(e),
@@ -948,7 +1281,14 @@ return {{ x: rect.left, y: rect.top, width: rect.width, height: rect.height, rig
             if val.is_null() {
                 element_not_found(selector)
             } else {
-                ActionResult::ok(json!({"box": val, "selector": selector}))
+                ok_with_tab_context(
+                    backend,
+                    target_id,
+                    regs,
+                    tab,
+                    json!({"box": val, "selector": selector}),
+                )
+                .await
             }
         }
         Err(e) => cdp_error_to_result(e),
@@ -1005,7 +1345,14 @@ return result;
             if val.is_null() {
                 element_not_found(selector)
             } else {
-                ActionResult::ok(json!({"styles": val, "selector": selector}))
+                ok_with_tab_context(
+                    backend,
+                    target_id,
+                    regs,
+                    tab,
+                    json!({"styles": val, "selector": selector}),
+                )
+                .await
             }
         }
         Err(e) => cdp_error_to_result(e),
