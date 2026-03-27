@@ -68,19 +68,6 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Commands::Browser { command } => {
             handle_browser(command, json_mode).await?;
         }
-        Commands::Search {
-            query,
-            domain,
-            url,
-            page,
-            page_size,
-        } => {
-            handle_search(&query, domain.as_deref(), url.as_deref(), page, page_size, json_mode)
-                .await?;
-        }
-        Commands::Get { area_id } => {
-            handle_get(&area_id, json_mode).await?;
-        }
         Commands::Help => {
             handle_help(json_mode);
         }
@@ -280,128 +267,6 @@ fn build_context(
     }
 }
 
-async fn handle_search(
-    query: &str,
-    domain: Option<&str>,
-    url: Option<&str>,
-    page: u32,
-    page_size: u32,
-    json_mode: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let start = Instant::now();
-
-    let base_url =
-        std::env::var("ACTIONBOOK_BASE_URL").unwrap_or_else(|_| "https://api.actionbook.dev".to_string());
-    let api_key = std::env::var("ACTIONBOOK_API_KEY").ok();
-
-    let client = reqwest::Client::new();
-    let mut req = client
-        .get(format!("{base_url}/api/actions/search"))
-        .query(&[("q", query)])
-        .query(&[("page", &page.to_string())])
-        .query(&[("page_size", &page_size.to_string())]);
-
-    if let Some(d) = domain {
-        req = req.query(&[("domain", d)]);
-    }
-    if let Some(u) = url {
-        req = req.query(&[("url", u)]);
-    }
-    if let Some(key) = &api_key {
-        req = req.header("Authorization", format!("Bearer {key}"));
-    }
-
-    let resp = req.send().await?;
-    let data: serde_json::Value = resp.json().await?;
-    let duration = start.elapsed();
-
-    if json_mode {
-        let envelope = JsonEnvelope::success("search", None, data.clone(), duration);
-        println!("{}", serde_json::to_string(&envelope)?);
-    } else {
-        let items = data
-            .get("items")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        let total = items.len();
-        let label = if total == 1 { "result" } else { "results" };
-        println!("{total} {label}");
-        for (i, item) in items.iter().enumerate() {
-            let area_id = item.get("area_id").and_then(|v| v.as_str()).unwrap_or("?");
-            let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            let score = item.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("");
-            println!("{}. {area_id}", i + 1);
-            println!("   {title}");
-            println!("   score: {score:.2}");
-            println!("   {url}");
-        }
-    }
-    Ok(())
-}
-
-async fn handle_get(
-    area_id: &str,
-    json_mode: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let start = Instant::now();
-
-    let base_url =
-        std::env::var("ACTIONBOOK_BASE_URL").unwrap_or_else(|_| "https://api.actionbook.dev".to_string());
-    let api_key = std::env::var("ACTIONBOOK_API_KEY").ok();
-
-    let client = reqwest::Client::new();
-    let mut req = client.get(format!(
-        "{base_url}/v1/actions/{}",
-        urlencoding::encode(area_id)
-    ));
-    if let Some(key) = &api_key {
-        req = req.header("Authorization", format!("Bearer {key}"));
-    }
-
-    let resp = req.send().await?;
-    let data: serde_json::Value = resp.json().await?;
-    let duration = start.elapsed();
-
-    if json_mode {
-        let envelope = JsonEnvelope::success("get", None, data.clone(), duration);
-        println!("{}", serde_json::to_string(&envelope)?);
-    } else {
-        let aid = data.get("area_id").and_then(|v| v.as_str()).unwrap_or(area_id);
-        let url = data.get("url").and_then(|v| v.as_str()).unwrap_or("");
-        let desc = data.get("description").and_then(|v| v.as_str()).unwrap_or("");
-        println!("{aid}");
-        println!("{url}");
-        println!();
-        println!("{desc}");
-        if let Some(elements) = data.get("elements").and_then(|v| v.as_array()) {
-            println!();
-            for el in elements {
-                let eid = el.get("element_id").and_then(|v| v.as_str()).unwrap_or("?");
-                let etype = el.get("type").and_then(|v| v.as_str()).unwrap_or("?");
-                let edesc = el
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let css = el.get("css").and_then(|v| v.as_str()).unwrap_or("");
-                let methods: Vec<&str> = el
-                    .get("allow_methods")
-                    .and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|m| m.as_str()).collect())
-                    .unwrap_or_default();
-                println!("[{eid}] {etype}");
-                println!("description: {edesc}");
-                if !css.is_empty() {
-                    println!("css: {css}");
-                }
-                println!("methods: {}", methods.join(", "));
-            }
-        }
-    }
-    Ok(())
-}
-
 fn handle_version(json_mode: bool) {
     let version = env!("CARGO_PKG_VERSION");
     if json_mode {
@@ -430,26 +295,6 @@ async fn handle_daemon(command: DaemonCommands) -> Result<(), Box<dyn std::error
     match command {
         DaemonCommands::Serve => {
             actionbook_cli::commands::daemon::server::run_daemon().await?;
-        }
-        DaemonCommands::Stop => {
-            use actionbook_cli::commands::daemon::server;
-            // Kill daemon process via PID file
-            if let Some(pid) = server::read_daemon_pid() {
-                server::send_sigterm(pid);
-                // Wait for process to exit
-                for _ in 0..30 {
-                    if !server::is_daemon_running() {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
-            }
-            // Clean up files
-            let path = server::socket_path();
-            std::fs::remove_file(&path).ok();
-            std::fs::remove_file(path.with_extension("ready")).ok();
-            std::fs::remove_file(server::pid_path()).ok();
-            eprintln!("daemon stopped");
         }
     }
     Ok(())

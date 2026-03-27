@@ -27,31 +27,10 @@ pub enum Commands {
         #[command(subcommand)]
         command: BrowserCommands,
     },
-    /// Search for actions
-    Search {
-        /// Search keywords
-        query: String,
-        /// Filter by domain
-        #[arg(short = 'd', long)]
-        domain: Option<String>,
-        /// Filter by URL
-        #[arg(short = 'u', long)]
-        url: Option<String>,
-        /// Page number
-        #[arg(short = 'p', long, default_value = "1")]
-        page: u32,
-        /// Items per page
-        #[arg(short = 's', long, default_value = "10")]
-        page_size: u32,
-    },
-    /// Get action details
-    Get {
-        /// Action area ID
-        area_id: String,
-    },
     /// Show help
     Help,
-    /// Daemon management
+    /// Internal: daemon serve (not user-facing)
+    #[command(hide = true)]
     Daemon {
         #[command(subcommand)]
         command: DaemonCommands,
@@ -181,8 +160,6 @@ pub enum BrowserCommands {
 pub enum DaemonCommands {
     /// Start daemon in foreground
     Serve,
-    /// Stop daemon
-    Stop,
 }
 
 #[derive(ValueEnum, Clone, Debug)]
