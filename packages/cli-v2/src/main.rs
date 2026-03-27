@@ -91,7 +91,25 @@ async fn handle_browser(
     let start = Instant::now();
 
     // Build action from CLI args
-    let action = build_action(&command);
+    let action = match build_action(&command) {
+        Some(a) => a,
+        None => {
+            let cmd_name = format!("browser.{}", command_label(&command));
+            let result = ActionResult::fatal(
+                "UNSUPPORTED_OPERATION",
+                format!("{cmd_name} is not yet implemented"),
+            );
+            let duration = start.elapsed();
+            if json_mode {
+                let envelope = JsonEnvelope::from_result(&cmd_name, None, &result, duration);
+                println!("{}", serde_json::to_string(&envelope)?);
+            } else {
+                let text = output::format_text(&cmd_name, &None, &result);
+                println!("{text}");
+            }
+            std::process::exit(1);
+        }
+    };
     let command_name = action.command_name().to_string();
 
     // Connect to daemon and execute
@@ -118,7 +136,32 @@ async fn handle_browser(
     Ok(())
 }
 
-fn build_action(command: &BrowserCommands) -> Action {
+fn command_label(command: &BrowserCommands) -> &'static str {
+    match command {
+        BrowserCommands::Start { .. } => "start",
+        BrowserCommands::ListSessions => "list-sessions",
+        BrowserCommands::Status { .. } => "status",
+        BrowserCommands::Close { .. } => "close",
+        BrowserCommands::Restart { .. } => "restart",
+        BrowserCommands::ListTabs { .. } => "list-tabs",
+        BrowserCommands::NewTab { .. } => "new-tab",
+        BrowserCommands::Open { .. } => "open",
+        BrowserCommands::CloseTab { .. } => "close-tab",
+        BrowserCommands::Goto { .. } => "goto",
+        BrowserCommands::Back { .. } => "back",
+        BrowserCommands::Forward { .. } => "forward",
+        BrowserCommands::Reload { .. } => "reload",
+        BrowserCommands::Snapshot { .. } => "snapshot",
+        BrowserCommands::Screenshot { .. } => "screenshot",
+        BrowserCommands::Eval { .. } => "eval",
+        BrowserCommands::Click { .. } => "click",
+        BrowserCommands::Fill { .. } => "fill",
+        BrowserCommands::Type { .. } => "type",
+    }
+}
+
+/// Build Action for implemented commands, None for unimplemented.
+fn build_action(command: &BrowserCommands) -> Option<Action> {
     match command {
         BrowserCommands::Start {
             mode,
@@ -128,67 +171,54 @@ fn build_action(command: &BrowserCommands) -> Action {
             cdp_endpoint,
             set_session_id,
             ..
-        } => Action::StartSession {
+        } => Some(Action::StartSession {
             mode: mode.clone().into(),
             headless: *headless,
             profile: profile.clone(),
             open_url: open_url.clone(),
             cdp_endpoint: cdp_endpoint.clone(),
             set_session_id: set_session_id.clone(),
-        },
-        BrowserCommands::ListSessions => Action::ListSessions,
-        BrowserCommands::Status { session } => Action::SessionStatus {
+        }),
+        BrowserCommands::ListSessions => Some(Action::ListSessions),
+        BrowserCommands::Status { session } => Some(Action::SessionStatus {
             session_id: session.clone(),
-        },
-        BrowserCommands::Close { session } => Action::Close {
+        }),
+        BrowserCommands::Close { session } => Some(Action::Close {
             session_id: session.clone(),
-        },
-        BrowserCommands::Restart { session } => Action::Restart {
+        }),
+        BrowserCommands::Restart { session } => Some(Action::Restart {
             session_id: session.clone(),
-        },
-        BrowserCommands::Goto {
-            url,
-            session,
-            tab,
-        } => Action::Goto {
+        }),
+        // Implemented in daemon but not fully tested yet
+        BrowserCommands::Goto { url, session, tab } => Some(Action::Goto {
             session_id: session.clone(),
             tab_id: tab.clone(),
             url: url.clone(),
-        },
-        BrowserCommands::NewTab {
-            url,
-            session,
-            new_window,
-        }
-        | BrowserCommands::Open {
-            url,
-            session,
-            new_window,
-        } => Action::NewTab {
+        }),
+        BrowserCommands::NewTab { url, session, new_window, .. }
+        | BrowserCommands::Open { url, session, new_window, .. } => Some(Action::NewTab {
             session_id: session.clone(),
             url: url.clone(),
             new_window: *new_window,
-        },
-        BrowserCommands::CloseTab { session, tab } => Action::CloseTab {
+        }),
+        BrowserCommands::CloseTab { session, tab } => Some(Action::CloseTab {
             session_id: session.clone(),
             tab_id: tab.clone(),
-        },
-        BrowserCommands::ListTabs { session } => Action::ListTabs {
+        }),
+        BrowserCommands::ListTabs { session } => Some(Action::ListTabs {
             session_id: session.clone(),
-        },
-        BrowserCommands::Snapshot { session, tab } => Action::Snapshot {
+        }),
+        BrowserCommands::Snapshot { session, tab } => Some(Action::Snapshot {
             session_id: session.clone(),
             tab_id: tab.clone(),
-        },
-        BrowserCommands::Eval {
-            expression,
-            session,
-            tab,
-        } => Action::Eval {
+        }),
+        BrowserCommands::Eval { expression, session, tab } => Some(Action::Eval {
             session_id: session.clone(),
             tab_id: tab.clone(),
             expression: expression.clone(),
-        },
+        }),
+        // Not yet implemented
+        _ => None,
     }
 }
 
@@ -250,10 +280,15 @@ fn build_context(
         }
         // Tab-level commands
         BrowserCommands::Goto { session, tab, .. }
+        | BrowserCommands::Back { session, tab }
+        | BrowserCommands::Forward { session, tab }
+        | BrowserCommands::Reload { session, tab }
         | BrowserCommands::Snapshot { session, tab }
-        | BrowserCommands::Eval {
-            session, tab, ..
-        }
+        | BrowserCommands::Screenshot { session, tab, .. }
+        | BrowserCommands::Eval { session, tab, .. }
+        | BrowserCommands::Click { session, tab, .. }
+        | BrowserCommands::Fill { session, tab, .. }
+        | BrowserCommands::Type { session, tab, .. }
         | BrowserCommands::CloseTab { session, tab } => Some(ResponseContext {
             session_id: session.clone(),
             tab_id: Some(tab.clone()),
@@ -261,6 +296,7 @@ fn build_context(
             url: None,
             title: None,
         }),
+        // Session-level commands
         BrowserCommands::NewTab { session, .. }
         | BrowserCommands::Open { session, .. }
         | BrowserCommands::ListTabs { session } => Some(ResponseContext {

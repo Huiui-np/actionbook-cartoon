@@ -77,16 +77,11 @@ pub enum BrowserCommands {
         #[arg(long)]
         session: String,
     },
-    /// Navigate to URL
-    Goto {
-        /// Target URL
-        url: String,
+    /// List tabs in a session
+    ListTabs {
         /// Session ID
         #[arg(long)]
         session: String,
-        /// Tab ID
-        #[arg(long)]
-        tab: String,
     },
     /// Open a new tab
     #[command(name = "new-tab")]
@@ -99,6 +94,9 @@ pub enum BrowserCommands {
         /// Open in new window
         #[arg(long)]
         new_window: bool,
+        /// Window ID
+        #[arg(long)]
+        window: Option<String>,
     },
     /// Open a URL (alias for new-tab)
     Open {
@@ -110,6 +108,9 @@ pub enum BrowserCommands {
         /// Open in new window
         #[arg(long)]
         new_window: bool,
+        /// Window ID
+        #[arg(long)]
+        window: Option<String>,
     },
     /// Close a tab
     #[command(name = "close-tab")]
@@ -121,15 +122,57 @@ pub enum BrowserCommands {
         #[arg(long)]
         tab: String,
     },
-    /// List tabs
-    #[command(name = "list-tabs")]
-    ListTabs {
+    /// Navigate to URL
+    Goto {
+        /// Target URL
+        url: String,
         /// Session ID
         #[arg(long)]
         session: String,
+        /// Tab ID
+        #[arg(long)]
+        tab: String,
+    },
+    /// Go back
+    Back {
+        /// Session ID
+        #[arg(long)]
+        session: String,
+        /// Tab ID
+        #[arg(long)]
+        tab: String,
+    },
+    /// Go forward
+    Forward {
+        /// Session ID
+        #[arg(long)]
+        session: String,
+        /// Tab ID
+        #[arg(long)]
+        tab: String,
+    },
+    /// Reload page
+    Reload {
+        /// Session ID
+        #[arg(long)]
+        session: String,
+        /// Tab ID
+        #[arg(long)]
+        tab: String,
     },
     /// Capture accessibility snapshot
     Snapshot {
+        /// Session ID
+        #[arg(long)]
+        session: String,
+        /// Tab ID
+        #[arg(long)]
+        tab: String,
+    },
+    /// Take screenshot
+    Screenshot {
+        /// Output file path
+        path: String,
         /// Session ID
         #[arg(long)]
         session: String,
@@ -141,6 +184,41 @@ pub enum BrowserCommands {
     Eval {
         /// JavaScript expression
         expression: String,
+        /// Session ID
+        #[arg(long)]
+        session: String,
+        /// Tab ID
+        #[arg(long)]
+        tab: String,
+    },
+    /// Click an element
+    Click {
+        /// Selector
+        selector: String,
+        /// Session ID
+        #[arg(long)]
+        session: String,
+        /// Tab ID
+        #[arg(long)]
+        tab: String,
+    },
+    /// Fill an input field
+    Fill {
+        /// Selector
+        selector: String,
+        /// Value to fill
+        value: String,
+        /// Session ID
+        #[arg(long)]
+        session: String,
+        /// Tab ID
+        #[arg(long)]
+        tab: String,
+    },
+    /// Type text (keystroke by keystroke)
+    Type {
+        /// Text to type
+        text: String,
         /// Session ID
         #[arg(long)]
         session: String,
