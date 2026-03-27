@@ -1415,7 +1415,7 @@ pub(super) async fn handle_inspect_point(
     tab: TabId,
     x: f64,
     y: f64,
-    _parent_depth: Option<u32>,
+    _parent_depth: Option<u32>, // TODO(follow-up): walk DOM ancestors up to depth N and populate __parents
 ) -> ActionResult {
     let target_id = match resolve_tab(session_id, regs, tab) {
         Ok(t) => t,

@@ -8,9 +8,7 @@
 //!
 //! Uses data: URLs for deterministic page content.
 
-use crate::harness::{
-    assert_success, headless, headless_json, set_body_html_js, skip, stdout_str, SessionGuard,
-};
+use crate::harness::{assert_success, headless, headless_json, skip, stdout_str, SessionGuard};
 use serde_json::Value;
 
 fn parse_envelope(out: &std::process::Output) -> Value {
