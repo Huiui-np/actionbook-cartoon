@@ -15,6 +15,7 @@ pub struct Cmd {
     pub url: String,
     /// Session ID
     #[arg(long)]
+    #[serde(rename = "session_id")]
     pub session: String,
     /// Open in new window
     #[arg(long)]

@@ -14,9 +14,11 @@ pub struct Cmd {
     pub expression: String,
     /// Session ID
     #[arg(long)]
+    #[serde(rename = "session_id")]
     pub session: String,
     /// Tab ID
     #[arg(long)]
+    #[serde(rename = "tab_id")]
     pub tab: String,
 }
 

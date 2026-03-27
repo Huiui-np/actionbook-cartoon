@@ -11,6 +11,7 @@ use crate::output::ResponseContext;
 pub struct Cmd {
     /// Session ID
     #[arg(long)]
+    #[serde(rename = "session_id")]
     pub session: String,
 }
 
