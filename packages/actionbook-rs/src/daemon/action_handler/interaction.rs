@@ -1,29 +1,40 @@
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_click(
     session_id: SessionId,
     backend: &mut dyn BackendSession,
-    regs: &Registries,
+    regs: &mut Registries,
     tab: TabId,
     selector: &str,
     button: Option<&str>,
     count: Option<u32>,
+    new_tab: bool,
+    coordinates: Option<(f64, f64)>,
 ) -> ActionResult {
     let target_id = match resolve_tab(session_id, regs, tab) {
-        Ok(t) => t,
+        Ok(t) => t.to_string(),
         Err(r) => return r,
     };
 
-    // Use JS to find element, scroll into view, and get center coordinates.
-    let selector_json = match serde_json::to_string(selector) {
-        Ok(s) => s,
-        Err(e) => {
-            return ActionResult::fatal("invalid_selector", e.to_string(), "check selector syntax")
-        }
-    };
+    let (x, y) = if let Some((cx, cy)) = coordinates {
+        // Direct coordinate targeting — skip element resolution.
+        (cx, cy)
+    } else {
+        // Selector-based targeting — find element and get center coordinates.
+        let selector_json = match serde_json::to_string(selector) {
+            Ok(s) => s,
+            Err(e) => {
+                return ActionResult::fatal(
+                    "invalid_selector",
+                    e.to_string(),
+                    "check selector syntax",
+                )
+            }
+        };
 
-    let find_js = format!(
-        r#"(function() {{
+        let find_js = format!(
+            r#"(function() {{
 {FIND_ELEMENT_JS}
 const el = __findElement({selector_json});
 if (!el) return null;
@@ -31,45 +42,168 @@ el.scrollIntoView({{ behavior: 'instant', block: 'center', inline: 'center' }});
 const rect = el.getBoundingClientRect();
 return {{ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }};
 }})()"#
-    );
+        );
 
-    let eval_op = BackendOp::Evaluate {
-        target_id: target_id.to_string(),
-        expression: find_js,
-        return_by_value: true,
+        let eval_op = BackendOp::Evaluate {
+            target_id: target_id.clone(),
+            expression: find_js,
+            return_by_value: true,
+        };
+
+        let coords = match backend.exec(eval_op).await {
+            Ok(r) => r.value,
+            Err(e) => return cdp_error_to_result(e),
+        };
+
+        let coords = extract_eval_value(&coords);
+
+        if coords.is_null() {
+            return element_not_found(selector);
+        }
+
+        let cx = match coords.get("x").and_then(|v| v.as_f64()) {
+            Some(v) => v,
+            None => {
+                return ActionResult::fatal(
+                    "invalid_coordinates",
+                    "element returned no x coordinate",
+                    "check selector",
+                )
+            }
+        };
+        let cy = match coords.get("y").and_then(|v| v.as_f64()) {
+            Some(v) => v,
+            None => {
+                return ActionResult::fatal(
+                    "invalid_coordinates",
+                    "element returned no y coordinate",
+                    "check selector",
+                )
+            }
+        };
+        (cx, cy)
     };
 
-    let coords = match backend.exec(eval_op).await {
-        Ok(r) => r.value,
-        Err(e) => return cdp_error_to_result(e),
-    };
+    // --new-tab: extract href and open in a new tab WITHOUT clicking (no
+    // same-page navigation). This replaces the normal click, not supplements it.
+    if new_tab {
+        let href_js = match serde_json::to_string(selector) {
+            Ok(s) => format!(
+                r#"(function() {{
+{FIND_ELEMENT_JS}
+const el = __findElement({s});
+if (!el) return null;
+const a = el.closest('a[href]') || el.querySelector('a[href]');
+if (a) return a.href;
+if (el.href) return el.href;
+return null;
+}})()"#
+            ),
+            Err(_) => {
+                return ActionResult::fatal(
+                    "invalid_selector",
+                    "failed to serialize selector for href extraction",
+                    "check selector",
+                )
+            }
+        };
 
-    let coords = extract_eval_value(&coords);
+        let eval_op = BackendOp::Evaluate {
+            target_id: target_id.clone(),
+            expression: href_js,
+            return_by_value: true,
+        };
 
-    if coords.is_null() {
-        return element_not_found(selector);
+        let href_result = match backend.exec(eval_op).await {
+            Ok(r) => extract_eval_value(&r.value),
+            Err(e) => return cdp_error_to_result(e),
+        };
+
+        let url = match href_result.as_str() {
+            Some(u) if !u.is_empty() => u.to_string(),
+            _ => {
+                return ActionResult::fatal(
+                    "no_navigable_url",
+                    format!(
+                        "element '{}' has no navigable URL (no href found)",
+                        selector
+                    ),
+                    "use --new-tab only on elements with href attributes (links, anchors)",
+                )
+            }
+        };
+
+        // Use the source tab's window for the new tab.
+        let source_win = regs.tabs.get(&tab).map(|t| t.window).unwrap_or_else(|| {
+            regs.windows
+                .keys()
+                .min_by_key(|w| w.0)
+                .copied()
+                .unwrap_or_else(|| {
+                    let wid = regs.alloc_window_id();
+                    regs.windows.insert(
+                        wid,
+                        WindowEntry {
+                            id: wid,
+                            tabs: Vec::new(),
+                        },
+                    );
+                    wid
+                })
+        });
+
+        let create_op = BackendOp::CreateTarget {
+            url: url.clone(),
+            window_id: None,
+            new_window: false,
+        };
+
+        match backend.exec(create_op).await {
+            Ok(result) => {
+                let new_target_id = result
+                    .value
+                    .get("targetId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                if new_target_id.is_empty() {
+                    return ActionResult::fatal(
+                        "create_target_failed",
+                        "Target.createTarget did not return a targetId",
+                        "check browser logs",
+                    );
+                }
+
+                let new_tab_id = regs.alloc_tab_id();
+                regs.tabs.insert(
+                    new_tab_id,
+                    TabEntry {
+                        id: new_tab_id,
+                        target_id: new_target_id.clone(),
+                        window: source_win,
+                        url: url.clone(),
+                        title: String::new(),
+                    },
+                );
+                if let Some(win) = regs.windows.get_mut(&source_win) {
+                    win.tabs.push(new_tab_id);
+                }
+
+                return ActionResult::ok(json!({
+                    "clicked": selector,
+                    "x": x,
+                    "y": y,
+                    "new_tab": {
+                        "tab": new_tab_id.to_string(),
+                        "target_id": new_target_id,
+                        "url": url,
+                    }
+                }));
+            }
+            Err(e) => return cdp_error_to_result(e),
+        }
     }
-
-    let x = match coords.get("x").and_then(|v| v.as_f64()) {
-        Some(v) => v,
-        None => {
-            return ActionResult::fatal(
-                "invalid_coordinates",
-                "element returned no x coordinate",
-                "check selector",
-            )
-        }
-    };
-    let y = match coords.get("y").and_then(|v| v.as_f64()) {
-        Some(v) => v,
-        None => {
-            return ActionResult::fatal(
-                "invalid_coordinates",
-                "element returned no y coordinate",
-                "check selector",
-            )
-        }
-    };
 
     let btn = button.unwrap_or("left").to_string();
     let click_count = count.unwrap_or(1) as i32;
@@ -81,7 +215,7 @@ return {{ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }};
         ("mouseReleased", click_count),
     ] {
         let op = BackendOp::DispatchMouseEvent {
-            target_id: target_id.to_string(),
+            target_id: target_id.clone(),
             event_type: event_type.to_string(),
             x,
             y,
@@ -403,6 +537,7 @@ pub(super) async fn handle_press(
     ActionResult::ok(json!({"pressed": key_or_chord}))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_drag(
     session_id: SessionId,
     backend: &mut dyn BackendSession,
@@ -410,6 +545,8 @@ pub(super) async fn handle_drag(
     tab: TabId,
     from_selector: &str,
     to_selector: &str,
+    button: Option<&str>,
+    to_coordinates: Option<(f64, f64)>,
 ) -> ActionResult {
     let target_id = match resolve_tab(session_id, regs, tab) {
         Ok(t) => t,
@@ -421,24 +558,30 @@ pub(super) async fn handle_drag(
         Err(r) => return r,
     };
 
-    let (to_x, to_y) = match resolve_element_center(backend, target_id, to_selector).await {
-        Ok(coords) => coords,
-        Err(r) => return r,
+    let (to_x, to_y) = if let Some((cx, cy)) = to_coordinates {
+        // Direct coordinate targeting for drop target.
+        (cx, cy)
+    } else {
+        match resolve_element_center(backend, target_id, to_selector).await {
+            Ok(coords) => coords,
+            Err(r) => return r,
+        }
     };
 
     // Move to source, press, move to target, release
-    for (event_type, x, y, button, cc) in [
-        ("mouseMoved", from_x, from_y, "left", 0),
-        ("mousePressed", from_x, from_y, "left", 1),
-        ("mouseMoved", to_x, to_y, "left", 0),
-        ("mouseReleased", to_x, to_y, "left", 1),
+    let btn = button.unwrap_or("left");
+    for (event_type, x, y, mouse_btn, cc) in [
+        ("mouseMoved", from_x, from_y, btn, 0),
+        ("mousePressed", from_x, from_y, btn, 1),
+        ("mouseMoved", to_x, to_y, btn, 0),
+        ("mouseReleased", to_x, to_y, btn, 1),
     ] {
         let op = BackendOp::DispatchMouseEvent {
             target_id: target_id.to_string(),
             event_type: event_type.to_string(),
             x,
             y,
-            button: button.to_string(),
+            button: mouse_btn.to_string(),
             click_count: cc,
         };
         if let Err(e) = backend.exec(op).await {

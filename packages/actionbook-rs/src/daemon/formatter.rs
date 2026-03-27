@@ -2237,6 +2237,8 @@ mod tests {
             selector: "#missing".into(),
             button: None,
             count: None,
+            new_tab: false,
+            coordinates: None,
         };
         let result = ActionResult::fatal(
             "element_not_found",
@@ -3088,6 +3090,8 @@ mod tests {
             selector: "#btn".into(),
             button: None,
             count: None,
+            new_tab: false,
+            coordinates: None,
         };
         let result = ActionResult::ok(json!({"clicked": "#btn", "x": 100, "y": 200}));
         let out = format_cli_result_json(&action, &result, 5);
@@ -3110,6 +3114,8 @@ mod tests {
             selector: "#btn".into(),
             button: None,
             count: None,
+            new_tab: false,
+            coordinates: None,
         };
         let result = ActionResult::ok(json!({"clicked": "#btn", "x": 100, "y": 200}));
         let out = format_cli_result(&action, &result);
@@ -3197,6 +3203,8 @@ mod tests {
             tab: TabId(0),
             from_selector: "#source".into(),
             to_selector: "#target".into(),
+            button: None,
+            to_coordinates: None,
         };
         let result = ActionResult::ok(json!({
             "dragged": {"from": "#source", "to": "#target"},
@@ -3363,6 +3371,8 @@ mod tests {
             tab: TabId(0),
             from_selector: "#source".into(),
             to_selector: "#target".into(),
+            button: None,
+            to_coordinates: None,
         };
         let result = ActionResult::ok(json!({
             "dragged": {"from": "#source", "to": "#target"},
@@ -3670,6 +3680,8 @@ mod tests {
             selector: "#missing".into(),
             button: None,
             count: None,
+            new_tab: false,
+            coordinates: None,
         };
         let result = ActionResult::fatal(
             "element_not_found",
@@ -3694,6 +3706,8 @@ mod tests {
             selector: "#missing".into(),
             button: None,
             count: None,
+            new_tab: false,
+            coordinates: None,
         };
         let result = ActionResult::fatal(
             "element_not_found",
