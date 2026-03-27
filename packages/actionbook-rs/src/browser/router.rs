@@ -599,6 +599,36 @@ impl BrowserDriver {
         }
     }
 
+    /// Handle a JavaScript dialog by accepting or dismissing it.
+    pub async fn handle_dialog(
+        &mut self,
+        accept: bool,
+        prompt_text: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        match self {
+            Self::Cdp(mgr) => mgr.handle_dialog(None, accept, prompt_text).await,
+            #[cfg(feature = "camoufox")]
+            Self::Camofox(_) | Self::CamofoxWebDriver(_) => {
+                Err(ActionbookError::FeatureNotSupported(
+                    "Dialog handling is only supported on CDP backend".to_string(),
+                ))
+            }
+        }
+    }
+
+    /// Get the status of any pending JavaScript dialog.
+    pub async fn get_dialog_status(&mut self) -> Result<serde_json::Value> {
+        match self {
+            Self::Cdp(mgr) => mgr.get_dialog_status(None).await,
+            #[cfg(feature = "camoufox")]
+            Self::Camofox(_) | Self::CamofoxWebDriver(_) => {
+                Err(ActionbookError::FeatureNotSupported(
+                    "Dialog status is only supported on CDP backend".to_string(),
+                ))
+            }
+        }
+    }
+
     // ========== H4: Element Info ==========
 
     /// Get detailed info about an element

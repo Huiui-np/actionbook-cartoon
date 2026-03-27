@@ -4393,6 +4393,76 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Handle a JavaScript dialog by accepting or dismissing it via CDP.
+    /// Uses the daemon's internal method when available for reliable state tracking,
+    /// or falls back to direct CDP `Page.handleJavaScriptDialog`.
+    pub async fn handle_dialog(
+        &self,
+        profile_name: Option<&str>,
+        accept: bool,
+        prompt_text: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        // Try daemon path first — it also clears the pending_dialog state
+        let resolved_profile = self.resolve_profile_name(profile_name);
+        #[cfg(unix)]
+        {
+            if self.daemon_enabled {
+                let sock_path = crate::daemon::lifecycle::socket_path(&resolved_profile);
+                if sock_path.exists() {
+                    let mut params = serde_json::json!({ "accept": accept });
+                    if let Some(text) = prompt_text {
+                        params["promptText"] = serde_json::json!(text);
+                    }
+                    let client = crate::daemon::client::DaemonClient::with_session(
+                        resolved_profile.clone(),
+                        self.active_session.clone(),
+                    );
+                    return client
+                        .send_cdp("__actionbook.handleDialog", params)
+                        .await;
+                }
+            }
+        }
+
+        // Fallback: direct CDP
+        let mut params = serde_json::json!({ "accept": accept });
+        if let Some(text) = prompt_text {
+            params["promptText"] = serde_json::json!(text);
+        }
+        self.send_cdp_command(profile_name, "Page.handleJavaScriptDialog", params)
+            .await
+    }
+
+    /// Get the status of any pending JavaScript dialog.
+    /// Uses the daemon's internal tracking when available, or returns unknown.
+    pub async fn get_dialog_status(
+        &self,
+        profile_name: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let resolved_profile = self.resolve_profile_name(profile_name);
+        #[cfg(unix)]
+        {
+            if self.daemon_enabled {
+                let sock_path = crate::daemon::lifecycle::socket_path(&resolved_profile);
+                if sock_path.exists() {
+                    let client = crate::daemon::client::DaemonClient::with_session(
+                        resolved_profile.clone(),
+                        self.active_session.clone(),
+                    );
+                    return client
+                        .send_cdp("__actionbook.dialogStatus", serde_json::json!({}))
+                        .await;
+                }
+            }
+        }
+
+        // Without daemon, we can't track dialog state
+        Ok(serde_json::json!({
+            "hasDialog": false,
+            "note": "Dialog tracking requires daemon mode (default). Use --no-daemon to disable."
+        }))
+    }
+
     // ========== H4: Element Info ==========
 
     /// Get detailed information about an element by CSS selector
