@@ -65,6 +65,33 @@ async fn handle_start(
     registry: &SharedRegistry,
 ) -> ActionResult {
     let mut reg = registry.lock().await;
+    let profile_name = profile.unwrap_or("actionbook");
+
+    // Local mode: 1 profile = max 1 session. Reuse existing if same profile.
+    if mode == crate::types::Mode::Local {
+        let existing = reg.list().iter().find(|s| s.profile == profile_name && s.mode == mode).map(|s| {
+            let first_tab = s.tabs.first();
+            json!({
+                "session": {
+                    "session_id": s.id.as_str(),
+                    "mode": s.mode.to_string(),
+                    "status": s.status,
+                    "headless": s.headless,
+                    "cdp_endpoint": s.ws_url,
+                },
+                "tab": {
+                    "tab_id": first_tab.map(|t| t.id.to_string()).unwrap_or_else(|| "t1".to_string()),
+                    "url": first_tab.map(|t| t.url.as_str()).unwrap_or(""),
+                    "title": first_tab.map(|t| t.title.as_str()).unwrap_or(""),
+                    "native_tab_id": serde_json::Value::Null,
+                },
+                "reused": true,
+            })
+        });
+        if let Some(data) = existing {
+            return ActionResult::ok(data);
+        }
+    }
 
     let session_id = match reg.generate_session_id(set_session_id, profile) {
         Ok(id) => id,
@@ -75,8 +102,6 @@ async fn handle_start(
         Ok(e) => e,
         Err(e) => return ActionResult::fatal(e.error_code(), e.to_string()),
     };
-
-    let profile_name = profile.unwrap_or("actionbook");
 
     // Validate profile name — reject path traversal
     if profile_name.contains('/') || profile_name.contains('\\') || profile_name.contains("..") {

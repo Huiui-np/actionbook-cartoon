@@ -812,3 +812,80 @@ fn lifecycle_concurrent_parallel_operations() {
     let out = headless(&["browser", "close", "--session", "beta-session"], 30);
     assert_success(&out, "close beta");
 }
+
+// ===========================================================================
+// 13. lifecycle_start_reuse_existing — Local 1 profile = max 1 session
+// ===========================================================================
+
+#[test]
+fn lifecycle_start_reuse_existing_json() {
+    if skip() {
+        return;
+    }
+    let _guard = SessionGuard::new();
+
+    // First start
+    let out = headless_json(
+        &["browser", "start", "--mode", "local", "--headless"],
+        30,
+    );
+    assert_success(&out, "first start");
+    let v = parse_json(&out);
+    assert_eq!(v["data"]["reused"], false, "first start: reused should be false");
+    assert_eq!(v["data"]["session"]["session_id"], "local-1");
+
+    // Second start with same profile — should reuse
+    let out = headless_json(
+        &["browser", "start", "--mode", "local", "--headless"],
+        30,
+    );
+    assert_success(&out, "second start (reuse)");
+    let v = parse_json(&out);
+    assert_eq!(v["data"]["reused"], true, "second start: reused should be true");
+    assert_eq!(
+        v["data"]["session"]["session_id"], "local-1",
+        "second start: should return same session_id"
+    );
+    assert_eq!(v["data"]["session"]["status"], "running");
+
+    // list-sessions: only 1 session, not 2
+    let out = headless_json(&["browser", "list-sessions"], 10);
+    assert_success(&out, "list-sessions");
+    let v = parse_json(&out);
+    assert_eq!(
+        v["data"]["total_sessions"],
+        serde_json::json!(1),
+        "should have exactly 1 session, not 2"
+    );
+
+    let out = headless(&["browser", "close", "--session", "local-1"], 30);
+    assert_success(&out, "close");
+}
+
+#[test]
+fn lifecycle_start_reuse_existing_text() {
+    if skip() {
+        return;
+    }
+    let _guard = SessionGuard::new();
+
+    let out = headless(
+        &["browser", "start", "--mode", "local", "--headless"],
+        30,
+    );
+    assert_success(&out, "first start");
+
+    // Second start — text output should show the existing session
+    let out = headless(
+        &["browser", "start", "--mode", "local", "--headless"],
+        30,
+    );
+    assert_success(&out, "second start (reuse) text");
+    let text = stdout_str(&out);
+    assert!(text.contains("[local-1"), "should contain existing session id");
+    assert!(text.contains("ok browser.start"));
+    assert!(text.contains("status: running"));
+
+    let out = headless(&["browser", "close", "--session", "local-1"], 30);
+    assert_success(&out, "close");
+}
