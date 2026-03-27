@@ -3,6 +3,8 @@
 //! Each test is self-contained: start → operate → assert → close.
 //! Uses daemon v2 CLI format with --session and --tab addressing.
 
+use std::net::TcpListener;
+
 use crate::harness::{
     assert_failure, assert_success, headless, headless_json, skip, stdout_str, SessionGuard,
 };
@@ -488,4 +490,54 @@ fn lifecycle_profile_based_auto_id() {
     // Close
     let out = headless(&["browser", "close", "-s", "local-1"], 30);
     assert_success(&out, "close");
+}
+
+// ---------------------------------------------------------------------------
+// 14. lifecycle_port_fallback_when_9222_occupied
+// ---------------------------------------------------------------------------
+
+/// When the default CDP port (9222) is occupied by another process,
+/// `browser start` should automatically pick a free port and succeed.
+#[test]
+fn lifecycle_port_fallback_when_9222_occupied() {
+    if skip() {
+        return;
+    }
+    let _guard = SessionGuard::new();
+
+    // Hold port 9222 to simulate another process (e.g. agent-browser) occupying it
+    let listener = TcpListener::bind(("127.0.0.1", 9222));
+    if listener.is_err() {
+        // Port 9222 is already occupied by something else — the test condition
+        // is naturally satisfied; proceed without our own listener.
+    }
+    // Keep `listener` alive for the duration of the test (dropped at end of scope)
+
+    // Start headless — should succeed via port fallback
+    let out = headless(&["browser", "start", "--mode", "local", "--headless"], 45);
+    assert_success(&out, "start with port 9222 occupied");
+
+    // Verify session is functional: goto + snapshot
+    let out = headless(
+        &[
+            "browser",
+            "goto",
+            "https://example.com",
+            "-s",
+            "local-1",
+            "-t",
+            "t0",
+        ],
+        30,
+    );
+    assert_success(&out, "goto with fallback port");
+
+    let out = headless_json(&["browser", "snapshot", "-s", "local-1", "-t", "t0"], 30);
+    assert_success(&out, "snapshot with fallback port");
+
+    // Cleanup
+    let out = headless(&["browser", "close", "-s", "local-1"], 30);
+    assert_success(&out, "close");
+
+    drop(listener);
 }

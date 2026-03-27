@@ -225,17 +225,35 @@ impl Router {
             // For Local mode without explicit --profile, enforce 1-profile-1-session.
             // With explicit --profile, allow multiple sessions via collision suffix
             // (e.g. work, work-2, work-3).
-            if mode == Mode::Local
-                && !explicit_profile
-                && existing
+            if mode == Mode::Local && !explicit_profile {
+                // Auto-remove Lost sessions so a fresh start can proceed.
+                let lost_ids: Vec<SessionId> = existing
                     .iter()
-                    .any(|s| s.profile == profile_name && s.state != SessionState::Closed)
-            {
-                return ActionResult::fatal(
-                    "session_exists",
-                    format!("a session with profile '{profile_name}' already exists"),
-                    "close the existing session first, or use a different profile",
-                );
+                    .filter(|s| s.profile == profile_name && s.state == SessionState::Lost)
+                    .map(|s| s.id.clone())
+                    .collect();
+                for id in &lost_ids {
+                    tracing::info!(
+                        "Auto-removing lost session {} for profile '{}'",
+                        id,
+                        profile_name
+                    );
+                    registry.remove(id);
+                }
+
+                // Re-check: if a non-Lost, non-Closed session still exists, block.
+                let still_active = registry.list_sessions().iter().any(|s| {
+                    s.profile == profile_name
+                        && s.state != SessionState::Closed
+                        && s.state != SessionState::Lost
+                });
+                if still_active {
+                    return ActionResult::fatal(
+                        "session_exists",
+                        format!("a session with profile '{profile_name}' already exists"),
+                        "close the existing session first, or use a different profile",
+                    );
+                }
             }
 
             // Extension mode: 1 extension = 1 session (v1.0 product constraint).
@@ -1434,5 +1452,48 @@ mod tests {
         }
         let reg = registry.lock().await;
         assert!(reg.list_sessions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn start_session_auto_removes_lost_session() {
+        let router = make_multi_factory_router();
+
+        // Start first session
+        let first = router
+            .route(Action::StartSession {
+                mode: Mode::Local,
+                profile: None,
+                headless: false,
+                open_url: None,
+                cdp_endpoint: None,
+                ws_headers: None,
+                set_session_id: None,
+            })
+            .await;
+        assert!(first.is_ok(), "first start should succeed: {first:?}");
+
+        // Mark the session as Lost (simulating daemon crash recovery)
+        {
+            let mut reg = router.registry.lock().await;
+            let id = SessionId::new_unchecked("local-1");
+            reg.get_mut(&id).unwrap().state = SessionState::Lost;
+        }
+
+        // Second start should auto-remove the Lost session and succeed
+        let second = router
+            .route(Action::StartSession {
+                mode: Mode::Local,
+                profile: None,
+                headless: false,
+                open_url: None,
+                cdp_endpoint: None,
+                ws_headers: None,
+                set_session_id: None,
+            })
+            .await;
+        assert!(
+            second.is_ok(),
+            "start after Lost session should succeed: {second:?}"
+        );
     }
 }
