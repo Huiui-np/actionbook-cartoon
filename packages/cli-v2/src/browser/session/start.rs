@@ -5,7 +5,7 @@ use serde_json::json;
 use crate::action_result::ActionResult;
 use crate::config;
 use crate::daemon::browser;
-use crate::daemon::cdp::ensure_scheme;
+use crate::daemon::cdp::{cdp_navigate, ensure_scheme};
 use crate::daemon::cdp_session::CdpSession;
 use crate::daemon::registry::{SessionEntry, SharedRegistry, TabEntry};
 use crate::output::ResponseContext;
@@ -102,7 +102,11 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         if let Some(url) = &cmd.open_url {
             let final_url = ensure_scheme(url);
             let entry = reg.get(&session_id).unwrap();
-            let first_tab_id = entry.tabs.first().map(|t| t.id.0.clone()).unwrap_or_default();
+            let first_tab_id = entry
+                .tabs
+                .first()
+                .map(|t| t.id.0.clone())
+                .unwrap_or_default();
             let cdp = entry.cdp.clone();
             let cdp_port = entry.cdp_port;
             drop(reg);
@@ -151,7 +155,11 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
 
         // Reuse without open-url: fetch real-time info
         let entry = reg.get(&session_id).unwrap();
-        let first_tab_id = entry.tabs.first().map(|t| t.id.0.clone()).unwrap_or_default();
+        let first_tab_id = entry
+            .tabs
+            .first()
+            .map(|t| t.id.0.clone())
+            .unwrap_or_default();
         let cdp_port = entry.cdp_port;
         drop(reg);
         let targets = browser::list_targets(cdp_port).await.unwrap_or_default();
@@ -200,7 +208,7 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         }
     }
 
-    let (chrome_process, port, ws_url, mut targets) = if let Some(endpoint) = cdp_endpoint {
+    let (mut chrome_process, port, ws_url, mut targets) = if let Some(endpoint) = cdp_endpoint {
         if mode != Mode::Local {
             return ActionResult::fatal(
                 "INVALID_ARGUMENT",
@@ -286,8 +294,16 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
             .unwrap_or("")
             .to_string();
         if !target_id.is_empty() {
-            let url = t.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let title = t.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let url = t
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let title = t
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             tabs.push(TabEntry {
                 id: TabId(target_id),
                 url,
@@ -300,8 +316,10 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
     let cdp = match CdpSession::connect(&ws_url).await {
         Ok(c) => c,
         Err(e) => {
-            let _ = chrome.kill();
-            let _ = chrome.wait();
+            if let Some(mut chrome) = chrome_process.take() {
+                let _ = chrome.kill();
+                let _ = chrome.wait();
+            }
             return ActionResult::fatal("CDP_CONNECTION_FAILED", e.to_string());
         }
     };
@@ -317,7 +335,10 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
     let (first_url, first_title) = if !first_tab_id.is_empty() {
         get_tab_info_from_targets(&targets, &first_tab_id)
     } else {
-        (cmd.open_url.as_deref().unwrap_or("about:blank").to_string(), String::new())
+        (
+            cmd.open_url.as_deref().unwrap_or("about:blank").to_string(),
+            String::new(),
+        )
     };
 
     let entry = SessionEntry {
@@ -329,7 +350,7 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         cdp_port: port,
         ws_url: ws_url.clone(),
         tabs,
-        chrome_process: Some(chrome),
+        chrome_process,
         cdp: Some(cdp),
     };
     reg.insert(entry);
@@ -355,8 +376,16 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
 fn get_tab_info_from_targets(targets: &[serde_json::Value], target_id: &str) -> (String, String) {
     for t in targets {
         if t.get("id").and_then(|v| v.as_str()) == Some(target_id) {
-            let url = t.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let title = t.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let url = t
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let title = t
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             return (url, title);
         }
     }
