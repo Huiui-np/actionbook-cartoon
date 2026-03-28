@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::action_result::ActionResult;
+use crate::daemon::cdp_session::cdp_error_to_result;
 use crate::daemon::registry::SharedRegistry;
 use crate::output::ResponseContext;
 
@@ -31,10 +32,20 @@ pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
 }
 
 pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
+    // Get CdpSession from registry
     let cdp = {
         let reg = registry.lock().await;
-        let entry = match reg.get(&cmd.session) {
-            Some(e) => e,
+        match reg.get(&cmd.session) {
+            Some(e) => match e.cdp.clone() {
+                Some(c) => c,
+                None => {
+                    return ActionResult::fatal_with_hint(
+                        "INTERNAL_ERROR",
+                        format!("no CDP connection for session '{}'", cmd.session),
+                        "try restarting the session",
+                    );
+                }
+            },
             None => {
                 return ActionResult::fatal_with_hint(
                     "SESSION_NOT_FOUND",
@@ -42,34 +53,25 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
                     "run `actionbook browser list-sessions` to see available sessions",
                 );
             }
-        };
-        match entry.cdp.clone() {
-            Some(c) => c,
-            None => {
-                return ActionResult::fatal(
-                    "INTERNAL_ERROR",
-                    format!("no CDP connection for session '{}'", cmd.session),
-                );
-            }
         }
     };
 
-    // Real-time fetch via CDP Target.getTargets (unified for local + cloud)
-    let targets = match cdp.execute_browser("Target.getTargets", json!({})).await {
-        Ok(resp) => resp,
-        Err(e) => {
-            return crate::daemon::cdp_session::cdp_error_to_result(e, "CDP_ERROR");
-        }
+    // Real-time fetch via CDP Target.getTargets (works for both local and cloud)
+    let resp = match cdp
+        .execute_browser("Target.getTargets", json!({}))
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return cdp_error_to_result(e, "CDP_CONNECTION_FAILED"),
     };
 
-    let target_infos = targets
-        .get("result")
-        .and_then(|r| r.get("targetInfos"))
-        .and_then(|t| t.as_array())
+    let target_infos = resp
+        .pointer("/result/targetInfos")
+        .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
 
-    // Filter to page targets only, merge with registry for consistency
+    // Filter by type=="page" and cross-reference with registry
     let tabs: Vec<serde_json::Value> = {
         let reg = registry.lock().await;
         let entry = match reg.get(&cmd.session) {
@@ -86,26 +88,23 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         entry
             .tabs
             .iter()
-            .map(|t| {
+            .filter_map(|t| {
                 let target_id = &t.id.0;
-                // Find real-time url/title from CDP targetInfos
-                let (url, title) = target_infos
+                target_infos
                     .iter()
                     .find(|tgt| {
                         tgt.get("targetId").and_then(|v| v.as_str()) == Some(target_id)
+                            && tgt.get("type").and_then(|v| v.as_str()) == Some("page")
                     })
                     .map(|tgt| {
                         let url = tgt.get("url").and_then(|v| v.as_str()).unwrap_or("");
                         let title = tgt.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                        (url.to_string(), title.to_string())
+                        json!({
+                            "tab_id": target_id,
+                            "url": url,
+                            "title": title,
+                        })
                     })
-                    .unwrap_or_default();
-
-                json!({
-                    "tab_id": target_id,
-                    "url": url,
-                    "title": title,
-                })
             })
             .collect()
     };

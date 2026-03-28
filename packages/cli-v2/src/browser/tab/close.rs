@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::action_result::ActionResult;
+use crate::daemon::cdp_session::cdp_error_to_result;
 use crate::daemon::registry::SharedRegistry;
 use crate::output::ResponseContext;
 
@@ -50,7 +51,9 @@ pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
 }
 
 pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
-    let cdp = {
+    let cdp;
+
+    {
         let reg = registry.lock().await;
         let entry = match reg.get(&cmd.session) {
             Some(e) => e,
@@ -67,47 +70,48 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
             return ActionResult::fatal_with_hint(
                 "TAB_NOT_FOUND",
                 format!("tab '{}' not found in session '{}'", cmd.tab, cmd.session),
-                "run `actionbook browser list-tabs --session <SID>` to see available tabs",
+                "run `actionbook browser list-tabs` to see available tabs",
             );
         }
 
-        match entry.cdp.clone() {
+        cdp = match entry.cdp.clone() {
             Some(c) => c,
             None => {
-                return ActionResult::fatal(
+                return ActionResult::fatal_with_hint(
                     "INTERNAL_ERROR",
                     format!("no CDP connection for session '{}'", cmd.session),
+                    "try restarting the session",
                 );
             }
-        }
-    };
+        };
+    }
 
-    // Close the target first via CDP (unified for local + cloud)
-    // Treat "target not found" as success (idempotent — target already gone)
+    // Detach from the persistent CDP session before closing
+    let _ = cdp.detach(&cmd.tab).await;
+
+    // Close via CDP Target.closeTarget (works for both local and cloud)
     match cdp
         .execute_browser("Target.closeTarget", json!({ "targetId": cmd.tab }))
         .await
     {
         Ok(resp) => {
-            // Check result.success boolean — some targets may decline closure
-            if resp.get("result").and_then(|r| r.get("success")).and_then(|v| v.as_bool()) == Some(false) {
-                return ActionResult::fatal(
-                    "CDP_ERROR",
-                    format!("Target.closeTarget returned success=false for tab '{}'", cmd.tab),
-                );
+            // Check result.success boolean
+            let success = resp
+                .pointer("/result/success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            if !success {
+                tracing::warn!("Target.closeTarget returned success=false for {}", cmd.tab);
             }
         }
         Err(e) => {
+            // Idempotent: if target is already gone, treat as success
             let msg = e.to_string();
-            if !msg.contains("No target with given id") && !msg.contains("Target closed") {
-                return crate::daemon::cdp_session::cdp_error_to_result(e, "CDP_ERROR");
+            if !msg.contains("not found") && !msg.contains("No target") {
+                return cdp_error_to_result(e, "CDP_ERROR");
             }
-            // Target already gone — proceed with cleanup
         }
     }
-
-    // Then detach (cleanup session mapping) — ignore errors since target is already gone
-    let _ = cdp.detach(&cmd.tab).await;
 
     // Remove from registry
     {

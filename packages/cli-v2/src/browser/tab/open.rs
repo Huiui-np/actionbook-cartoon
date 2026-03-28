@@ -4,6 +4,7 @@ use serde_json::json;
 
 use crate::action_result::ActionResult;
 use crate::daemon::cdp::ensure_scheme_or_fatal;
+use crate::daemon::cdp_session::cdp_error_to_result;
 use crate::daemon::registry::{SharedRegistry, TabEntry};
 use crate::output::ResponseContext;
 use crate::types::TabId;
@@ -47,10 +48,20 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         Err(e) => return e,
     };
 
+    // Get CdpSession from registry
     let cdp = {
         let reg = registry.lock().await;
-        let entry = match reg.get(&cmd.session) {
-            Some(e) => e,
+        match reg.get(&cmd.session) {
+            Some(e) => match e.cdp.clone() {
+                Some(c) => c,
+                None => {
+                    return ActionResult::fatal_with_hint(
+                        "INTERNAL_ERROR",
+                        format!("no CDP connection for session '{}'", cmd.session),
+                        "try restarting the session",
+                    );
+                }
+            },
             None => {
                 return ActionResult::fatal_with_hint(
                     "SESSION_NOT_FOUND",
@@ -58,72 +69,59 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
                     "run `actionbook browser list-sessions` to see available sessions",
                 );
             }
-        };
-        match entry.cdp.clone() {
-            Some(c) => c,
-            None => {
-                return ActionResult::fatal(
-                    "INTERNAL_ERROR",
-                    format!("no CDP connection for session '{}'", cmd.session),
-                );
-            }
         }
     };
 
-    // Create tab via CDP Target.createTarget (unified for local + cloud)
-    let mut params = json!({ "url": final_url });
-    if cmd.new_window {
-        params["newWindow"] = json!(true);
-    }
-    let resp = match cdp.execute_browser("Target.createTarget", params).await {
+    // Create tab via CDP Target.createTarget (works for both local and cloud)
+    let resp = match cdp
+        .execute_browser("Target.createTarget", json!({ "url": final_url }))
+        .await
+    {
         Ok(r) => r,
-        Err(e) => {
-            return crate::daemon::cdp_session::cdp_error_to_result(e, "CDP_ERROR");
-        }
+        Err(e) => return cdp_error_to_result(e, "CDP_ERROR"),
     };
-
-    let target_id = match resp.get("result").and_then(|r| r.get("targetId")).and_then(|v| v.as_str()) {
+    let target_id = match resp
+        .pointer("/result/targetId")
+        .and_then(|v| v.as_str())
+    {
         Some(id) => id.to_string(),
         None => {
             return ActionResult::fatal(
                 "CDP_ERROR",
-                format!("Target.createTarget did not return targetId: {resp}"),
+                format!(
+                    "Target.createTarget did not return targetId: {}",
+                    resp
+                ),
             );
         }
     };
 
-    // Attach the new tab to the persistent CDP session
+    // Attach before registering — rollback on failure
     if let Err(e) = cdp.attach(&target_id).await {
-        // Rollback: close the orphaned tab in the browser
-        if let Err(re) = cdp
+        // Rollback: close the target we just created
+        let _ = cdp
             .execute_browser("Target.closeTarget", json!({ "targetId": target_id }))
-            .await
-        {
-            tracing::warn!("open-tab rollback failed for target {target_id}: {re}");
-        }
-        return ActionResult::fatal(
-            "CDP_ERROR",
-            format!("failed to attach tab to CDP session: {e}"),
-        );
+            .await;
+        return cdp_error_to_result(e, "CDP_ERROR");
     }
 
-    // Add to registry — if session was closed concurrently, rollback
+    // Register the new tab
     {
         let mut reg = registry.lock().await;
         match reg.get_mut(&cmd.session) {
-            Some(entry) => {
-                entry.tabs.push(TabEntry {
+            Some(e) => {
+                e.tabs.push(TabEntry {
                     id: TabId(target_id.clone()),
                     url: final_url.clone(),
                     title: String::new(),
                 });
             }
             None => {
-                // Session gone — close orphaned tab and detach
+                // Session was closed concurrently — detach and close the target
+                let _ = cdp.detach(&target_id).await;
                 let _ = cdp
                     .execute_browser("Target.closeTarget", json!({ "targetId": target_id }))
                     .await;
-                let _ = cdp.detach(&target_id).await;
                 return ActionResult::fatal(
                     "SESSION_NOT_FOUND",
                     format!("session '{}' was closed during tab creation", cmd.session),

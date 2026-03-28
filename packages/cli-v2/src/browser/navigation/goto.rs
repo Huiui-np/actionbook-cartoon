@@ -4,7 +4,7 @@ use serde_json::json;
 
 use crate::action_result::ActionResult;
 use crate::daemon::cdp::ensure_scheme_or_fatal;
-use crate::daemon::cdp_session::get_cdp_and_target;
+use crate::daemon::cdp_session::{cdp_error_to_result, get_cdp_and_target};
 use crate::daemon::registry::SharedRegistry;
 use crate::output::ResponseContext;
 
@@ -46,17 +46,12 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         Err(e) => return e,
     };
 
-    if !target_id.is_empty() {
-        if let Err(e) = cdp
-            .execute_on_tab(
-                &target_id,
-                "Page.navigate",
-                json!({ "url": final_url }),
-            )
+    if !target_id.is_empty()
+        && let Err(e) = cdp
+            .execute_on_tab(&target_id, "Page.navigate", json!({ "url": final_url }))
             .await
-        {
-            return crate::daemon::cdp_session::cdp_error_to_result(e, "NAVIGATION_FAILED");
-        }
+    {
+        return cdp_error_to_result(e, "NAVIGATION_FAILED");
     }
 
     ActionResult::ok(json!({
