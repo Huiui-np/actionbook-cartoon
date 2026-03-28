@@ -1,29 +1,23 @@
-use clap::Args;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::action_result::ActionResult;
-use crate::daemon::cdp::ensure_scheme_or_fatal;
-use crate::daemon::cdp_session::{cdp_error_to_result, get_cdp_and_target};
+use crate::daemon::cdp_session::get_cdp_and_target;
 use crate::daemon::registry::SharedRegistry;
 use crate::output::ResponseContext;
 
-/// Navigate to URL
-#[derive(Args, Debug, Clone, Serialize, Deserialize)]
+/// Reload the current page
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cmd {
-    /// Target URL
-    pub url: String,
     /// Session ID
-    #[arg(long)]
     #[serde(rename = "session_id")]
     pub session: String,
     /// Tab ID
-    #[arg(long)]
     #[serde(rename = "tab_id")]
     pub tab: String,
 }
 
-pub const COMMAND_NAME: &str = "browser.goto";
+pub const COMMAND_NAME: &str = "browser.reload";
 
 pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
     let (url, title) = match result {
@@ -43,36 +37,27 @@ pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
 }
 
 pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
-    let final_url = match ensure_scheme_or_fatal(&cmd.url) {
-        Ok(u) => u,
-        Err(e) => return e,
-    };
-
     let (cdp, target_id) = match get_cdp_and_target(registry, &cmd.session, &cmd.tab).await {
         Ok(v) => v,
         Err(e) => return e,
     };
 
-    // Get from_url before navigation
-    let from_url = super::get_tab_url(&cdp, &target_id).await;
-
-    if !target_id.is_empty()
-        && let Err(e) = cdp
-            .execute_on_tab(&target_id, "Page.navigate", json!({ "url": final_url }))
-            .await
-    {
-        return cdp_error_to_result(e, "NAVIGATION_FAILED");
-    }
-
-    // Get to_url and title after navigation
-    let to_url = super::get_tab_url(&cdp, &target_id).await;
+    // Get current URL and title before reload (from_url == to_url for reload)
+    let url = super::get_tab_url(&cdp, &target_id).await;
     let title = super::get_tab_title(&cdp, &target_id).await;
 
+    if let Err(e) = cdp
+        .execute_on_tab(&target_id, "Page.reload", json!({}))
+        .await
+    {
+        return ActionResult::fatal("NAVIGATION_FAILED", e.to_string());
+    }
+
     ActionResult::ok(json!({
-        "kind": "goto",
-        "requested_url": cmd.url,
-        "from_url": from_url,
-        "to_url": to_url,
+        "kind": "reload",
+        "requested_url": null,
+        "from_url": url,
+        "to_url": url,
         "title": title,
     }))
 }
