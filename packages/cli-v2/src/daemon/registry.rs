@@ -46,12 +46,16 @@ pub struct SessionEntry {
     pub headless: bool,
     pub profile: String,
     pub status: SessionState,
-    pub cdp_port: u16,
+    pub cdp_port: Option<u16>,
     pub ws_url: String,
     pub tabs: Vec<TabEntry>,
     pub chrome_process: Option<Child>,
     /// Persistent CDP connection for this session.
     pub cdp: Option<CdpSession>,
+    /// Original CDP endpoint for cloud sessions (used for reuse matching & restart).
+    pub cdp_endpoint: Option<String>,
+    /// Custom headers for cloud CDP connections (e.g. auth tokens).
+    pub headers: Vec<(String, String)>,
 }
 
 impl SessionEntry {
@@ -62,11 +66,13 @@ impl SessionEntry {
             headless,
             profile,
             status: SessionState::Starting,
-            cdp_port: 0,
+            cdp_port: None,
             ws_url: String::new(),
             tabs: Vec::new(),
             chrome_process: None,
             cdp: None,
+            cdp_endpoint: None,
+            headers: Vec::new(),
         }
     }
 
@@ -108,6 +114,14 @@ impl SessionRegistry {
     ) -> Option<&SessionEntry> {
         self.sessions.values().find(|entry| {
             entry.mode == mode && entry.profile == profile && entry.status.is_active()
+        })
+    }
+
+    pub fn find_cloud_session_by_endpoint(&self, endpoint: &str) -> Option<&SessionEntry> {
+        self.sessions.values().find(|entry| {
+            entry.mode == Mode::Cloud
+                && entry.status.is_active()
+                && entry.cdp_endpoint.as_deref() == Some(endpoint)
         })
     }
 

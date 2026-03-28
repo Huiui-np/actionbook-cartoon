@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::action_result::ActionResult;
-use crate::daemon::cdp::ensure_scheme;
-use crate::daemon::cdp_session::get_cdp_and_target;
+use crate::daemon::cdp::ensure_scheme_or_fatal;
+use crate::daemon::cdp_session::{cdp_error_to_result, get_cdp_and_target};
 use crate::daemon::registry::SharedRegistry;
 use crate::output::ResponseContext;
 
@@ -36,7 +36,10 @@ pub fn context(cmd: &Cmd, _result: &ActionResult) -> Option<ResponseContext> {
 }
 
 pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
-    let final_url = ensure_scheme(&cmd.url);
+    let final_url = match ensure_scheme_or_fatal(&cmd.url) {
+        Ok(u) => u,
+        Err(e) => return e,
+    };
 
     let (cdp, target_id) = match get_cdp_and_target(registry, &cmd.session, &cmd.tab).await {
         Ok(v) => v,
@@ -48,7 +51,7 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
             .execute_on_tab(&target_id, "Page.navigate", json!({ "url": final_url }))
             .await
     {
-        return ActionResult::fatal("NAVIGATION_FAILED", e.to_string());
+        return cdp_error_to_result(e, "NAVIGATION_FAILED");
     }
 
     ActionResult::ok(json!({

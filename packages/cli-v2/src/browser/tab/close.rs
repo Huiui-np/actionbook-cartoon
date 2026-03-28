@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::action_result::ActionResult;
+use crate::daemon::cdp_session::cdp_error_to_result;
 use crate::daemon::registry::SharedRegistry;
 use crate::output::ResponseContext;
 
@@ -50,7 +51,6 @@ pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
 }
 
 pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
-    let cdp_port;
     let cdp;
 
     {
@@ -58,32 +58,60 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         let entry = match reg.get(&cmd.session) {
             Some(e) => e,
             None => {
-                return ActionResult::fatal(
+                return ActionResult::fatal_with_hint(
                     "SESSION_NOT_FOUND",
                     format!("session '{}' not found", cmd.session),
+                    "run `actionbook browser list-sessions` to see available sessions",
                 );
             }
         };
 
         if !entry.tabs.iter().any(|t| t.id.0 == cmd.tab) {
-            return ActionResult::fatal(
+            return ActionResult::fatal_with_hint(
                 "TAB_NOT_FOUND",
                 format!("tab '{}' not found in session '{}'", cmd.tab, cmd.session),
+                "run `actionbook browser list-tabs` to see available tabs",
             );
         }
 
-        cdp_port = entry.cdp_port;
-        cdp = entry.cdp.clone();
+        cdp = match entry.cdp.clone() {
+            Some(c) => c,
+            None => {
+                return ActionResult::fatal_with_hint(
+                    "INTERNAL_ERROR",
+                    format!("no CDP connection for session '{}'", cmd.session),
+                    "try restarting the session",
+                );
+            }
+        };
     }
 
     // Detach from the persistent CDP session before closing
-    if let Some(ref cdp) = cdp {
-        let _ = cdp.detach(&cmd.tab).await;
-    }
+    let _ = cdp.detach(&cmd.tab).await;
 
-    // Close the CDP target
-    let close_url = format!("http://127.0.0.1:{}/json/close/{}", cdp_port, cmd.tab);
-    let _ = reqwest::Client::new().put(&close_url).send().await;
+    // Close via CDP Target.closeTarget (works for both local and cloud)
+    match cdp
+        .execute_browser("Target.closeTarget", json!({ "targetId": cmd.tab }))
+        .await
+    {
+        Ok(resp) => {
+            // Check result.success boolean
+            let success = resp
+                .pointer("/result/success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            if !success {
+                tracing::warn!("Target.closeTarget returned success=false for {}", cmd.tab);
+            }
+        }
+        Err(e) => {
+            // Idempotent: if target is already gone, treat as success
+            let msg = e.to_string();
+            if !msg.contains("not found") && !msg.contains("No target") {
+                return cdp_error_to_result(e, "CDP_ERROR");
+            }
+        }
+    }
 
     // Remove from registry
     {

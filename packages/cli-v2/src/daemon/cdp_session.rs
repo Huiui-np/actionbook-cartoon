@@ -13,6 +13,8 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http;
 
 use crate::error::CliError;
 
@@ -39,7 +41,29 @@ pub struct CdpSession {
 impl CdpSession {
     /// Connect to a browser-level WebSocket endpoint and spawn background tasks.
     pub async fn connect(ws_url: &str) -> Result<Self, CliError> {
-        let (ws, _) = connect_async(ws_url)
+        Self::connect_with_headers(ws_url, &[]).await
+    }
+
+    /// Connect with custom headers (for cloud mode auth).
+    pub async fn connect_with_headers(
+        ws_url: &str,
+        headers: &[(String, String)],
+    ) -> Result<Self, CliError> {
+        let mut request = ws_url
+            .into_client_request()
+            .map_err(|e| CliError::CdpConnectionFailed(format!("invalid WS URL: {e}")))?;
+
+        for (key, value) in headers {
+            let header_name = key.parse::<http::HeaderName>().map_err(|e| {
+                CliError::InvalidArgument(format!("invalid header name '{key}': {e}"))
+            })?;
+            let header_value = http::HeaderValue::from_str(value).map_err(|e| {
+                CliError::InvalidArgument(format!("invalid header value for '{key}': {e}"))
+            })?;
+            request.headers_mut().append(header_name, header_value);
+        }
+
+        let (ws, _) = connect_async(request)
             .await
             .map_err(|e| CliError::CdpConnectionFailed(e.to_string()))?;
 
@@ -48,10 +72,7 @@ impl CdpSession {
         let next_id = Arc::new(AtomicU64::new(1));
         let (writer_tx, writer_rx) = mpsc::channel::<String>(64);
 
-        // Spawn writer task: forwards messages from channel to WS
         tokio::spawn(Self::writer_loop(ws_writer, writer_rx));
-
-        // Spawn reader task: routes WS responses to pending callers
         let pending_clone = pending.clone();
         tokio::spawn(Self::reader_loop(ws_reader, pending_clone));
 
@@ -67,7 +88,13 @@ impl CdpSession {
     ///
     /// Sends `Target.attachToTarget` with `flatten: true` and stores the
     /// returned `sessionId` for future `execute_on_tab` calls.
+    /// Idempotent: if already attached, returns the existing sessionId.
     pub async fn attach(&self, target_id: &str) -> Result<String, CliError> {
+        // Check if already attached (idempotent)
+        if let Some(existing) = self.tab_sessions.lock().await.get(target_id).cloned() {
+            return Ok(existing);
+        }
+
         let resp = self
             .execute(
                 "Target.attachToTarget",
@@ -162,10 +189,11 @@ impl CdpSession {
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
 
-        self.writer_tx
-            .send(msg.to_string())
-            .await
-            .map_err(|_| CliError::CdpError("writer channel closed".to_string()))?;
+        if self.writer_tx.send(msg.to_string()).await.is_err() {
+            // Clean up pending entry to avoid leak
+            self.pending.lock().await.remove(&id);
+            return Err(CliError::CdpError("writer channel closed".to_string()));
+        }
 
         let resp = rx
             .await
@@ -212,6 +240,8 @@ impl CdpSession {
         }
 
         // Connection dropped — fail all pending requests
+        // Use generic CdpError here; cdp_error_to_result will upgrade to
+        // CloudConnectionLost for cloud sessions based on session mode.
         let mut map = pending.lock().await;
         for (_, tx) in map.drain() {
             let _ = tx.send(Err(CliError::CdpError("connection closed".to_string())));
@@ -265,6 +295,20 @@ pub async fn get_cdp_and_target(
     }
     // tab_id IS the native target_id
     Ok((cdp, tab_id.to_string()))
+}
+
+/// Convert a CliError from CDP operations into an ActionResult.
+/// For cloud sessions, connection drops are surfaced as CLOUD_CONNECTION_LOST.
+/// For local sessions, they use the default_code.
+pub fn cdp_error_to_result(e: CliError, default_code: &str) -> crate::action_result::ActionResult {
+    match &e {
+        CliError::CloudConnectionLost(_) => crate::action_result::ActionResult::fatal_with_hint(
+            "CLOUD_CONNECTION_LOST",
+            e.to_string(),
+            "cloud connection lost — retry or run `actionbook browser start --mode cloud ...` to reconnect",
+        ),
+        _ => crate::action_result::ActionResult::fatal(default_code, e.to_string()),
+    }
 }
 
 // ─── Unit Tests ──────────────────────────────────────────────────────

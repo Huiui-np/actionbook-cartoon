@@ -43,10 +43,11 @@ pub fn resolve_tab_ws_url(
             )
         })?;
     Ok(if !tab.id.0.is_empty() {
-        format!(
-            "ws://127.0.0.1:{}/devtools/page/{}",
-            entry.cdp_port, tab.id.0
-        )
+        if let Some(port) = entry.cdp_port {
+            format!("ws://127.0.0.1:{}/devtools/page/{}", port, tab.id.0)
+        } else {
+            entry.ws_url.clone()
+        }
     } else {
         entry.ws_url.clone()
     })
@@ -149,16 +150,29 @@ pub async fn cdp_get_ax_tree(ws_url: &str) -> Result<String, CliError> {
     Err(CliError::CdpError("no response".to_string()))
 }
 
-/// Ensure a URL has a scheme prefix.
-pub fn ensure_scheme(url: &str) -> String {
-    if url.contains("://")
-        || url.starts_with("about:")
-        || url.starts_with("data:")
-        || url.starts_with("chrome:")
-        || url.starts_with("javascript:")
-    {
-        url.to_string()
-    } else {
-        format!("https://{url}")
+/// Ensure a URL has a scheme prefix. Rejects dangerous protocols.
+pub fn ensure_scheme(url: &str) -> Result<String, crate::error::CliError> {
+    // Block dangerous protocols (L3 CDP security level, case-insensitive)
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("javascript:") || lower.starts_with("data:text/html") {
+        return Err(crate::error::CliError::InvalidArgument(format!(
+            "dangerous URL protocol blocked: {}",
+            &url[..url.len().min(30)]
+        )));
     }
+    if url.contains("://")
+        || lower.starts_with("about:")
+        || lower.starts_with("chrome:")
+        || lower.starts_with("data:")
+    {
+        Ok(url.to_string())
+    } else {
+        Ok(format!("https://{url}"))
+    }
+}
+
+/// Ensure scheme, returning the URL or a fatal ActionResult.
+pub fn ensure_scheme_or_fatal(url: &str) -> Result<String, crate::action_result::ActionResult> {
+    ensure_scheme(url)
+        .map_err(|e| crate::action_result::ActionResult::fatal("INVALID_ARGUMENT", e.to_string()))
 }

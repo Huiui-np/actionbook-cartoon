@@ -41,6 +41,10 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
     };
     let closed_tabs = entry.tabs_count();
 
+    // Drop CDP session to close WebSocket connection (important for cloud
+    // single-connection providers — frees the slot for reconnection)
+    drop(entry.cdp.take());
+
     if let Some(mut child) = entry.chrome_process.take() {
         let _ = child.kill();
         tokio::task::spawn_blocking(move || {

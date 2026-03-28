@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::action_result::ActionResult;
-use crate::daemon::cdp::ensure_scheme;
+use crate::daemon::cdp::ensure_scheme_or_fatal;
+use crate::daemon::cdp_session::cdp_error_to_result;
 use crate::daemon::registry::{SharedRegistry, TabEntry};
 use crate::output::ResponseContext;
 use crate::types::TabId;
@@ -42,88 +43,92 @@ pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
 }
 
 pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
-    let final_url = ensure_scheme(&cmd.url);
+    let final_url = match ensure_scheme_or_fatal(&cmd.url) {
+        Ok(u) => u,
+        Err(e) => return e,
+    };
 
-    let cdp_port = {
+    // Get CdpSession from registry
+    let cdp = {
         let reg = registry.lock().await;
         match reg.get(&cmd.session) {
-            Some(e) => e.cdp_port,
+            Some(e) => match e.cdp.clone() {
+                Some(c) => c,
+                None => {
+                    return ActionResult::fatal_with_hint(
+                        "INTERNAL_ERROR",
+                        format!("no CDP connection for session '{}'", cmd.session),
+                        "try restarting the session",
+                    );
+                }
+            },
             None => {
-                return ActionResult::fatal(
+                return ActionResult::fatal_with_hint(
                     "SESSION_NOT_FOUND",
                     format!("session '{}' not found", cmd.session),
+                    "run `actionbook browser list-sessions` to see available sessions",
                 );
             }
         }
     };
 
-    let create_url = format!(
-        "http://127.0.0.1:{}/json/new?{}",
-        cdp_port,
-        urlencoding::encode(&final_url)
-    );
-    let client = reqwest::Client::new();
-    let resp = client.put(&create_url).send().await.map_err(|e| {
-        ActionResult::fatal(
-            "CDP_ERROR",
-            format!("failed to create tab via /json/new: {e}"),
-        )
-    });
-    let resp = match resp {
+    // Create tab via CDP Target.createTarget (works for both local and cloud)
+    let resp = match cdp
+        .execute_browser("Target.createTarget", json!({ "url": final_url }))
+        .await
+    {
         Ok(r) => r,
-        Err(e) => return e,
+        Err(e) => return cdp_error_to_result(e, "CDP_ERROR"),
     };
-    let body = resp.text().await.unwrap_or_default();
-    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
-    let target_id = match v.get("id").and_then(|i| i.as_str()) {
+    let target_id = match resp.pointer("/result/targetId").and_then(|v| v.as_str()) {
         Some(id) => id.to_string(),
         None => {
             return ActionResult::fatal(
                 "CDP_ERROR",
-                format!("Chrome /json/new did not return target id, body: {body}"),
+                format!("Target.createTarget did not return targetId: {}", resp),
             );
         }
     };
-    let title = v
-        .get("title")
-        .and_then(|t| t.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_default();
 
-    let cdp = {
+    // Attach before registering — rollback on failure
+    if let Err(e) = cdp.attach(&target_id).await {
+        // Rollback: close the target we just created
+        let _ = cdp
+            .execute_browser("Target.closeTarget", json!({ "targetId": target_id }))
+            .await;
+        return cdp_error_to_result(e, "CDP_ERROR");
+    }
+
+    // Register the new tab
+    {
         let mut reg = registry.lock().await;
-        let entry = match reg.get_mut(&cmd.session) {
-            Some(e) => e,
+        match reg.get_mut(&cmd.session) {
+            Some(e) => {
+                e.tabs.push(TabEntry {
+                    id: TabId(target_id.clone()),
+                    url: final_url.clone(),
+                    title: String::new(),
+                });
+            }
             None => {
+                // Session was closed concurrently — detach and close the target
+                let _ = cdp.detach(&target_id).await;
+                let _ = cdp
+                    .execute_browser("Target.closeTarget", json!({ "targetId": target_id }))
+                    .await;
                 return ActionResult::fatal(
                     "SESSION_NOT_FOUND",
-                    format!("session '{}' not found", cmd.session),
+                    format!("session '{}' was closed during tab creation", cmd.session),
                 );
             }
-        };
-        entry.tabs.push(TabEntry {
-            id: TabId(target_id.clone()),
-            url: final_url.clone(),
-            title: title.clone(),
-        });
-        entry.cdp.clone()
-    };
-
-    // Attach the new tab to the persistent CDP session
-    if let Some(ref cdp) = cdp
-        && let Err(e) = cdp.attach(&target_id).await
-    {
-        return ActionResult::fatal(
-            "CDP_ERROR",
-            format!("failed to attach tab to CDP session: {e}"),
-        );
+        }
     }
 
     ActionResult::ok(json!({
         "tab": {
             "tab_id": target_id,
             "url": final_url,
-            "title": title,
+            "title": "",
         },
         "created": true,
         "new_window": cmd.new_window,

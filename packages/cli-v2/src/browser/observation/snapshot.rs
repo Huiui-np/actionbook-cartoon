@@ -43,6 +43,6 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         .await
     {
         Ok(resp) => ActionResult::ok(json!({ "snapshot": resp.to_string() })),
-        Err(e) => ActionResult::fatal("INTERNAL_ERROR", e.to_string()),
+        Err(e) => crate::daemon::cdp_session::cdp_error_to_result(e, "INTERNAL_ERROR"),
     }
 }

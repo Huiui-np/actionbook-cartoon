@@ -49,7 +49,7 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         .await
     {
         Ok(v) => v,
-        Err(e) => return ActionResult::fatal("EVAL_FAILED", e.to_string()),
+        Err(e) => return crate::daemon::cdp_session::cdp_error_to_result(e, "EVAL_FAILED"),
     };
 
     // Extract value from CDP response

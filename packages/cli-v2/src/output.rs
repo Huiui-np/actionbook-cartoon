@@ -106,16 +106,20 @@ impl JsonEnvelope {
                 message,
                 hint,
                 details,
-            } => Self::error(
-                command,
-                context,
-                code,
-                message,
-                false,
-                details.clone().unwrap_or(Value::Null),
-                hint,
-                duration,
-            ),
+            } => {
+                // CloudConnectionLost is retryable despite being Fatal variant
+                let retryable = code == "CLOUD_CONNECTION_LOST";
+                Self::error(
+                    command,
+                    context,
+                    code,
+                    message,
+                    retryable,
+                    details.clone().unwrap_or(Value::Null),
+                    hint,
+                    duration,
+                )
+            }
             ActionResult::Retryable { reason, hint } => Self::error(
                 command,
                 context,

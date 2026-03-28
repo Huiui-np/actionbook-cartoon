@@ -97,7 +97,7 @@ async fn handle_browser(
                         executable: None,
                         open_url: None,
                         cdp_endpoint: None,
-                        header: None,
+                        header: vec![],
                         set_session_id: None,
                     });
                 let result = ActionResult::fatal(err.error_code(), err.to_string());

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::action_result::ActionResult;
-use crate::daemon::browser;
+use crate::daemon::cdp_session::cdp_error_to_result;
 use crate::daemon::registry::SharedRegistry;
 use crate::output::ResponseContext;
 
@@ -32,46 +32,52 @@ pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
 }
 
 pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
-    let cdp_port = {
+    // Get CdpSession from registry
+    let cdp = {
         let reg = registry.lock().await;
         match reg.get(&cmd.session) {
-            Some(e) => e.cdp_port,
+            Some(e) => match e.cdp.clone() {
+                Some(c) => c,
+                None => {
+                    return ActionResult::fatal_with_hint(
+                        "INTERNAL_ERROR",
+                        format!("no CDP connection for session '{}'", cmd.session),
+                        "try restarting the session",
+                    );
+                }
+            },
             None => {
-                return ActionResult::fatal(
+                return ActionResult::fatal_with_hint(
                     "SESSION_NOT_FOUND",
                     format!("session '{}' not found", cmd.session),
+                    "run `actionbook browser list-sessions` to see available sessions",
                 );
             }
         }
     };
 
-    // Real-time fetch from Chrome (retry up to 2 times)
-    let mut targets = None;
-    for _ in 0..3 {
-        if let Ok(t) = browser::list_targets(cdp_port).await {
-            targets = Some(t);
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
-    let targets = match targets {
-        Some(t) => t,
-        None => {
-            return ActionResult::fatal(
-                "CDP_CONNECTION_FAILED",
-                "failed to fetch targets from Chrome after 3 attempts",
-            );
-        }
+    // Real-time fetch via CDP Target.getTargets (works for both local and cloud)
+    let resp = match cdp.execute_browser("Target.getTargets", json!({})).await {
+        Ok(r) => r,
+        Err(e) => return cdp_error_to_result(e, "CDP_CONNECTION_FAILED"),
     };
 
+    let target_infos = resp
+        .pointer("/result/targetInfos")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    // Filter by type=="page" and cross-reference with registry
     let tabs: Vec<serde_json::Value> = {
         let reg = registry.lock().await;
         let entry = match reg.get(&cmd.session) {
             Some(e) => e,
             None => {
-                return ActionResult::fatal(
+                return ActionResult::fatal_with_hint(
                     "SESSION_NOT_FOUND",
                     format!("session '{}' not found", cmd.session),
+                    "run `actionbook browser list-sessions` to see available sessions",
                 );
             }
         };
@@ -81,10 +87,12 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
             .iter()
             .filter_map(|t| {
                 let target_id = &t.id.0;
-                // Only include tabs that still exist in Chrome's real-time targets
-                targets
+                target_infos
                     .iter()
-                    .find(|tgt| tgt.get("id").and_then(|v| v.as_str()) == Some(target_id))
+                    .find(|tgt| {
+                        tgt.get("targetId").and_then(|v| v.as_str()) == Some(target_id)
+                            && tgt.get("type").and_then(|v| v.as_str()) == Some("page")
+                    })
                     .map(|tgt| {
                         let url = tgt.get("url").and_then(|v| v.as_str()).unwrap_or("");
                         let title = tgt.get("title").and_then(|v| v.as_str()).unwrap_or("");

@@ -50,14 +50,19 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
             })
         })
         .collect();
+    let mut session = json!({
+        "session_id": entry.id.as_str(),
+        "mode": entry.mode.to_string(),
+        "status": entry.status.to_string(),
+        "headless": entry.headless,
+        "tabs_count": entry.tabs_count(),
+    });
+    // Include cdp_endpoint for cloud sessions (redacted), never expose headers
+    if let Some(ref ep) = entry.cdp_endpoint {
+        session["cdp_endpoint"] = json!(crate::browser::session::start::redact_endpoint(ep));
+    }
     ActionResult::ok(json!({
-        "session": {
-            "session_id": entry.id.as_str(),
-            "mode": entry.mode.to_string(),
-            "status": entry.status.to_string(),
-            "headless": entry.headless,
-            "tabs_count": entry.tabs_count(),
-        },
+        "session": session,
         "tabs": tabs,
         "capabilities": {
             "snapshot": true,
