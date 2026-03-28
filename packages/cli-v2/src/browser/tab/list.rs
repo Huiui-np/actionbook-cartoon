@@ -45,8 +45,24 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         }
     };
 
-    // Real-time fetch from Chrome
-    let targets = browser::list_targets(cdp_port).await.unwrap_or_default();
+    // Real-time fetch from Chrome (retry up to 2 times)
+    let mut targets = None;
+    for _ in 0..3 {
+        if let Ok(t) = browser::list_targets(cdp_port).await {
+            targets = Some(t);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    let targets = match targets {
+        Some(t) => t,
+        None => {
+            return ActionResult::fatal(
+                "CDP_CONNECTION_FAILED",
+                "failed to fetch targets from Chrome after 3 attempts",
+            );
+        }
+    };
 
     let tabs: Vec<serde_json::Value> = {
         let reg = registry.lock().await;
@@ -63,24 +79,21 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         entry
             .tabs
             .iter()
-            .map(|t| {
+            .filter_map(|t| {
                 let target_id = &t.id.0;
-                // Find real-time url/title from Chrome targets
-                let (url, title) = targets
+                // Only include tabs that still exist in Chrome's real-time targets
+                targets
                     .iter()
                     .find(|tgt| tgt.get("id").and_then(|v| v.as_str()) == Some(target_id))
                     .map(|tgt| {
                         let url = tgt.get("url").and_then(|v| v.as_str()).unwrap_or("");
                         let title = tgt.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                        (url.to_string(), title.to_string())
+                        json!({
+                            "tab_id": target_id,
+                            "url": url,
+                            "title": title,
+                        })
                     })
-                    .unwrap_or_default();
-
-                json!({
-                    "tab_id": target_id,
-                    "url": url,
-                    "title": title,
-                })
             })
             .collect()
     };
