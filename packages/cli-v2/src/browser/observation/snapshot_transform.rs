@@ -540,12 +540,18 @@ impl RoleNameTracker {
 // TODO: iframe isolation — iframes within a tab may share backendNodeId values
 // with the main frame. Need either frame-prefixed keys (e.g., "frame_id:node_id")
 // or a separate RefCache per frame to avoid collisions.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct RefCache {
     /// backendNodeId → refId (e.g., 42 → "e1")
     id_to_ref: std::collections::HashMap<i64, String>,
     /// Next available ref counter
     next_ref: usize,
+}
+
+impl Default for RefCache {
+    fn default() -> Self {
+        Self::new() // next_ref starts at 1, so refs begin at e1
+    }
 }
 
 impl RefCache {

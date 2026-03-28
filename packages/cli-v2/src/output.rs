@@ -40,9 +40,13 @@ impl JsonEnvelope {
     pub fn success(
         command: &str,
         context: Option<ResponseContext>,
-        data: Value,
+        mut data: Value,
         duration: Duration,
     ) -> Self {
+        // Strip internal __ctx_* fields from data (used by context() extraction only)
+        if let Some(obj) = data.as_object_mut() {
+            obj.retain(|k, _| !k.starts_with("__ctx_"));
+        }
         JsonEnvelope {
             ok: true,
             command: command.to_string(),
@@ -308,6 +312,12 @@ fn format_data_fields(command: &str, data: &Value, lines: &mut Vec<String>) {
         "browser.goto" | "browser.back" | "browser.forward" | "browser.reload" => {
             if let Some(title) = data.get("title").and_then(|v| v.as_str()) {
                 lines.push(format!("title: {title}"));
+            }
+        }
+        "browser.snapshot" => {
+            // §10.1: text mode outputs content directly (no "ok" prefix)
+            if let Some(content) = data.get("content").and_then(|v| v.as_str()) {
+                lines.push(content.to_string());
             }
         }
         "browser.eval" => {

@@ -51,6 +51,14 @@ pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
     {
         return None;
     }
+    // TAB_NOT_FOUND: context has session_id but tab_id must be null per §3.1
+    let tab_id = if let ActionResult::Fatal { code, .. } = result
+        && code == "TAB_NOT_FOUND"
+    {
+        None
+    } else {
+        Some(cmd.tab.clone())
+    };
     let (url, title) = match result {
         ActionResult::Ok { data } => (
             data.get("__ctx_url")
@@ -64,7 +72,7 @@ pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
     };
     Some(ResponseContext {
         session_id: cmd.session.clone(),
-        tab_id: Some(cmd.tab.clone()),
+        tab_id,
         window_id: None,
         url,
         title,
