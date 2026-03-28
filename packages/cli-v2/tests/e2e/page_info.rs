@@ -7,9 +7,9 @@
 //!
 //! **Expected to FAIL until implementation lands:**
 //! - `title_json_happy_path`
-//! - `title_text_happy_path`
+//! - `title_text_happy_path` (also runs JSON internally to pin body value)
 //! - `url_json_happy_path`
-//! - `url_text_happy_path`
+//! - `url_text_happy_path` (also runs JSON internally to pin body value)
 //! - `viewport_json_happy_path`
 //! - `viewport_text_happy_path`
 //!
@@ -125,10 +125,22 @@ fn title_json_happy_path() {
     assert!(v["error"].is_null());
     assert_meta(&v);
 
-    // context — tab-level
+    // context — tab-level, including url per §2.5
     assert!(v["context"].is_object(), "context must be present");
     assert_eq!(v["context"]["session_id"], sid);
     assert_eq!(v["context"]["tab_id"], tid);
+    assert!(
+        v["context"]["url"].is_string(),
+        "context.url must be a string"
+    );
+    assert!(
+        v["context"]["url"]
+            .as_str()
+            .unwrap_or("")
+            .contains("actionbook.dev"),
+        "context.url must reference actionbook.dev: got {:?}",
+        v["context"]["url"]
+    );
 
     // §10.4 data contract
     assert!(
@@ -151,27 +163,38 @@ fn title_text_happy_path() {
     let _guard = SessionGuard::new();
     let (sid, tid) = start_session(URL_A);
 
+    // Get expected title from JSON to pin text body precisely (B2)
+    let json_out = headless_json(&["browser", "title", "--session", &sid, "--tab", &tid], 10);
+    assert_success(&json_out, "title json (for text comparison)");
+    let jv = parse_json(&json_out);
+    let expected_title = jv["data"]["value"].as_str().unwrap_or("").to_string();
+    assert!(!expected_title.is_empty(), "title must not be empty for actionbook.dev");
+
     let out = headless(&["browser", "title", "--session", &sid, "--tab", &tid], 10);
     assert_success(&out, "title text");
     let text = stdout_str(&out);
 
-    // §2.5: prefix is `[sid tid]`
+    // §2.5: header is `[sid tid] <url>` — must include URL
+    let header_line = text.lines().next().unwrap_or("");
     assert!(
-        text.contains(&format!("[{sid} {tid}]")),
-        "text must contain [session_id tab_id]: got {text:.200}"
+        header_line.starts_with(&format!("[{sid} {tid}]")),
+        "header must start with [session_id tab_id]: got {header_line}"
+    );
+    assert!(
+        header_line.contains("actionbook.dev"),
+        "header must contain URL per §2.5: got {header_line}"
     );
 
-    // Body: page title directly (not "ok browser.title")
-    assert!(
-        !text.contains("ok browser.title"),
-        "text must not contain 'ok browser.title' — observation commands output value directly"
-    );
-
-    // Title must appear as non-empty content
+    // §10.4: body is raw title value — no "title: " or "value: " prefix
     let lines: Vec<&str> = text.lines().collect();
     assert!(
         lines.len() >= 2,
-        "text output must have at least 2 lines (header + title): got {text:.200}"
+        "text must have header + body lines: got {text:.200}"
+    );
+    assert_eq!(
+        lines[1].trim(),
+        expected_title,
+        "text body must be exactly the title value (no 'title: ' prefix)"
     );
 
     close_session(&sid);
@@ -315,10 +338,22 @@ fn url_json_happy_path() {
     assert!(v["error"].is_null());
     assert_meta(&v);
 
-    // context — tab-level
+    // context — tab-level, including url per §2.5
     assert!(v["context"].is_object(), "context must be present");
     assert_eq!(v["context"]["session_id"], sid);
     assert_eq!(v["context"]["tab_id"], tid);
+    assert!(
+        v["context"]["url"].is_string(),
+        "context.url must be a string"
+    );
+    assert!(
+        v["context"]["url"]
+            .as_str()
+            .unwrap_or("")
+            .contains("actionbook.dev"),
+        "context.url must reference actionbook.dev: got {:?}",
+        v["context"]["url"]
+    );
 
     // §10.5 data contract
     assert!(
@@ -346,24 +381,41 @@ fn url_text_happy_path() {
     let _guard = SessionGuard::new();
     let (sid, tid) = start_session(URL_A);
 
+    // Get expected URL from JSON to pin text body precisely (B2)
+    let json_out = headless_json(&["browser", "url", "--session", &sid, "--tab", &tid], 10);
+    assert_success(&json_out, "url json (for text comparison)");
+    let jv = parse_json(&json_out);
+    let expected_url = jv["data"]["value"].as_str().unwrap_or("").to_string();
+    assert!(
+        expected_url.starts_with("http"),
+        "data.value must be a URL: got {expected_url}"
+    );
+
     let out = headless(&["browser", "url", "--session", &sid, "--tab", &tid], 10);
     assert_success(&out, "url text");
     let text = stdout_str(&out);
 
-    // §2.5: prefix is `[sid tid]`
+    // §2.5: header is `[sid tid] <url>` — must include URL
+    let header_line = text.lines().next().unwrap_or("");
     assert!(
-        text.contains(&format!("[{sid} {tid}]")),
-        "text must contain [session_id tab_id]: got {text:.200}"
+        header_line.starts_with(&format!("[{sid} {tid}]")),
+        "header must start with [session_id tab_id]: got {header_line}"
+    );
+    assert!(
+        header_line.contains("actionbook.dev"),
+        "header must contain URL per §2.5: got {header_line}"
     );
 
-    // Body: URL directly
+    // §10.5: body is raw URL value — no "url: " or "value: " prefix
+    let lines: Vec<&str> = text.lines().collect();
     assert!(
-        text.contains("http"),
-        "text must contain the URL: got {text:.200}"
+        lines.len() >= 2,
+        "text must have header + body lines: got {text:.200}"
     );
-    assert!(
-        !text.contains("ok browser.url"),
-        "text must not contain 'ok browser.url'"
+    assert_eq!(
+        lines[1].trim(),
+        expected_url,
+        "text body must be exactly the URL value (no 'url: ' prefix)"
     );
 
     close_session(&sid);
@@ -505,10 +557,22 @@ fn viewport_json_happy_path() {
     assert!(v["error"].is_null());
     assert_meta(&v);
 
-    // context — tab-level
+    // context — tab-level, including url per §2.5
     assert!(v["context"].is_object(), "context must be present");
     assert_eq!(v["context"]["session_id"], sid);
     assert_eq!(v["context"]["tab_id"], tid);
+    assert!(
+        v["context"]["url"].is_string(),
+        "context.url must be a string"
+    );
+    assert!(
+        v["context"]["url"]
+            .as_str()
+            .unwrap_or("")
+            .contains("actionbook.dev"),
+        "context.url must reference actionbook.dev: got {:?}",
+        v["context"]["url"]
+    );
 
     // §10.6 data contract
     assert!(
@@ -542,10 +606,15 @@ fn viewport_text_happy_path() {
     assert_success(&out, "viewport text");
     let text = stdout_str(&out);
 
-    // §2.5: prefix is `[sid tid]`
+    // §2.5: header is `[sid tid] <url>` — must include URL
+    let header_line = text.lines().next().unwrap_or("");
     assert!(
-        text.contains(&format!("[{sid} {tid}]")),
-        "text must contain [session_id tab_id]: got {text:.200}"
+        header_line.starts_with(&format!("[{sid} {tid}]")),
+        "header must start with [session_id tab_id]: got {header_line}"
+    );
+    assert!(
+        header_line.contains("actionbook.dev"),
+        "header must contain URL per §2.5: got {header_line}"
     );
 
     // Body: `{width}x{height}` format
