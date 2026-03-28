@@ -28,9 +28,9 @@ pub struct Cmd {
     /// Connect to existing CDP endpoint
     #[arg(long)]
     pub cdp_endpoint: Option<String>,
-    /// Header for CDP endpoint (KEY:VALUE)
+    /// Headers for CDP endpoint (KEY:VALUE), can be specified multiple times
     #[arg(long)]
-    pub header: Option<String>,
+    pub header: Vec<String>,
     /// Specify a semantic session ID
     #[arg(long)]
     pub set_session_id: Option<String>,
@@ -56,16 +56,171 @@ pub fn context(_cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
 }
 
 pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
+    // Cloud mode validation
+    if cmd.mode == Mode::Cloud {
+        if cmd.cdp_endpoint.is_none() {
+            return ActionResult::fatal_with_hint(
+                "MISSING_CDP_ENDPOINT",
+                "--mode cloud requires --cdp-endpoint",
+                "provide --cdp-endpoint <wss://...> to connect to a cloud browser",
+            );
+        }
+        return execute_cloud(cmd, registry).await;
+    }
+
+    execute_local(cmd, registry).await
+}
+
+// ── Cloud mode ──────────────────────────────────────────────────────
+
+async fn execute_cloud(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
+    let endpoint = cmd.cdp_endpoint.as_deref().unwrap();
+
+    // Parse headers
+    let headers = match parse_headers(&cmd.header) {
+        Ok(h) => h,
+        Err(e) => return e,
+    };
+
+    let mut reg = registry.lock().await;
+
+    // Cloud reuse: same cdp_endpoint = same session (single-connection constraint)
+    if let Some(session_id) = reg
+        .list()
+        .iter()
+        .find(|s| s.mode == Mode::Cloud && s.cdp_endpoint.as_deref() == Some(endpoint))
+        .map(|s| s.id.as_str().to_string())
+    {
+        // Update headers silently if they changed
+        if let Some(entry) = reg.get_mut(&session_id) {
+            if entry.headers != headers {
+                entry.headers = headers;
+            }
+        }
+
+        let entry = reg.get(&session_id).unwrap();
+        let first_tab_id = entry.tabs.first().map(|t| t.id.0.clone()).unwrap_or_default();
+
+        // If --open-url, navigate the first tab
+        if let Some(url) = &cmd.open_url {
+            let final_url = ensure_scheme(url);
+            if let Some(ref cdp) = entry.cdp {
+                if !first_tab_id.is_empty() {
+                    let cdp = cdp.clone();
+                    drop(reg);
+                    let _ = cdp
+                        .execute_on_tab(&first_tab_id, "Page.navigate", json!({ "url": final_url }))
+                        .await;
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    let reg = registry.lock().await;
+                    let entry = reg.get(&session_id).unwrap();
+                    return make_session_response(entry, &first_tab_id, "", "", true);
+                }
+            }
+        }
+
+        return make_session_response(entry, &first_tab_id, "", "", true);
+    }
+
+    // New cloud session
+    let session_id =
+        match reg.generate_session_id(cmd.set_session_id.as_deref(), cmd.profile.as_deref()) {
+            Ok(id) => id,
+            Err(e) => return ActionResult::fatal(e.error_code(), e.to_string()),
+        };
+    drop(reg);
+
+    // Connect to cloud endpoint with headers
+    let cdp = match CdpSession::connect_with_headers(endpoint, &headers).await {
+        Ok(c) => c,
+        Err(e) => return ActionResult::fatal(e.error_code(), e.to_string()),
+    };
+
+    // Discover existing tabs via CDP Target.getTargets
+    let tabs = match discover_tabs_via_cdp(&cdp).await {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+
+    // Zero-page handling: create a tab if none exist
+    let tabs = if tabs.is_empty() {
+        let url = cmd.open_url.as_deref().unwrap_or("about:blank");
+        match create_tab_via_cdp(&cdp, url).await {
+            Ok(tab) => vec![tab],
+            Err(e) => return e,
+        }
+    } else {
+        // Attach all discovered tabs
+        for tab in &tabs {
+            if let Err(e) = cdp.attach(&tab.id.0).await {
+                tracing::warn!("failed to attach cloud tab {}: {e}", tab.id);
+            }
+        }
+        // Navigate first tab if --open-url
+        if let Some(url) = &cmd.open_url {
+            let final_url = ensure_scheme(url);
+            if let Some(first) = tabs.first() {
+                let _ = cdp
+                    .execute_on_tab(&first.id.0, "Page.navigate", json!({ "url": final_url }))
+                    .await;
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        }
+        tabs
+    };
+
+    let first_tab_id = tabs.first().map(|t| t.id.0.clone()).unwrap_or_default();
+    let first_url = tabs.first().map(|t| t.url.clone()).unwrap_or_default();
+    let first_title = tabs.first().map(|t| t.title.clone()).unwrap_or_default();
+
+    let profile_name = cmd.profile.as_deref().unwrap_or("actionbook");
+    let entry = SessionEntry {
+        id: session_id.clone(),
+        mode: Mode::Cloud,
+        headless: cmd.headless,
+        profile: profile_name.to_string(),
+        status: "running".to_string(),
+        cdp_port: None,
+        ws_url: endpoint.to_string(),
+        cdp_endpoint: Some(endpoint.to_string()),
+        headers,
+        tabs,
+        chrome_process: None,
+        cdp: Some(cdp),
+    };
+
+    let mut reg = registry.lock().await;
+    reg.insert(entry);
+
+    ActionResult::ok(json!({
+        "session": {
+            "session_id": session_id.as_str(),
+            "mode": "cloud",
+            "status": "running",
+            "headless": cmd.headless,
+            "cdp_endpoint": endpoint,
+        },
+        "tab": {
+            "tab_id": first_tab_id,
+            "url": first_url,
+            "title": first_title,
+        },
+        "reused": false,
+    }))
+}
+
+// ── Local mode ──────────────────────────────────────────────────────
+
+async fn execute_local(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
     let mut reg = registry.lock().await;
     let profile_name = cmd.profile.as_deref().unwrap_or("actionbook");
 
     // Local mode: 1 profile = max 1 session. Reuse existing if same profile.
-    if cmd.mode == Mode::Local
-        && let Some(session_id) = reg
-            .list()
-            .iter()
-            .find(|s| s.profile == profile_name && s.mode == cmd.mode)
-            .map(|s| s.id.as_str().to_string())
+    if let Some(session_id) = reg
+        .list()
+        .iter()
+        .find(|s| s.profile == profile_name && s.mode == cmd.mode)
+        .map(|s| s.id.as_str().to_string())
     {
         if let Some(url) = &cmd.open_url {
             let final_url = ensure_scheme(url);
@@ -95,7 +250,11 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
             }
 
             // Fetch real-time tab info
-            let targets = browser::list_targets(cdp_port).await.unwrap_or_default();
+            let targets = if let Some(port) = cdp_port {
+                browser::list_targets(port).await.unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             let (tab_url, tab_title) = get_tab_info_from_targets(&targets, &first_tab_id);
 
             let reg = registry.lock().await;
@@ -122,7 +281,11 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         let first_tab_id = entry.tabs.first().map(|t| t.id.0.clone()).unwrap_or_default();
         let cdp_port = entry.cdp_port;
         drop(reg);
-        let targets = browser::list_targets(cdp_port).await.unwrap_or_default();
+        let targets = if let Some(port) = cdp_port {
+            browser::list_targets(port).await.unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let (tab_url, tab_title) = get_tab_info_from_targets(&targets, &first_tab_id);
         let reg = registry.lock().await;
         let entry = reg.get(&session_id).unwrap();
@@ -247,7 +410,6 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
 
     let first_tab_id = tabs.first().map(|t| t.id.0.clone()).unwrap_or_default();
 
-    // Get real-time info for the first tab
     let (first_url, first_title) = if !first_tab_id.is_empty() {
         get_tab_info_from_targets(&targets, &first_tab_id)
     } else {
@@ -260,8 +422,10 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         headless: cmd.headless,
         profile: profile_name.to_string(),
         status: "running".to_string(),
-        cdp_port: port,
+        cdp_port: Some(port),
         ws_url: ws_url.clone(),
+        cdp_endpoint: None,
+        headers: Vec::new(),
         tabs,
         chrome_process: Some(chrome),
         cdp: Some(cdp),
@@ -282,6 +446,108 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
             "title": first_title,
         },
         "reused": false,
+    }))
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+/// Parse `--header KEY:VALUE` strings into `(key, value)` pairs.
+/// Value may contain additional colons (e.g., `Authorization:Bearer abc:def`).
+fn parse_headers(raw: &[String]) -> Result<Vec<(String, String)>, ActionResult> {
+    raw.iter()
+        .map(|h| {
+            let (key, value) = h.split_once(':').ok_or_else(|| {
+                ActionResult::fatal(
+                    "INVALID_ARGUMENT",
+                    format!("invalid header format: '{h}', expected KEY:VALUE"),
+                )
+            })?;
+            Ok((key.trim().to_string(), value.trim().to_string()))
+        })
+        .collect()
+}
+
+/// Discover page tabs via CDP Target.getTargets, filtering by type=="page".
+async fn discover_tabs_via_cdp(cdp: &CdpSession) -> Result<Vec<TabEntry>, ActionResult> {
+    let resp = cdp
+        .execute_browser("Target.getTargets", json!({}))
+        .await
+        .map_err(|e| ActionResult::fatal("CDP_ERROR", format!("Target.getTargets failed: {e}")))?;
+
+    let infos = resp
+        .get("result")
+        .and_then(|r| r.get("targetInfos"))
+        .and_then(|t| t.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let tabs: Vec<TabEntry> = infos
+        .iter()
+        .filter(|t| t.get("type").and_then(|v| v.as_str()) == Some("page"))
+        .filter_map(|t| {
+            let id = t.get("targetId").and_then(|v| v.as_str())?.to_string();
+            let url = t.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let title = t.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            Some(TabEntry {
+                id: TabId(id),
+                url,
+                title,
+            })
+        })
+        .collect();
+
+    Ok(tabs)
+}
+
+/// Create a new tab via CDP Target.createTarget.
+async fn create_tab_via_cdp(cdp: &CdpSession, url: &str) -> Result<TabEntry, ActionResult> {
+    let resp = cdp
+        .execute_browser("Target.createTarget", json!({ "url": url }))
+        .await
+        .map_err(|e| ActionResult::fatal("CDP_ERROR", format!("Target.createTarget failed: {e}")))?;
+
+    let target_id = resp
+        .get("result")
+        .and_then(|r| r.get("targetId"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            ActionResult::fatal("CDP_ERROR", format!("Target.createTarget did not return targetId: {resp}"))
+        })?
+        .to_string();
+
+    cdp.attach(&target_id)
+        .await
+        .map_err(|e| ActionResult::fatal("CDP_ERROR", format!("failed to attach new tab: {e}")))?;
+
+    Ok(TabEntry {
+        id: TabId(target_id),
+        url: url.to_string(),
+        title: String::new(),
+    })
+}
+
+/// Build a session response JSON.
+fn make_session_response(
+    entry: &crate::daemon::registry::SessionEntry,
+    tab_id: &str,
+    tab_url: &str,
+    tab_title: &str,
+    reused: bool,
+) -> ActionResult {
+    ActionResult::ok(json!({
+        "session": {
+            "session_id": entry.id.as_str(),
+            "mode": entry.mode.to_string(),
+            "status": entry.status,
+            "headless": entry.headless,
+            "cdp_endpoint": entry.cdp_endpoint.as_deref().unwrap_or(&entry.ws_url),
+        },
+        "tab": {
+            "tab_id": tab_id,
+            "url": tab_url,
+            "title": tab_title,
+        },
+        "reused": reused,
     }))
 }
 

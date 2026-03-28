@@ -38,6 +38,10 @@ pub enum CliError {
     Json(#[from] serde_json::Error),
     #[error("http error: {0}")]
     Http(#[from] reqwest::Error),
+    #[error("--mode cloud requires --cdp-endpoint")]
+    MissingCdpEndpoint,
+    #[error("cloud connection lost: {0}")]
+    CloudConnectionLost(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -63,6 +67,8 @@ impl CliError {
             CliError::Io(_) => "IO_ERROR",
             CliError::Json(_) => "INTERNAL_ERROR",
             CliError::Http(_) => "HTTP_ERROR",
+            CliError::MissingCdpEndpoint => "MISSING_CDP_ENDPOINT",
+            CliError::CloudConnectionLost(_) => "CLOUD_CONNECTION_LOST",
             CliError::Internal(_) => "INTERNAL_ERROR",
         }
     }
@@ -72,6 +78,7 @@ impl CliError {
             self,
             CliError::DaemonNotRunning
                 | CliError::ConnectionFailed(_)
+                | CliError::CloudConnectionLost(_)
                 | CliError::Timeout
                 | CliError::Http(_)
         )

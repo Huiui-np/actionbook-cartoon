@@ -44,59 +44,9 @@ pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
 pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
     let final_url = ensure_scheme(&cmd.url);
 
-    let cdp_port = {
-        let reg = registry.lock().await;
-        match reg.get(&cmd.session) {
-            Some(e) => e.cdp_port,
-            None => {
-                return ActionResult::fatal(
-                    "SESSION_NOT_FOUND",
-                    format!("session '{}' not found", cmd.session),
-                );
-            }
-        }
-    };
-
-    let create_url = format!(
-        "http://127.0.0.1:{}/json/new?{}",
-        cdp_port,
-        urlencoding::encode(&final_url)
-    );
-    let client = reqwest::Client::new();
-    let resp = client
-        .put(&create_url)
-        .send()
-        .await
-        .map_err(|e| {
-            ActionResult::fatal(
-                "CDP_ERROR",
-                format!("failed to create tab via /json/new: {e}"),
-            )
-        });
-    let resp = match resp {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
-    let body = resp.text().await.unwrap_or_default();
-    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
-    let target_id = match v.get("id").and_then(|i| i.as_str()) {
-        Some(id) => id.to_string(),
-        None => {
-            return ActionResult::fatal(
-                "CDP_ERROR",
-                format!("Chrome /json/new did not return target id, body: {body}"),
-            );
-        }
-    };
-    let title = v
-        .get("title")
-        .and_then(|t| t.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_default();
-
     let cdp = {
-        let mut reg = registry.lock().await;
-        let entry = match reg.get_mut(&cmd.session) {
+        let reg = registry.lock().await;
+        let entry = match reg.get(&cmd.session) {
             Some(e) => e,
             None => {
                 return ActionResult::fatal(
@@ -105,21 +55,59 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
                 );
             }
         };
-        entry.tabs.push(TabEntry {
-            id: TabId(target_id.clone()),
-            url: final_url.clone(),
-            title: title.clone(),
-        });
-        entry.cdp.clone()
+        match entry.cdp.clone() {
+            Some(c) => c,
+            None => {
+                return ActionResult::fatal(
+                    "INTERNAL_ERROR",
+                    format!("no CDP connection for session '{}'", cmd.session),
+                );
+            }
+        }
+    };
+
+    // Create tab via CDP Target.createTarget (unified for local + cloud)
+    let mut params = json!({ "url": final_url });
+    if cmd.new_window {
+        params["newWindow"] = json!(true);
+    }
+    let resp = match cdp.execute_browser("Target.createTarget", params).await {
+        Ok(r) => r,
+        Err(e) => {
+            return ActionResult::fatal(
+                "CDP_ERROR",
+                format!("Target.createTarget failed: {e}"),
+            );
+        }
+    };
+
+    let target_id = match resp.get("result").and_then(|r| r.get("targetId")).and_then(|v| v.as_str()) {
+        Some(id) => id.to_string(),
+        None => {
+            return ActionResult::fatal(
+                "CDP_ERROR",
+                format!("Target.createTarget did not return targetId: {resp}"),
+            );
+        }
     };
 
     // Attach the new tab to the persistent CDP session
-    if let Some(ref cdp) = cdp {
-        if let Err(e) = cdp.attach(&target_id).await {
-            return ActionResult::fatal(
-                "CDP_ERROR",
-                format!("failed to attach tab to CDP session: {e}"),
-            );
+    if let Err(e) = cdp.attach(&target_id).await {
+        return ActionResult::fatal(
+            "CDP_ERROR",
+            format!("failed to attach tab to CDP session: {e}"),
+        );
+    }
+
+    // Add to registry
+    {
+        let mut reg = registry.lock().await;
+        if let Some(entry) = reg.get_mut(&cmd.session) {
+            entry.tabs.push(TabEntry {
+                id: TabId(target_id.clone()),
+                url: final_url.clone(),
+                title: String::new(),
+            });
         }
     }
 
@@ -127,7 +115,7 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         "tab": {
             "tab_id": target_id,
             "url": final_url,
-            "title": title,
+            "title": "",
         },
         "created": true,
         "new_window": cmd.new_window,

@@ -50,10 +50,7 @@ pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
 }
 
 pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
-    let cdp_port;
-    let cdp;
-
-    {
+    let cdp = {
         let reg = registry.lock().await;
         let entry = match reg.get(&cmd.session) {
             Some(e) => e,
@@ -72,21 +69,30 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
             );
         }
 
-        cdp_port = entry.cdp_port;
-        cdp = entry.cdp.clone();
+        match entry.cdp.clone() {
+            Some(c) => c,
+            None => {
+                return ActionResult::fatal(
+                    "INTERNAL_ERROR",
+                    format!("no CDP connection for session '{}'", cmd.session),
+                );
+            }
+        }
+    };
+
+    // Close the target first via CDP (unified for local + cloud)
+    if let Err(e) = cdp
+        .execute_browser("Target.closeTarget", json!({ "targetId": cmd.tab }))
+        .await
+    {
+        return ActionResult::fatal(
+            "CDP_ERROR",
+            format!("Target.closeTarget failed: {e}"),
+        );
     }
 
-    // Detach from the persistent CDP session before closing
-    if let Some(ref cdp) = cdp {
-        let _ = cdp.detach(&cmd.tab).await;
-    }
-
-    // Close the CDP target
-    let close_url = format!(
-        "http://127.0.0.1:{}/json/close/{}",
-        cdp_port, cmd.tab
-    );
-    let _ = reqwest::Client::new().put(&close_url).send().await;
+    // Then detach (cleanup session mapping) — ignore errors since target is already gone
+    let _ = cdp.detach(&cmd.tab).await;
 
     // Remove from registry
     {

@@ -22,13 +22,18 @@ pub async fn execute(_cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         .list()
         .iter()
         .map(|s| {
-            json!({
+            let mut v = json!({
                 "session_id": s.id.as_str(),
                 "mode": s.mode.to_string(),
                 "status": s.status,
                 "headless": s.headless,
                 "tabs_count": s.tabs_count(),
-            })
+            });
+            // Include cdp_endpoint for cloud sessions, never expose headers
+            if let Some(ref ep) = s.cdp_endpoint {
+                v["cdp_endpoint"] = json!(ep);
+            }
+            v
         })
         .collect();
     ActionResult::ok(json!({

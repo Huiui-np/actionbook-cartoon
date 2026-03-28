@@ -40,7 +40,7 @@ pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
 }
 
 pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
-    let (mode, headless, profile, open_url);
+    let (mode, headless, profile, open_url, cdp_endpoint, headers);
     {
         let mut reg = registry.lock().await;
         let mut entry = match reg.remove(&cmd.session) {
@@ -57,6 +57,13 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         headless = entry.headless;
         profile = entry.profile.clone();
         open_url = entry.tabs.first().map(|t| t.url.clone());
+        // Preserve cloud fields across restart
+        cdp_endpoint = entry.cdp_endpoint.clone();
+        headers = entry
+            .headers
+            .iter()
+            .map(|(k, v)| format!("{k}:{v}"))
+            .collect::<Vec<_>>();
 
         if let Some(ref mut child) = entry.chrome_process {
             let _ = child.kill();
@@ -69,8 +76,8 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         headless,
         profile: Some(profile),
         open_url,
-        cdp_endpoint: None,
-        header: None,
+        cdp_endpoint,
+        header: headers,
         set_session_id: Some(cmd.session.clone()),
     };
 

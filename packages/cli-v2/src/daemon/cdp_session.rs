@@ -13,6 +13,8 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http;
 
 use crate::error::CliError;
 
@@ -36,7 +38,29 @@ pub struct CdpSession {
 impl CdpSession {
     /// Connect to a browser-level WebSocket endpoint and spawn background tasks.
     pub async fn connect(ws_url: &str) -> Result<Self, CliError> {
-        let (ws, _) = connect_async(ws_url)
+        Self::connect_with_headers(ws_url, &[]).await
+    }
+
+    /// Connect with custom headers (for cloud mode auth).
+    pub async fn connect_with_headers(
+        ws_url: &str,
+        headers: &[(String, String)],
+    ) -> Result<Self, CliError> {
+        let mut request = ws_url
+            .into_client_request()
+            .map_err(|e| CliError::CdpConnectionFailed(format!("invalid WS URL: {e}")))?;
+
+        for (key, value) in headers {
+            let header_name = key.parse::<http::HeaderName>().map_err(|e| {
+                CliError::InvalidArgument(format!("invalid header name '{key}': {e}"))
+            })?;
+            let header_value = http::HeaderValue::from_str(value).map_err(|e| {
+                CliError::InvalidArgument(format!("invalid header value for '{key}': {e}"))
+            })?;
+            request.headers_mut().insert(header_name, header_value);
+        }
+
+        let (ws, _) = connect_async(request)
             .await
             .map_err(|e| CliError::CdpConnectionFailed(e.to_string()))?;
 
@@ -46,10 +70,7 @@ impl CdpSession {
         let next_id = Arc::new(AtomicU64::new(1));
         let (writer_tx, writer_rx) = mpsc::channel::<String>(64);
 
-        // Spawn writer task: forwards messages from channel to WS
         tokio::spawn(Self::writer_loop(ws_writer, writer_rx));
-
-        // Spawn reader task: routes WS responses to pending callers
         let pending_clone = pending.clone();
         tokio::spawn(Self::reader_loop(ws_reader, pending_clone));
 

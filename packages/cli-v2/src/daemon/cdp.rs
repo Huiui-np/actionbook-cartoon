@@ -43,10 +43,11 @@ pub fn resolve_tab_ws_url(
             )
         })?;
     Ok(if !tab.id.0.is_empty() {
-        format!(
-            "ws://127.0.0.1:{}/devtools/page/{}",
-            entry.cdp_port, tab.id.0
-        )
+        if let Some(port) = entry.cdp_port {
+            format!("ws://127.0.0.1:{}/devtools/page/{}", port, tab.id.0)
+        } else {
+            entry.ws_url.clone()
+        }
     } else {
         entry.ws_url.clone()
     })

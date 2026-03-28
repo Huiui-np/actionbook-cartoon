@@ -21,8 +21,12 @@ pub struct SessionEntry {
     pub headless: bool,
     pub profile: String,
     pub status: String, // "running", "closed"
-    pub cdp_port: u16,
+    pub cdp_port: Option<u16>,
     pub ws_url: String,
+    /// Original --cdp-endpoint value (cloud mode only).
+    pub cdp_endpoint: Option<String>,
+    /// Auth headers for cloud CDP connections. NOT exposed in output.
+    pub headers: Vec<(String, String)>,
     pub tabs: Vec<TabEntry>,
     pub chrome_process: Option<Child>,
     /// Persistent CDP connection for this session.
