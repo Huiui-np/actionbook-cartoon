@@ -1,9 +1,11 @@
+use std::collections::HashSet;
+
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::action_result::ActionResult;
-use crate::daemon::cdp_session::get_cdp_and_target;
+use crate::daemon::cdp_session::{CdpSession, get_cdp_and_target};
 use crate::daemon::registry::SharedRegistry;
 use crate::output::ResponseContext;
 
@@ -80,14 +82,19 @@ pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
 }
 
 pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
-    // Reject --selector until P2 implementation (requires CDP DOM.querySelector)
-    if cmd.selector.is_some() {
-        return ActionResult::fatal("UNSUPPORTED_OPERATION", "--selector is not yet implemented");
-    }
-
     let (cdp, target_id) = match get_cdp_and_target(registry, &cmd.session, &cmd.tab).await {
         Ok(v) => v,
         Err(e) => return e,
+    };
+
+    // Resolve --selector to a set of backendNodeIds via CDP DOM queries
+    let scope_backend_ids = if let Some(ref selector) = cmd.selector {
+        match resolve_selector_scope(&cdp, &target_id, selector).await {
+            Ok(ids) => Some(ids),
+            Err(e) => return e,
+        }
+    } else {
+        None
     };
 
     // Fetch the full accessibility tree via CDP
@@ -115,11 +122,16 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         interactive: cmd.interactive,
         compact: cmd.compact,
         depth: cmd.depth.map(|d| d as usize),
-        selector: None,
+        selector: cmd.selector.clone(),
     };
 
     // Parse and transform the AX tree
-    let nodes = snapshot_transform::parse_ax_tree(&cdp_response, &options, &mut ref_cache);
+    let nodes = snapshot_transform::parse_ax_tree(
+        &cdp_response,
+        &options,
+        &mut ref_cache,
+        scope_backend_ids.as_ref(),
+    );
 
     // Store RefCache back (single lock)
     {
@@ -141,4 +153,82 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         "__ctx_url": url,
         "__ctx_title": title,
     }))
+}
+
+/// Resolve a CSS selector to all backendNodeIds in its subtree.
+/// Uses CDP DOM.getDocument → DOM.querySelector → DOM.describeNode(depth=-1).
+async fn resolve_selector_scope(
+    cdp: &CdpSession,
+    target_id: &str,
+    selector: &str,
+) -> Result<HashSet<i64>, ActionResult> {
+    // Get document root
+    let doc = cdp
+        .execute_on_tab(target_id, "DOM.getDocument", json!({"depth": 0}))
+        .await
+        .map_err(|e| {
+            ActionResult::fatal("INTERNAL_ERROR", format!("DOM.getDocument failed: {e}"))
+        })?;
+    let root_node_id = doc["result"]["root"]["nodeId"]
+        .as_i64()
+        .ok_or_else(|| ActionResult::fatal("INTERNAL_ERROR", "no root nodeId"))?;
+
+    // Query selector
+    let query = cdp
+        .execute_on_tab(
+            target_id,
+            "DOM.querySelector",
+            json!({"nodeId": root_node_id, "selector": selector}),
+        )
+        .await
+        .map_err(|e| {
+            ActionResult::fatal(
+                "ELEMENT_NOT_FOUND",
+                format!("selector '{selector}' query failed: {e}"),
+            )
+        })?;
+    let matched_node_id = query["result"]["nodeId"].as_i64().unwrap_or(0);
+    if matched_node_id == 0 {
+        return Err(ActionResult::fatal(
+            "ELEMENT_NOT_FOUND",
+            format!("selector '{selector}' did not match any element"),
+        ));
+    }
+
+    // Get full subtree to collect all backendNodeIds
+    let desc = cdp
+        .execute_on_tab(
+            target_id,
+            "DOM.describeNode",
+            json!({"nodeId": matched_node_id, "depth": -1}),
+        )
+        .await
+        .map_err(|e| {
+            ActionResult::fatal("INTERNAL_ERROR", format!("DOM.describeNode failed: {e}"))
+        })?;
+
+    let mut ids = HashSet::new();
+    collect_backend_node_ids(&desc["result"]["node"], &mut ids);
+    Ok(ids)
+}
+
+/// Recursively collect backendNodeId from a DOM.describeNode result.
+fn collect_backend_node_ids(node: &Value, ids: &mut HashSet<i64>) {
+    if let Some(id) = node["backendNodeId"].as_i64() {
+        ids.insert(id);
+    }
+    if let Some(children) = node["children"].as_array() {
+        for child in children {
+            collect_backend_node_ids(child, ids);
+        }
+    }
+    // Shadow DOM, content documents
+    if let Some(shadow) = node["shadowRoots"].as_array() {
+        for root in shadow {
+            collect_backend_node_ids(root, ids);
+        }
+    }
+    if let Some(content_doc) = node.get("contentDocument") {
+        collect_backend_node_ids(content_doc, ids);
+    }
 }

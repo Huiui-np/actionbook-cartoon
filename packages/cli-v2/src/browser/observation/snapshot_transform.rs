@@ -86,47 +86,9 @@ pub fn is_interactive_role(role: &str) -> bool {
     )
 }
 
-/// Filter: keep only interactive nodes (and their ancestors for context).
-/// In flat-list context: simply keep nodes where `interactive == true`.
-pub fn filter_interactive(nodes: Vec<AXNode>) -> Vec<AXNode> {
-    nodes.into_iter().filter(|n| n.interactive).collect()
-}
-
-/// Filter: remove empty structural nodes (role is generic/none and name is empty).
-pub fn filter_compact(nodes: Vec<AXNode>) -> Vec<AXNode> {
-    nodes
-        .into_iter()
-        .filter(|n| {
-            // Keep if has a meaningful role or non-empty name
-            !matches!(n.role.as_str(), "generic" | "none" | "") || !n.name.is_empty()
-        })
-        .collect()
-}
-
-/// Filter: keep only nodes up to the given maximum depth.
-pub fn apply_depth(nodes: Vec<AXNode>, max_depth: usize) -> Vec<AXNode> {
-    nodes.into_iter().filter(|n| n.depth <= max_depth).collect()
-}
-
-/// Filter: keep only nodes belonging to the subtree rooted at `selector`.
-///
-/// CSS selector → AX subtree matching requires a nodeId lookup via CDP, which is
-/// performed in `execute()` before calling this function. The matching node IDs are
-/// passed in as `allowed_ref_ids`. An empty set means selector matched nothing —
-/// return an empty list.
-///
-/// When called from `parse_ax_tree` without DOM context, `allowed_ref_ids` is empty
-/// and the filter is a no-op (all nodes returned) until execute() wires the subtree.
-pub fn apply_selector(nodes: Vec<AXNode>, allowed_ref_ids: &[String]) -> Vec<AXNode> {
-    if allowed_ref_ids.is_empty() {
-        // No selector resolved yet (pure parse context) — return all nodes unchanged.
-        return nodes;
-    }
-    nodes
-        .into_iter()
-        .filter(|n| allowed_ref_ids.contains(&n.ref_id))
-        .collect()
-}
+// NOTE: filter_interactive, filter_compact, apply_depth are handled inline during
+// DFS traversal in parse_ax_tree(). apply_selector is deferred to P2.
+// No standalone filter functions needed — the recursive algorithm handles all filtering.
 
 /// Render a flat node list to `content` string per §10.1.
 /// Format: `- role "name" [ref=eN]` with depth-based indentation.
@@ -158,13 +120,6 @@ pub fn render_content(nodes: &[AXNode]) -> String {
     lines.join("\n")
 }
 
-/// Build stats from a flat node list.
-pub fn build_stats(nodes: &[AXNode]) -> (usize, usize) {
-    let node_count = nodes.len();
-    let interactive_count = nodes.iter().filter(|n| n.interactive).count();
-    (node_count, interactive_count)
-}
-
 /// Extract a string from a CDP AXValue `{"type":"...","value":"..."}`.
 /// Handles string, integer, float, and boolean value types.
 fn extract_ax_string(ax_value: &Value) -> String {
@@ -194,10 +149,13 @@ fn extract_ax_string(ax_value: &Value) -> String {
 /// Only interactive roles and named content roles get refs (eN).
 ///
 /// `ref_cache`: tab-scoped cache for stable refs across repeated snapshots.
+/// `scope_backend_ids`: if Some, only include nodes whose backendDOMNodeId is in the set
+///   (used by --selector to restrict to a CSS subtree).
 pub fn parse_ax_tree(
     response: &Value,
     options: &SnapshotOptions,
     ref_cache: &mut RefCache,
+    scope_backend_ids: Option<&std::collections::HashSet<i64>>,
 ) -> Vec<AXNode> {
     let nodes_json = response["result"]["nodes"].as_array();
     let Some(nodes_json) = nodes_json else {
@@ -251,6 +209,7 @@ pub fn parse_ax_tree(
         options: &SnapshotOptions,
         result: &mut Vec<AXNode>,
         ref_cache: &mut RefCache,
+        scope: Option<&std::collections::HashSet<i64>>,
     ) {
         let node = &nodes_json[idx];
         let role = extract_ax_string(&node["role"]);
@@ -269,6 +228,7 @@ pub fn parse_ax_tree(
                         options,
                         result,
                         ref_cache,
+                        scope,
                     );
                 }
             }
@@ -290,6 +250,15 @@ pub fn parse_ax_tree(
         if is_skip_role(&role) {
             render_children(depth, result, ref_cache);
             return;
+        }
+
+        // Scope filter: skip nodes outside the CSS selector subtree (promote children)
+        if let Some(scope_set) = scope {
+            let bid = node["backendDOMNodeId"].as_i64().unwrap_or(0);
+            if bid > 0 && !scope_set.contains(&bid) {
+                render_children(depth, result, ref_cache);
+                return;
+            }
         }
 
         // Depth limit
@@ -349,6 +318,7 @@ pub fn parse_ax_tree(
                     options,
                     result,
                     ref_cache,
+                    scope,
                 );
             }
         }
@@ -363,6 +333,7 @@ pub fn parse_ax_tree(
             options,
             &mut result,
             ref_cache,
+            scope_backend_ids,
         );
     }
 
@@ -663,9 +634,9 @@ pub fn compact_tree_nodes(nodes: &[AXNode]) -> Vec<AXNode> {
 // ── P1: Token budget ─────────────────────────────────────────────────
 
 /// Estimate the token count of rendered content.
-/// Uses character-to-token ratio (~4 chars per token for indented tree format).
+/// Uses ~3 chars per token (conservative — handles CJK, special chars, markup overhead).
 pub fn estimate_tokens(content: &str) -> usize {
-    content.len() / 4
+    content.len().div_ceil(3)
 }
 
 /// Truncate a node list to fit within a token budget.
@@ -675,14 +646,23 @@ pub fn truncate_to_tokens(nodes: &[AXNode], max_tokens: usize) -> (Vec<AXNode>, 
     let mut result = Vec::new();
 
     for node in nodes {
-        // Estimate tokens per node: role + name + ref + indent + overhead
-        let cost = (node.role.len()
+        // Estimate actual rendered line length:
+        // {indent}- {role} "{name}" [ref={ref_id}]\n
+        let indent = node.depth * 2;
+        let ref_bracket = if node.ref_id.is_empty() {
+            0
+        } else {
+            " [ref=]".len() + node.ref_id.len()
+        };
+        let line_chars = indent
+            + "- ".len()
+            + node.role.len()
+            + " \"\"".len()
             + node.name.len()
-            + node.ref_id.len()
-            + node.value.len()
-            + node.depth * 2
-            + 12)
-            / 4;
+            + ref_bracket
+            + 1; // +1 for \n
+        // Conservative: ~3 chars per token
+        let cost = line_chars.div_ceil(3);
         if total + cost > max_tokens {
             return (result, true);
         }
@@ -750,167 +730,8 @@ mod tests {
         assert!(!is_interactive_role(""));
     }
 
-    // ── filter_interactive ───────────────────────────────────────────
-
-    #[test]
-    fn test_filter_interactive_keeps_only_interactive() {
-        let nodes = vec![
-            make_node("e1", "button", "Submit", true, 0),
-            make_node("e2", "heading", "Title", false, 0),
-            make_node("e3", "textbox", "Search", true, 0),
-            make_node("e4", "paragraph", "Text", false, 0),
-        ];
-        let result = filter_interactive(nodes);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].ref_id, "e1");
-        assert_eq!(result[1].ref_id, "e3");
-    }
-
-    #[test]
-    fn test_filter_interactive_empty_list() {
-        let result = filter_interactive(vec![]);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_filter_interactive_all_non_interactive() {
-        let nodes = vec![
-            make_node("e1", "heading", "Title", false, 0),
-            make_node("e2", "paragraph", "Text", false, 0),
-        ];
-        let result = filter_interactive(nodes);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_filter_interactive_all_interactive() {
-        let nodes = vec![
-            make_node("e1", "button", "OK", true, 0),
-            make_node("e2", "link", "Home", true, 0),
-        ];
-        let result = filter_interactive(nodes.clone());
-        assert_eq!(result.len(), 2);
-    }
-
-    // ── filter_compact ───────────────────────────────────────────────
-
-    #[test]
-    fn test_filter_compact_removes_empty_structural() {
-        let nodes = vec![
-            make_node("e1", "generic", "", false, 0), // empty structural — remove
-            make_node("e2", "button", "OK", true, 0), // has name — keep
-            make_node("e3", "none", "", false, 0),    // empty structural — remove
-            make_node("e4", "generic", "Container", false, 0), // has name — keep
-        ];
-        let result = filter_compact(nodes);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].ref_id, "e2");
-        assert_eq!(result[1].ref_id, "e4");
-    }
-
-    #[test]
-    fn test_filter_compact_keeps_meaningful_nodes() {
-        let nodes = vec![
-            make_node("e1", "heading", "Title", false, 0),
-            make_node("e2", "paragraph", "", false, 0), // paragraph with no name — keep (has role)
-        ];
-        let result = filter_compact(nodes);
-        assert_eq!(result.len(), 2);
-    }
-
-    #[test]
-    fn test_filter_compact_empty_list() {
-        let result = filter_compact(vec![]);
-        assert!(result.is_empty());
-    }
-
-    // ── apply_depth ──────────────────────────────────────────────────
-
-    #[test]
-    fn test_apply_depth_limits_to_max() {
-        let nodes = vec![
-            make_node("e1", "generic", "root", false, 0),
-            make_node("e2", "button", "OK", true, 1),
-            make_node("e3", "link", "Home", true, 2),
-            make_node("e4", "button", "Deep", true, 3),
-        ];
-        let result = apply_depth(nodes, 1);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].depth, 0);
-        assert_eq!(result[1].depth, 1);
-    }
-
-    #[test]
-    fn test_apply_depth_zero_returns_root_only() {
-        let nodes = vec![
-            make_node("e1", "generic", "root", false, 0),
-            make_node("e2", "button", "OK", true, 1),
-        ];
-        let result = apply_depth(nodes, 0);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].ref_id, "e1");
-    }
-
-    #[test]
-    fn test_apply_depth_large_keeps_all() {
-        let nodes = vec![
-            make_node("e1", "button", "A", true, 0),
-            make_node("e2", "button", "B", true, 5),
-            make_node("e3", "button", "C", true, 10),
-        ];
-        let result = apply_depth(nodes, 100);
-        assert_eq!(result.len(), 3);
-    }
-
-    #[test]
-    fn test_apply_depth_empty_list() {
-        let result = apply_depth(vec![], 5);
-        assert!(result.is_empty());
-    }
-
-    // ── apply_selector ───────────────────────────────────────────────
-
-    #[test]
-    fn test_apply_selector_empty_allowed_ids_returns_all() {
-        // No DOM context: allowed_ref_ids is empty → no-op, all nodes returned.
-        let nodes = vec![
-            make_node("e1", "button", "A", true, 0),
-            make_node("e2", "link", "B", true, 0),
-        ];
-        let result = apply_selector(nodes, &[]);
-        assert_eq!(result.len(), 2);
-    }
-
-    #[test]
-    fn test_apply_selector_filters_to_allowed_ids() {
-        let nodes = vec![
-            make_node("e1", "button", "A", true, 0),
-            make_node("e2", "link", "B", true, 0),
-            make_node("e3", "heading", "C", false, 0),
-        ];
-        let allowed = vec!["e1".to_string(), "e3".to_string()];
-        let result = apply_selector(nodes, &allowed);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].ref_id, "e1");
-        assert_eq!(result[1].ref_id, "e3");
-    }
-
-    #[test]
-    fn test_apply_selector_no_match_returns_empty() {
-        let nodes = vec![
-            make_node("e1", "button", "A", true, 0),
-            make_node("e2", "link", "B", true, 0),
-        ];
-        let allowed = vec!["e99".to_string()];
-        let result = apply_selector(nodes, &allowed);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_apply_selector_empty_list() {
-        let result = apply_selector(vec![], &["e1".to_string()]);
-        assert!(result.is_empty());
-    }
+    // NOTE: filter_interactive, filter_compact, apply_depth, apply_selector tests removed —
+    // these functions were superseded by DFS inline processing in parse_ax_tree().
 
     // ── render_content ───────────────────────────────────────────────
 
@@ -981,49 +802,7 @@ mod tests {
         assert!(content.contains("[ref=e42]"));
     }
 
-    // ── build_stats ──────────────────────────────────────────────────
-
-    #[test]
-    fn test_build_stats_counts_correctly() {
-        let nodes = vec![
-            make_node("e1", "button", "OK", true, 0),
-            make_node("e2", "heading", "Title", false, 0),
-            make_node("e3", "textbox", "Search", true, 0),
-            make_node("e4", "paragraph", "Text", false, 0),
-        ];
-        let (node_count, interactive_count) = build_stats(&nodes);
-        assert_eq!(node_count, 4);
-        assert_eq!(interactive_count, 2);
-    }
-
-    #[test]
-    fn test_build_stats_empty_list() {
-        let (node_count, interactive_count) = build_stats(&[]);
-        assert_eq!(node_count, 0);
-        assert_eq!(interactive_count, 0);
-    }
-
-    #[test]
-    fn test_build_stats_all_interactive() {
-        let nodes = vec![
-            make_node("e1", "button", "A", true, 0),
-            make_node("e2", "link", "B", true, 0),
-        ];
-        let (node_count, interactive_count) = build_stats(&nodes);
-        assert_eq!(node_count, 2);
-        assert_eq!(interactive_count, 2);
-    }
-
-    #[test]
-    fn test_build_stats_none_interactive() {
-        let nodes = vec![
-            make_node("e1", "heading", "Title", false, 0),
-            make_node("e2", "paragraph", "Text", false, 0),
-        ];
-        let (node_count, interactive_count) = build_stats(&nodes);
-        assert_eq!(node_count, 2);
-        assert_eq!(interactive_count, 0);
-    }
+    // NOTE: build_stats tests removed — stats are computed inline in build_output.
 
     // ── build_output ─────────────────────────────────────────────────
 
@@ -1074,7 +853,12 @@ mod tests {
                 ]
             }
         });
-        let nodes = parse_ax_tree(&response, &SnapshotOptions::default(), &mut RefCache::new());
+        let nodes = parse_ax_tree(
+            &response,
+            &SnapshotOptions::default(),
+            &mut RefCache::new(),
+            None,
+        );
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0].ref_id, "e1");
         assert_eq!(nodes[0].role, "button");
@@ -1087,14 +871,24 @@ mod tests {
     #[test]
     fn test_parse_ax_tree_empty_response() {
         let response = serde_json::json!({ "result": { "nodes": [] } });
-        let nodes = parse_ax_tree(&response, &SnapshotOptions::default(), &mut RefCache::new());
+        let nodes = parse_ax_tree(
+            &response,
+            &SnapshotOptions::default(),
+            &mut RefCache::new(),
+            None,
+        );
         assert!(nodes.is_empty());
     }
 
     #[test]
     fn test_parse_ax_tree_missing_nodes() {
         let response = serde_json::json!({ "result": {} });
-        let nodes = parse_ax_tree(&response, &SnapshotOptions::default(), &mut RefCache::new());
+        let nodes = parse_ax_tree(
+            &response,
+            &SnapshotOptions::default(),
+            &mut RefCache::new(),
+            None,
+        );
         assert!(nodes.is_empty());
     }
 
@@ -1113,7 +907,7 @@ mod tests {
             interactive: true,
             ..Default::default()
         };
-        let nodes = parse_ax_tree(&response, &opts, &mut RefCache::new());
+        let nodes = parse_ax_tree(&response, &opts, &mut RefCache::new(), None);
         assert_eq!(nodes.len(), 2);
         assert!(nodes.iter().all(|n| n.interactive));
     }
@@ -1132,7 +926,7 @@ mod tests {
             compact: true,
             ..Default::default()
         };
-        let nodes = parse_ax_tree(&response, &opts, &mut RefCache::new());
+        let nodes = parse_ax_tree(&response, &opts, &mut RefCache::new(), None);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].role, "button");
     }
@@ -1164,7 +958,7 @@ mod tests {
             depth: Some(0),
             ..Default::default()
         };
-        let nodes = parse_ax_tree(&response, &opts, &mut RefCache::new());
+        let nodes = parse_ax_tree(&response, &opts, &mut RefCache::new(), None);
         // After RootWebArea unwrap: navigation=depth 0, button=depth 1 (cut by depth=0)
         assert_eq!(
             nodes.len(),
@@ -1194,7 +988,7 @@ mod tests {
             ..Default::default()
         };
         // Must not panic; actual subtree filtering handled in execute() via CDP node lookup
-        let nodes = parse_ax_tree(&response, &opts, &mut RefCache::new());
+        let nodes = parse_ax_tree(&response, &opts, &mut RefCache::new(), None);
         assert!(
             nodes.len() <= 2,
             "selector option must not expand node list"
@@ -1212,7 +1006,12 @@ mod tests {
                 ]
             }
         });
-        let nodes = parse_ax_tree(&response, &SnapshotOptions::default(), &mut RefCache::new());
+        let nodes = parse_ax_tree(
+            &response,
+            &SnapshotOptions::default(),
+            &mut RefCache::new(),
+            None,
+        );
         assert_eq!(nodes[0].ref_id, "e1");
         assert_eq!(nodes[1].ref_id, "e2");
         assert_eq!(nodes[2].ref_id, "e3");
@@ -1319,7 +1118,12 @@ mod tests {
                 ]
             }
         });
-        let nodes = parse_ax_tree(&response, &SnapshotOptions::default(), &mut RefCache::new());
+        let nodes = parse_ax_tree(
+            &response,
+            &SnapshotOptions::default(),
+            &mut RefCache::new(),
+            None,
+        );
 
         // The button should appear (child of ignored node promoted).
         // Neither RootWebArea nor the ignored generic should appear.
@@ -1359,7 +1163,12 @@ mod tests {
                 ]
             }
         });
-        let nodes = parse_ax_tree(&response, &SnapshotOptions::default(), &mut RefCache::new());
+        let nodes = parse_ax_tree(
+            &response,
+            &SnapshotOptions::default(),
+            &mut RefCache::new(),
+            None,
+        );
 
         // RootWebArea must not appear in output
         assert!(
@@ -1411,7 +1220,12 @@ mod tests {
                 ]
             }
         });
-        let nodes = parse_ax_tree(&response, &SnapshotOptions::default(), &mut RefCache::new());
+        let nodes = parse_ax_tree(
+            &response,
+            &SnapshotOptions::default(),
+            &mut RefCache::new(),
+            None,
+        );
 
         // InlineTextBox must be filtered out
         assert!(
@@ -1462,7 +1276,12 @@ mod tests {
                 ]
             }
         });
-        let nodes = parse_ax_tree(&response, &SnapshotOptions::default(), &mut RefCache::new());
+        let nodes = parse_ax_tree(
+            &response,
+            &SnapshotOptions::default(),
+            &mut RefCache::new(),
+            None,
+        );
 
         // button "OK" → interactive → gets ref
         let btn = nodes.iter().find(|n| n.role == "button");
@@ -1529,7 +1348,12 @@ mod tests {
                 ]
             }
         });
-        let nodes = parse_ax_tree(&response, &SnapshotOptions::default(), &mut RefCache::new());
+        let nodes = parse_ax_tree(
+            &response,
+            &SnapshotOptions::default(),
+            &mut RefCache::new(),
+            None,
+        );
 
         // After RootWebArea unwrap: navigation=depth 0, link=depth 1
         let nav = nodes.iter().find(|n| n.role == "navigation");
