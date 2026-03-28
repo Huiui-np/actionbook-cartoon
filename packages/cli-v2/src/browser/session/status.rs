@@ -1,0 +1,68 @@
+use clap::Args;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use crate::action_result::ActionResult;
+use crate::daemon::registry::SharedRegistry;
+use crate::output::ResponseContext;
+
+/// Show session status
+#[derive(Args, Debug, Clone, Serialize, Deserialize)]
+pub struct Cmd {
+    /// Session ID
+    #[arg(long)]
+    #[serde(rename = "session_id")]
+    pub session: String,
+}
+
+pub const COMMAND_NAME: &str = "browser.status";
+
+pub fn context(cmd: &Cmd, _result: &ActionResult) -> Option<ResponseContext> {
+    Some(ResponseContext {
+        session_id: cmd.session.clone(),
+        tab_id: None,
+        window_id: None,
+        url: None,
+        title: None,
+    })
+}
+
+pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
+    let reg = registry.lock().await;
+    let entry = match reg.get(&cmd.session) {
+        Some(e) => e,
+        None => {
+            return ActionResult::fatal_with_hint(
+                "SESSION_NOT_FOUND",
+                format!("session '{}' not found", cmd.session),
+                "run `actionbook browser list-sessions` to see available sessions",
+            );
+        }
+    };
+    let tabs: Vec<serde_json::Value> = entry
+        .tabs
+        .iter()
+        .map(|t| {
+            json!({
+                "tab_id": t.id.to_string(),
+                "url": t.url,
+                "title": t.title,
+            })
+        })
+        .collect();
+    ActionResult::ok(json!({
+        "session": {
+            "session_id": entry.id.as_str(),
+            "mode": entry.mode.to_string(),
+            "status": entry.status,
+            "headless": entry.headless,
+            "tabs_count": entry.tabs_count(),
+        },
+        "tabs": tabs,
+        "capabilities": {
+            "snapshot": true,
+            "pdf": true,
+            "upload": true,
+        },
+    }))
+}

@@ -1,77 +1,48 @@
 use serde::{Deserialize, Serialize};
 
-use crate::types::Mode;
+use crate::browser::{interaction, navigation, observation, session, tab};
 
-/// CLI → Daemon action protocol. Each variant maps 1:1 to a CLI command.
+/// CLI → Daemon action protocol. Each variant wraps the command's Cmd type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Action {
-    // ── Global (no session required) ────────────────────────────
-    StartSession {
-        mode: Mode,
-        headless: bool,
-        profile: Option<String>,
-        open_url: Option<String>,
-        cdp_endpoint: Option<String>,
-        set_session_id: Option<String>,
-    },
-    ListSessions,
+    // ── Session lifecycle ──────────────────────────────────────
+    StartSession(session::start::Cmd),
+    ListSessions(session::list::Cmd),
+    SessionStatus(session::status::Cmd),
+    Close(session::close::Cmd),
+    Restart(session::restart::Cmd),
 
-    // ── Session level (--session required) ──────────────────────
-    SessionStatus {
-        session_id: String,
-    },
-    Close {
-        session_id: String,
-    },
-    Restart {
-        session_id: String,
-    },
+    // ── Tab management ─────────────────────────────────────────
+    NewTab(tab::open::Cmd),
+    CloseTab(tab::close::Cmd),
+    ListTabs(tab::list::Cmd),
 
-    // ── Tab level (--session + --tab required) ──────────────────
-    Goto {
-        session_id: String,
-        tab_id: String,
-        url: String,
-    },
-    NewTab {
-        session_id: String,
-        url: String,
-        new_window: bool,
-    },
-    CloseTab {
-        session_id: String,
-        tab_id: String,
-    },
-    ListTabs {
-        session_id: String,
-    },
-    Snapshot {
-        session_id: String,
-        tab_id: String,
-    },
-    Eval {
-        session_id: String,
-        tab_id: String,
-        expression: String,
-    },
+    // ── Navigation ─────────────────────────────────────────────
+    Goto(navigation::goto::Cmd),
+
+    // ── Observation ────────────────────────────────────────────
+    Snapshot(observation::snapshot::Cmd),
+
+    // ── Interaction ────────────────────────────────────────────
+    Eval(interaction::eval::Cmd),
 }
 
 impl Action {
     /// Normalized command name for the JSON envelope.
     pub fn command_name(&self) -> &str {
         match self {
-            Action::StartSession { .. } => "browser.start",
-            Action::ListSessions => "browser.list-sessions",
-            Action::SessionStatus { .. } => "browser.status",
-            Action::Close { .. } => "browser.close",
-            Action::Restart { .. } => "browser.restart",
-            Action::Goto { .. } => "browser.goto",
-            Action::NewTab { .. } => "browser.new-tab",
-            Action::CloseTab { .. } => "browser.close-tab",
-            Action::ListTabs { .. } => "browser.list-tabs",
-            Action::Snapshot { .. } => "browser.snapshot",
-            Action::Eval { .. } => "browser.eval",
+            Action::StartSession(_) => session::start::COMMAND_NAME,
+            Action::ListSessions(_) => session::list::COMMAND_NAME,
+            Action::SessionStatus(_) => session::status::COMMAND_NAME,
+            Action::Close(_) => session::close::COMMAND_NAME,
+            Action::Restart(_) => session::restart::COMMAND_NAME,
+            Action::NewTab(_) => tab::open::COMMAND_NAME,
+            Action::CloseTab(_) => tab::close::COMMAND_NAME,
+            Action::ListTabs(_) => tab::list::COMMAND_NAME,
+            Action::Goto(_) => navigation::goto::COMMAND_NAME,
+            Action::Snapshot(_) => observation::snapshot::COMMAND_NAME,
+            Action::Eval(_) => interaction::eval::COMMAND_NAME,
         }
     }
 }
