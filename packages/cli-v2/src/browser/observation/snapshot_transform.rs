@@ -107,6 +107,26 @@ pub fn apply_depth(nodes: Vec<AXNode>, max_depth: usize) -> Vec<AXNode> {
     nodes.into_iter().filter(|n| n.depth <= max_depth).collect()
 }
 
+/// Filter: keep only nodes belonging to the subtree rooted at `selector`.
+///
+/// CSS selector → AX subtree matching requires a nodeId lookup via CDP, which is
+/// performed in `execute()` before calling this function. The matching node IDs are
+/// passed in as `allowed_ref_ids`. An empty set means selector matched nothing —
+/// return an empty list.
+///
+/// When called from `parse_ax_tree` without DOM context, `allowed_ref_ids` is empty
+/// and the filter is a no-op (all nodes returned) until execute() wires the subtree.
+pub fn apply_selector(nodes: Vec<AXNode>, allowed_ref_ids: &[String]) -> Vec<AXNode> {
+    if allowed_ref_ids.is_empty() {
+        // No selector resolved yet (pure parse context) — return all nodes unchanged.
+        return nodes;
+    }
+    nodes
+        .into_iter()
+        .filter(|n| allowed_ref_ids.contains(&n.ref_id))
+        .collect()
+}
+
 /// Render a flat node list to `content` string with `[ref=eN]` labels.
 /// Format per §10.1: `- role "name" [ref=eN]` with depth-based indentation.
 pub fn render_content(nodes: &[AXNode]) -> String {
@@ -390,6 +410,50 @@ mod tests {
         assert!(result.is_empty());
     }
 
+    // ── apply_selector ───────────────────────────────────────────────
+
+    #[test]
+    fn test_apply_selector_empty_allowed_ids_returns_all() {
+        // No DOM context: allowed_ref_ids is empty → no-op, all nodes returned.
+        let nodes = vec![
+            make_node("e1", "button", "A", true, 0),
+            make_node("e2", "link", "B", true, 0),
+        ];
+        let result = apply_selector(nodes, &[]);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_apply_selector_filters_to_allowed_ids() {
+        let nodes = vec![
+            make_node("e1", "button", "A", true, 0),
+            make_node("e2", "link", "B", true, 0),
+            make_node("e3", "heading", "C", false, 0),
+        ];
+        let allowed = vec!["e1".to_string(), "e3".to_string()];
+        let result = apply_selector(nodes, &allowed);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].ref_id, "e1");
+        assert_eq!(result[1].ref_id, "e3");
+    }
+
+    #[test]
+    fn test_apply_selector_no_match_returns_empty() {
+        let nodes = vec![
+            make_node("e1", "button", "A", true, 0),
+            make_node("e2", "link", "B", true, 0),
+        ];
+        let allowed = vec!["e99".to_string()];
+        let result = apply_selector(nodes, &allowed);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_apply_selector_empty_list() {
+        let result = apply_selector(vec![], &["e1".to_string()]);
+        assert!(result.is_empty());
+    }
+
     // ── render_content ───────────────────────────────────────────────
 
     #[test]
@@ -648,10 +712,11 @@ mod tests {
 
     #[test]
     fn test_parse_ax_tree_selector_option_accepted() {
-        // selector filtering requires real DOM context (nodeId → DOM node mapping)
-        // and cannot be tested as a pure unit. This UT verifies parse_ax_tree accepts
-        // the selector option without panicking.
-        // The actual subtree-limiting behavior is covered by E2E snap_selector_flag_limits_subtree.
+        // selector filtering via apply_selector() requires DOM context (nodeId lookup)
+        // which is wired in execute(), not in parse_ax_tree. This UT verifies parse_ax_tree
+        // accepts the selector option without panicking (no-op in pure parse context).
+        // Pure apply_selector() contract is tested separately (test_apply_selector_*).
+        // E2E subtree-limiting behaviour is covered by snap_selector_flag_limits_subtree.
         let response = serde_json::json!({
             "result": {
                 "nodes": [
