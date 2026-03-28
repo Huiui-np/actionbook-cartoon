@@ -21,10 +21,10 @@ pub const COMMAND_NAME: &str = "browser.back";
 
 pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
     // SESSION_NOT_FOUND: context must be null per §3.1
-    if let ActionResult::Fatal { code, .. } = result {
-        if code == "SESSION_NOT_FOUND" {
-            return None;
-        }
+    if let ActionResult::Fatal { code, .. } = result
+        && code == "SESSION_NOT_FOUND"
+    {
+        return None;
     }
     let (url, title) = match result {
         ActionResult::Ok { data } => (
