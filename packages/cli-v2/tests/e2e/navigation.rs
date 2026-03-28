@@ -90,21 +90,21 @@ fn assert_nav_data(v: &serde_json::Value, expected_kind: &str, has_requested_url
         data["from_url"].is_string(),
         "data.from_url must be a string"
     );
-    assert!(
-        data["to_url"].is_string(),
-        "data.to_url must be a string"
-    );
-    assert!(
-        data["title"].is_string(),
-        "data.title must be a string"
-    );
+    assert!(data["to_url"].is_string(), "data.to_url must be a string");
+    assert!(data["title"].is_string(), "data.title must be a string");
 }
 
 /// Start a headless session, return (session_id, tab_id).
 fn start_session(url: &str) -> (String, String) {
     let out = headless_json(
         &[
-            "browser", "start", "--mode", "local", "--headless", "--open-url", url,
+            "browser",
+            "start",
+            "--mode",
+            "local",
+            "--headless",
+            "--open-url",
+            url,
         ],
         30,
     );
@@ -137,9 +137,7 @@ fn nav_goto_json() {
     let (sid, tid) = start_session(URL_A);
 
     let out = headless_json(
-        &[
-            "browser", "goto", URL_B, "--session", &sid, "--tab", &tid,
-        ],
+        &["browser", "goto", URL_B, "--session", &sid, "--tab", &tid],
         30,
     );
     assert_success(&out, "goto json");
@@ -171,7 +169,10 @@ fn nav_goto_json() {
     assert_eq!(v["data"]["requested_url"], URL_B);
     // to_url must be the final URL (may differ from requested_url on redirect)
     assert!(
-        v["data"]["to_url"].as_str().unwrap().contains("example.com"),
+        v["data"]["to_url"]
+            .as_str()
+            .unwrap()
+            .contains("example.com"),
         "to_url should contain example.com"
     );
 
@@ -189,9 +190,7 @@ fn nav_goto_text() {
     let (sid, tid) = start_session(URL_A);
 
     let out = headless(
-        &[
-            "browser", "goto", URL_B, "--session", &sid, "--tab", &tid,
-        ],
+        &["browser", "goto", URL_B, "--session", &sid, "--tab", &tid],
         30,
     );
     assert_success(&out, "goto text");
@@ -202,7 +201,10 @@ fn nav_goto_text() {
         text.contains(&format!("[{sid} {tid}]")),
         "header must contain [session_id tab_id]: got {text}"
     );
-    assert!(text.contains("ok browser.goto"), "must contain ok browser.goto");
+    assert!(
+        text.contains("ok browser.goto"),
+        "must contain ok browser.goto"
+    );
     assert!(text.contains("title:"), "must contain title:");
 
     close_session(&sid);
@@ -218,9 +220,7 @@ fn nav_goto_context_url_updated() {
 
     // Navigate away from URL_A to URL_B
     let out = headless_json(
-        &[
-            "browser", "goto", URL_B, "--session", &sid, "--tab", &tid,
-        ],
+        &["browser", "goto", URL_B, "--session", &sid, "--tab", &tid],
         30,
     );
     assert_success(&out, "goto url_b");
@@ -311,7 +311,10 @@ fn nav_goto_session_not_found_json() {
 
     assert_eq!(v["command"], "browser.goto");
     assert_error_envelope(&v, "SESSION_NOT_FOUND");
-    assert!(v["context"].is_null(), "context must be null when session not found");
+    assert!(
+        v["context"].is_null(),
+        "context must be null when session not found"
+    );
 }
 
 #[test]
@@ -420,18 +423,13 @@ fn nav_back_json() {
 
     // First goto URL_B to create history
     let out = headless_json(
-        &[
-            "browser", "goto", URL_B, "--session", &sid, "--tab", &tid,
-        ],
+        &["browser", "goto", URL_B, "--session", &sid, "--tab", &tid],
         30,
     );
     assert_success(&out, "goto url_b before back");
 
     // Now go back
-    let out = headless_json(
-        &["browser", "back", "--session", &sid, "--tab", &tid],
-        30,
-    );
+    let out = headless_json(&["browser", "back", "--session", &sid, "--tab", &tid], 30);
     assert_success(&out, "back json");
     let v = parse_json(&out);
 
@@ -480,17 +478,12 @@ fn nav_back_text() {
     let (sid, tid) = start_session(URL_A);
 
     let out = headless_json(
-        &[
-            "browser", "goto", URL_B, "--session", &sid, "--tab", &tid,
-        ],
+        &["browser", "goto", URL_B, "--session", &sid, "--tab", &tid],
         30,
     );
     assert_success(&out, "goto url_b before back text");
 
-    let out = headless(
-        &["browser", "back", "--session", &sid, "--tab", &tid],
-        30,
-    );
+    let out = headless(&["browser", "back", "--session", &sid, "--tab", &tid], 30);
     assert_success(&out, "back text");
     let text = stdout_str(&out);
 
@@ -499,7 +492,10 @@ fn nav_back_text() {
         text.contains(&format!("[{sid} {tid}]")),
         "header must contain [session_id tab_id]: got {text}"
     );
-    assert!(text.contains("ok browser.back"), "must contain ok browser.back");
+    assert!(
+        text.contains("ok browser.back"),
+        "must contain ok browser.back"
+    );
     assert!(text.contains("title:"), "must contain title:");
 
     close_session(&sid);
@@ -532,7 +528,10 @@ fn nav_back_session_not_found_json() {
 
     assert_eq!(v["command"], "browser.back");
     assert_error_envelope(&v, "SESSION_NOT_FOUND");
-    assert!(v["context"].is_null(), "context must be null when session not found");
+    assert!(
+        v["context"].is_null(),
+        "context must be null when session not found"
+    );
 }
 
 #[test]
@@ -559,7 +558,10 @@ fn nav_back_tab_not_found_json() {
 
     assert_eq!(v["command"], "browser.back");
     assert_error_envelope(&v, "TAB_NOT_FOUND");
-    assert!(v["context"].is_object(), "context must be present when session found");
+    assert!(
+        v["context"].is_object(),
+        "context must be present when session found"
+    );
     assert_eq!(v["context"]["session_id"], sid);
 
     close_session(&sid);
@@ -579,16 +581,11 @@ fn nav_forward_json() {
 
     // goto URL_B, then back to URL_A to have forward history
     let out = headless_json(
-        &[
-            "browser", "goto", URL_B, "--session", &sid, "--tab", &tid,
-        ],
+        &["browser", "goto", URL_B, "--session", &sid, "--tab", &tid],
         30,
     );
     assert_success(&out, "goto url_b");
-    let out = headless_json(
-        &["browser", "back", "--session", &sid, "--tab", &tid],
-        30,
-    );
+    let out = headless_json(&["browser", "back", "--session", &sid, "--tab", &tid], 30);
     assert_success(&out, "back to url_a");
 
     // Now forward
@@ -644,16 +641,11 @@ fn nav_forward_text() {
     let (sid, tid) = start_session(URL_A);
 
     let out = headless_json(
-        &[
-            "browser", "goto", URL_B, "--session", &sid, "--tab", &tid,
-        ],
+        &["browser", "goto", URL_B, "--session", &sid, "--tab", &tid],
         30,
     );
     assert_success(&out, "goto url_b");
-    let out = headless_json(
-        &["browser", "back", "--session", &sid, "--tab", &tid],
-        30,
-    );
+    let out = headless_json(&["browser", "back", "--session", &sid, "--tab", &tid], 30);
     assert_success(&out, "back to url_a");
 
     let out = headless(
@@ -703,7 +695,10 @@ fn nav_forward_session_not_found_json() {
 
     assert_eq!(v["command"], "browser.forward");
     assert_error_envelope(&v, "SESSION_NOT_FOUND");
-    assert!(v["context"].is_null(), "context must be null when session not found");
+    assert!(
+        v["context"].is_null(),
+        "context must be null when session not found"
+    );
 }
 
 #[test]
@@ -730,7 +725,10 @@ fn nav_forward_tab_not_found_json() {
 
     assert_eq!(v["command"], "browser.forward");
     assert_error_envelope(&v, "TAB_NOT_FOUND");
-    assert!(v["context"].is_object(), "context must be present when session found");
+    assert!(
+        v["context"].is_object(),
+        "context must be present when session found"
+    );
     assert_eq!(v["context"]["session_id"], sid);
 
     close_session(&sid);
@@ -748,10 +746,7 @@ fn nav_reload_json() {
     let _guard = SessionGuard::new();
     let (sid, tid) = start_session(URL_A);
 
-    let out = headless_json(
-        &["browser", "reload", "--session", &sid, "--tab", &tid],
-        30,
-    );
+    let out = headless_json(&["browser", "reload", "--session", &sid, "--tab", &tid], 30);
     assert_success(&out, "reload json");
     let v = parse_json(&out);
 
@@ -796,10 +791,7 @@ fn nav_reload_text() {
     let _guard = SessionGuard::new();
     let (sid, tid) = start_session(URL_A);
 
-    let out = headless(
-        &["browser", "reload", "--session", &sid, "--tab", &tid],
-        30,
-    );
+    let out = headless(&["browser", "reload", "--session", &sid, "--tab", &tid], 30);
     assert_success(&out, "reload text");
     let text = stdout_str(&out);
 
@@ -827,17 +819,12 @@ fn nav_reload_preserves_url() {
 
     // Navigate to URL_B then reload — should stay on URL_B
     let out = headless_json(
-        &[
-            "browser", "goto", URL_B, "--session", &sid, "--tab", &tid,
-        ],
+        &["browser", "goto", URL_B, "--session", &sid, "--tab", &tid],
         30,
     );
     assert_success(&out, "goto url_b before reload");
 
-    let out = headless_json(
-        &["browser", "reload", "--session", &sid, "--tab", &tid],
-        30,
-    );
+    let out = headless_json(&["browser", "reload", "--session", &sid, "--tab", &tid], 30);
     assert_success(&out, "reload after goto");
     let v = parse_json(&out);
 
@@ -879,7 +866,10 @@ fn nav_reload_session_not_found_json() {
 
     assert_eq!(v["command"], "browser.reload");
     assert_error_envelope(&v, "SESSION_NOT_FOUND");
-    assert!(v["context"].is_null(), "context must be null when session not found");
+    assert!(
+        v["context"].is_null(),
+        "context must be null when session not found"
+    );
 }
 
 #[test]
@@ -906,7 +896,10 @@ fn nav_reload_tab_not_found_json() {
 
     assert_eq!(v["command"], "browser.reload");
     assert_error_envelope(&v, "TAB_NOT_FOUND");
-    assert!(v["context"].is_object(), "context must be present when session found");
+    assert!(
+        v["context"].is_object(),
+        "context must be present when session found"
+    );
     assert_eq!(v["context"]["session_id"], sid);
 
     close_session(&sid);
@@ -928,16 +921,16 @@ fn nav_back_navigation_failed_json() {
 
     // Attempt back with no history — implementation must return NAVIGATION_FAILED
     // (no prior page to go back to).
-    let out = headless_json(
-        &["browser", "back", "--session", &sid, "--tab", &tid],
-        15,
-    );
+    let out = headless_json(&["browser", "back", "--session", &sid, "--tab", &tid], 15);
     assert_failure(&out, "back with no history");
     let v = parse_json(&out);
 
     assert_eq!(v["command"], "browser.back");
     assert_error_envelope(&v, "NAVIGATION_FAILED");
-    assert!(v["context"].is_object(), "context present when session/tab found");
+    assert!(
+        v["context"].is_object(),
+        "context present when session/tab found"
+    );
     assert_eq!(v["context"]["session_id"], sid);
     assert_eq!(v["context"]["tab_id"], tid);
 
@@ -962,7 +955,10 @@ fn nav_forward_navigation_failed_json() {
 
     assert_eq!(v["command"], "browser.forward");
     assert_error_envelope(&v, "NAVIGATION_FAILED");
-    assert!(v["context"].is_object(), "context present when session/tab found");
+    assert!(
+        v["context"].is_object(),
+        "context present when session/tab found"
+    );
     assert_eq!(v["context"]["session_id"], sid);
     assert_eq!(v["context"]["tab_id"], tid);
 
@@ -994,10 +990,7 @@ fn nav_reload_navigation_failed_json() {
         15,
     );
     // Regardless of goto outcome, a reload on this tab must be handled:
-    let out = headless_json(
-        &["browser", "reload", "--session", &sid, "--tab", &tid],
-        15,
-    );
+    let out = headless_json(&["browser", "reload", "--session", &sid, "--tab", &tid], 15);
     // If tab is in error state, reload must return NAVIGATION_FAILED.
     // If Chrome recovered to a blank page, reload may succeed — but the
     // contract requires NAVIGATION_FAILED when reload itself fails.
@@ -1027,10 +1020,7 @@ fn nav_goto_missing_session_arg() {
     let _guard = SessionGuard::new();
 
     // browser goto <url> --tab <tid> (missing --session) must fail with CLI parse error
-    let out = headless_json(
-        &["browser", "goto", URL_B, "--tab", "some-tab"],
-        10,
-    );
+    let out = headless_json(&["browser", "goto", URL_B, "--tab", "some-tab"], 10);
     assert_failure(&out, "goto missing --session");
 }
 
@@ -1042,10 +1032,7 @@ fn nav_goto_missing_tab_arg() {
     let _guard = SessionGuard::new();
 
     // browser goto <url> --session <sid> (missing --tab) must fail with CLI parse error
-    let out = headless_json(
-        &["browser", "goto", URL_B, "--session", "some-session"],
-        10,
-    );
+    let out = headless_json(&["browser", "goto", URL_B, "--session", "some-session"], 10);
     assert_failure(&out, "goto missing --tab");
 }
 

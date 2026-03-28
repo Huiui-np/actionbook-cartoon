@@ -28,7 +28,9 @@ pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
     }
     let (url, title) = match result {
         ActionResult::Ok { data } => (
-            data.get("to_url").and_then(|v| v.as_str()).map(String::from),
+            data.get("to_url")
+                .and_then(|v| v.as_str())
+                .map(String::from),
             data.get("title").and_then(|v| v.as_str()).map(String::from),
         ),
         _ => (None, None),

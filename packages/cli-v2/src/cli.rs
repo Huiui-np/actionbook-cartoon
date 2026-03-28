@@ -213,15 +213,24 @@ impl BrowserCommands {
             Self::Snapshot(cmd) => observation::snapshot::context(cmd, result),
             Self::Eval(cmd) => interaction::eval::context(cmd, result),
             Self::Back(a) => navigation::back::context(
-                &navigation::back::Cmd { session: a.session.clone(), tab: a.tab.clone() },
+                &navigation::back::Cmd {
+                    session: a.session.clone(),
+                    tab: a.tab.clone(),
+                },
                 result,
             ),
             Self::Forward(a) => navigation::forward::context(
-                &navigation::forward::Cmd { session: a.session.clone(), tab: a.tab.clone() },
+                &navigation::forward::Cmd {
+                    session: a.session.clone(),
+                    tab: a.tab.clone(),
+                },
                 result,
             ),
             Self::Reload(a) => navigation::reload::context(
-                &navigation::reload::Cmd { session: a.session.clone(), tab: a.tab.clone() },
+                &navigation::reload::Cmd {
+                    session: a.session.clone(),
+                    tab: a.tab.clone(),
+                },
                 result,
             ),
             Self::Screenshot { session, tab, .. }

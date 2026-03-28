@@ -28,7 +28,9 @@ pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
     }
     let (url, title) = match result {
         ActionResult::Ok { data } => (
-            data.get("to_url").and_then(|v| v.as_str()).map(String::from),
+            data.get("to_url")
+                .and_then(|v| v.as_str())
+                .map(String::from),
             data.get("title").and_then(|v| v.as_str()).map(String::from),
         ),
         _ => (None, None),
@@ -57,9 +59,7 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         Err(e) => return ActionResult::fatal("NAVIGATION_FAILED", e.to_string()),
     };
 
-    let current_index = history["result"]["currentIndex"]
-        .as_i64()
-        .unwrap_or(0) as usize;
+    let current_index = history["result"]["currentIndex"].as_i64().unwrap_or(0) as usize;
     let entries = history["result"]["entries"]
         .as_array()
         .cloned()

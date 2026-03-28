@@ -15,11 +15,7 @@ pub async fn get_tab_url(cdp: &CdpSession, target_id: &str) -> String {
     )
     .await
     .ok()
-    .and_then(|v| {
-        v["result"]["result"]["value"]
-            .as_str()
-            .map(String::from)
-    })
+    .and_then(|v| v["result"]["result"]["value"].as_str().map(String::from))
     .unwrap_or_default()
 }
 
@@ -32,10 +28,6 @@ pub async fn get_tab_title(cdp: &CdpSession, target_id: &str) -> String {
     )
     .await
     .ok()
-    .and_then(|v| {
-        v["result"]["result"]["value"]
-            .as_str()
-            .map(String::from)
-    })
+    .and_then(|v| v["result"]["result"]["value"].as_str().map(String::from))
     .unwrap_or_default()
 }
