@@ -4,7 +4,8 @@ use serde_json::json;
 
 use crate::action_result::ActionResult;
 use crate::daemon::browser;
-use crate::daemon::cdp::{cdp_navigate, ensure_scheme};
+use crate::daemon::cdp::ensure_scheme;
+use crate::daemon::cdp_session::CdpSession;
 use crate::daemon::registry::{SessionEntry, SharedRegistry, TabEntry};
 use crate::output::ResponseContext;
 use crate::types::{Mode, TabId};
@@ -72,18 +73,20 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
             let first_tab = entry.tabs.first();
 
             if let Some(tab) = first_tab {
-                let ws_url = if !tab.target_id.is_empty() {
-                    Some(format!(
-                        "ws://127.0.0.1:{}/devtools/page/{}",
-                        entry.cdp_port, tab.target_id
-                    ))
-                } else {
-                    None
-                };
+                let cdp = entry.cdp.clone();
                 let tab_info = (tab.id, tab.target_id.clone());
                 drop(reg);
-                if let Some(ref ws) = ws_url {
-                    if let Err(e) = cdp_navigate(ws, &final_url).await {
+                if let Some(ref cdp) = cdp
+                    && !tab_info.1.is_empty()
+                {
+                    let nav_result = cdp
+                        .execute_on_tab(
+                            &tab_info.1,
+                            "Page.navigate",
+                            serde_json::json!({ "url": final_url }),
+                        )
+                        .await;
+                    if let Err(e) = nav_result {
                         return ActionResult::fatal(
                             "NAVIGATION_FAILED",
                             format!("reuse navigate failed: {e}"),
@@ -263,6 +266,23 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
 
     let first_tab = tabs[0].clone();
 
+    // Create persistent CDP connection and attach all initial tabs
+    let cdp = match CdpSession::connect(&ws_url).await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = chrome.kill();
+            let _ = chrome.wait();
+            return ActionResult::fatal("CDP_CONNECTION_FAILED", e.to_string());
+        }
+    };
+    for tab in &tabs {
+        if !tab.target_id.is_empty() {
+            if let Err(e) = cdp.attach(&tab.target_id).await {
+                tracing::warn!("failed to attach tab {}: {e}", tab.id);
+            }
+        }
+    }
+
     let entry = SessionEntry {
         id: session_id.clone(),
         mode: cmd.mode,
@@ -274,6 +294,7 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         tabs,
         next_tab_id,
         chrome_process: Some(chrome),
+        cdp: Some(cdp),
     };
     reg.insert(entry);
 

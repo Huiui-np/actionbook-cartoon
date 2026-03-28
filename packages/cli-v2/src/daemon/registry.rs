@@ -3,6 +3,7 @@ use std::process::Child;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use crate::daemon::cdp_session::CdpSession;
 use crate::types::{Mode, SessionId, TabId};
 
 /// Tab metadata.
@@ -26,6 +27,8 @@ pub struct SessionEntry {
     pub tabs: Vec<TabEntry>,
     pub next_tab_id: u32,
     pub chrome_process: Option<Child>,
+    /// Persistent CDP connection for this session.
+    pub cdp: Option<CdpSession>,
 }
 
 impl SessionEntry {

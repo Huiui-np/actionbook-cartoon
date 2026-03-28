@@ -52,6 +52,7 @@ pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
 pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
     let cdp_port;
     let target_id;
+    let cdp;
 
     {
         let reg = registry.lock().await;
@@ -77,6 +78,14 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
 
         cdp_port = entry.cdp_port;
         target_id = tab.target_id.clone();
+        cdp = entry.cdp.clone();
+    }
+
+    // Detach from the persistent CDP session before closing
+    if let Some(ref cdp) = cdp
+        && !target_id.is_empty()
+    {
+        let _ = cdp.detach(&target_id).await;
     }
 
     // Close the CDP target
@@ -85,7 +94,7 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
             "http://127.0.0.1:{}/json/close/{}",
             cdp_port, target_id
         );
-        let _ = reqwest::get(&close_url).await;
+        let _ = reqwest::Client::new().put(&close_url).send().await;
     }
 
     // Remove from registry

@@ -63,28 +63,42 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         cdp_port,
         urlencoding::encode(&final_url)
     );
-    let (target_id, title) = match reqwest::get(&create_url).await {
-        Ok(resp) => {
-            let v = resp
-                .json::<serde_json::Value>()
-                .await
-                .unwrap_or(serde_json::Value::Null);
-            let id = v
-                .get("id")
-                .and_then(|i| i.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_default();
-            let t = v
-                .get("title")
-                .and_then(|t| t.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_default();
-            (id, t)
-        }
-        Err(_) => (String::new(), String::new()),
+    let client = reqwest::Client::new();
+    let resp = client
+        .put(&create_url)
+        .send()
+        .await
+        .map_err(|e| {
+            ActionResult::fatal(
+                "CDP_ERROR",
+                format!("failed to create tab via /json/new: {e}"),
+            )
+        });
+    let resp = match resp {
+        Ok(r) => r,
+        Err(e) => return e,
     };
+    let body = resp.text().await.unwrap_or_default();
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+    let target_id = match v.get("id").and_then(|i| i.as_str()) {
+        Some(id) => id.to_string(),
+        None => {
+            return ActionResult::fatal(
+                "CDP_ERROR",
+                format!("Chrome /json/new did not return target id, body: {body}"),
+            );
+        }
+    };
+    let title = v
+        .get("title")
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_default();
 
-    let tab_id = {
+    // Wait for page to load
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    let (tab_id, cdp) = {
         let mut reg = registry.lock().await;
         let entry = match reg.get_mut(&cmd.session) {
             Some(e) => e,
@@ -103,8 +117,20 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
             url: final_url.clone(),
             title: title.clone(),
         });
-        tid
+        (tid, entry.cdp.clone())
     };
+
+    // Attach the new tab to the persistent CDP session
+    if let Some(ref cdp) = cdp
+        && !target_id.is_empty()
+    {
+        if let Err(e) = cdp.attach(&target_id).await {
+            return ActionResult::fatal(
+                "CDP_ERROR",
+                format!("failed to attach tab {} to CDP session: {e}", tab_id),
+            );
+        }
+    }
 
     let native_tab_id: serde_json::Value = if target_id.is_empty() {
         serde_json::Value::Null
