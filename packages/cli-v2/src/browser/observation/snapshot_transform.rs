@@ -1822,10 +1822,6 @@ mod tests {
             None,
             None,
         );
-        let baseline_42 = baseline.iter().find(|n| {
-            // Find by position — both have empty name, check via order
-            true // generic nodes may or may not appear
-        });
         // Generic with empty name should have no ref in baseline
         for n in &baseline {
             if n.role == "generic" {
