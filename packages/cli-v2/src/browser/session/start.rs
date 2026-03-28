@@ -28,7 +28,7 @@ pub struct Cmd {
     pub profile: Option<String>,
     #[arg(skip = None)]
     #[serde(default)]
-    pub executable: Option<String>,
+    pub executable_path: Option<String>,
     /// Open this URL on start
     #[arg(long)]
     pub open_url: Option<String>,
@@ -216,7 +216,7 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
 
         (None, Some(port), ws_url, targets)
     } else {
-        let executable = if let Some(executable) = cmd.executable.as_deref() {
+        let executable = if let Some(executable) = cmd.executable_path.as_deref() {
             executable.to_string()
         } else {
             match browser::find_chrome() {
