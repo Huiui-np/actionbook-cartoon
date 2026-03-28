@@ -291,17 +291,8 @@ pub fn parse_ax_tree(
             return;
         }
 
-        // Interactive filter: skip non-interactive self but render children
-        let is_interactive = is_interactive_role(&role);
-        if options.interactive && !is_interactive {
-            render_children(depth, result, ref_cache);
-            return;
-        }
-
-        // Extract value (handles string, number, bool)
-        let value = extract_ax_string(&node["value"]);
-
-        // Check if this node is cursor-interactive (onclick, cursor:pointer, etc.)
+        // Check cursor-interactive BEFORE interactive filter — cursor nodes
+        // must survive --interactive filtering even if their ARIA role is non-interactive.
         let backend_node_id = node["backendDOMNodeId"].as_i64().unwrap_or(0);
         let cursor_info = cursor_elements.and_then(|map| {
             if backend_node_id > 0 {
@@ -311,6 +302,16 @@ pub fn parse_ax_tree(
             }
         });
         let is_cursor = cursor_info.is_some();
+        let is_interactive = is_interactive_role(&role) || is_cursor;
+
+        // Interactive filter: skip non-interactive self but render children
+        if options.interactive && !is_interactive {
+            render_children(depth, result, ref_cache);
+            return;
+        }
+
+        // Extract value (handles string, number, bool)
+        let value = extract_ax_string(&node["value"]);
 
         // Assign ref for: interactive roles, named content roles, OR cursor-interactive
         let should_ref = should_assign_ref(&role, &name) || is_cursor;
