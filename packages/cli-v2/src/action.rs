@@ -26,6 +26,9 @@ pub enum Action {
 
     // ── Observation ────────────────────────────────────────────
     Snapshot(observation::snapshot::Cmd),
+    Title(observation::title::Cmd),
+    Url(observation::url::Cmd),
+    Viewport(observation::viewport::Cmd),
 
     // ── Interaction ────────────────────────────────────────────
     Eval(interaction::eval::Cmd),
@@ -48,6 +51,9 @@ impl Action {
             Action::Forward(_) => navigation::forward::COMMAND_NAME,
             Action::Reload(_) => navigation::reload::COMMAND_NAME,
             Action::Snapshot(_) => observation::snapshot::COMMAND_NAME,
+            Action::Title(_) => observation::title::COMMAND_NAME,
+            Action::Url(_) => observation::url::COMMAND_NAME,
+            Action::Viewport(_) => observation::viewport::COMMAND_NAME,
             Action::Eval(_) => interaction::eval::COMMAND_NAME,
         }
     }

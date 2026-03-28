@@ -100,6 +100,12 @@ pub enum BrowserCommands {
     // ── Observation ────────────────────────────────────────────
     /// Capture accessibility snapshot
     Snapshot(observation::snapshot::Cmd),
+    /// Get current page title
+    Title(observation::title::Cmd),
+    /// Get current page URL
+    Url(observation::url::Cmd),
+    /// Get viewport dimensions
+    Viewport(observation::viewport::Cmd),
     /// Take screenshot
     Screenshot {
         /// Output file path
@@ -172,6 +178,9 @@ impl BrowserCommands {
                 tab: a.tab.clone(),
             }),
             Self::Snapshot(cmd) => Action::Snapshot(cmd.clone()),
+            Self::Title(cmd) => Action::Title(cmd.clone()),
+            Self::Url(cmd) => Action::Url(cmd.clone()),
+            Self::Viewport(cmd) => Action::Viewport(cmd.clone()),
             Self::Eval(cmd) => Action::Eval(cmd.clone()),
             _ => return None,
         })
@@ -193,6 +202,9 @@ impl BrowserCommands {
             Self::Forward(_) => "browser.forward",
             Self::Reload(_) => "browser.reload",
             Self::Snapshot(_) => observation::snapshot::COMMAND_NAME,
+            Self::Title(_) => observation::title::COMMAND_NAME,
+            Self::Url(_) => observation::url::COMMAND_NAME,
+            Self::Viewport(_) => observation::viewport::COMMAND_NAME,
             Self::Screenshot { .. } => "browser.screenshot",
             Self::Eval(_) => interaction::eval::COMMAND_NAME,
             Self::Click { .. } => "browser.click",
@@ -214,6 +226,9 @@ impl BrowserCommands {
             Self::CloseTab(cmd) => tab::close::context(cmd, result),
             Self::Goto(cmd) => navigation::goto::context(cmd, result),
             Self::Snapshot(cmd) => observation::snapshot::context(cmd, result),
+            Self::Title(cmd) => observation::title::context(cmd, result),
+            Self::Url(cmd) => observation::url::context(cmd, result),
+            Self::Viewport(cmd) => observation::viewport::context(cmd, result),
             Self::Eval(cmd) => interaction::eval::context(cmd, result),
             Self::Back(a) => navigation::back::context(
                 &navigation::back::Cmd {

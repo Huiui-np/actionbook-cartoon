@@ -325,6 +325,18 @@ fn format_data_fields(command: &str, data: &Value, lines: &mut Vec<String>) {
                 lines.push(content.to_string());
             }
         }
+        "browser.title" | "browser.url" => {
+            if let Some(val) = data.get("value").and_then(|v| v.as_str()) {
+                lines.push(val.to_string());
+            }
+        }
+        "browser.viewport" => {
+            let width = data.get("width").and_then(|v| v.as_u64());
+            let height = data.get("height").and_then(|v| v.as_u64());
+            if let (Some(w), Some(h)) = (width, height) {
+                lines.push(format!("{w}x{h}"));
+            }
+        }
         "browser.eval" => {
             if let Some(val) = data.get("value") {
                 lines.push(val.as_str().unwrap_or(&val.to_string()).to_string());
