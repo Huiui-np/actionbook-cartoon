@@ -28,6 +28,9 @@ pub struct AXNode {
     pub depth: usize,
     /// Children
     pub children: Vec<AXNode>,
+    /// Cursor-interactive info (Some when detected via --cursor flag)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor_info: Option<CursorInfo>,
 }
 
 /// Options that control snapshot output.
@@ -86,8 +89,20 @@ pub fn is_interactive_role(role: &str) -> bool {
     )
 }
 
-// NOTE: All filtering (interactive, compact, depth, selector) is handled inline
-// during DFS traversal in parse_ax_tree(). No standalone filter functions needed.
+// NOTE: All filtering (interactive, compact, depth, selector, cursor) is handled
+// inline during DFS traversal in parse_ax_tree(). No standalone filter functions.
+
+// ── Cursor-interactive detection types ───────────────────────────────
+
+/// Info about a cursor-interactive element detected via DOM inspection.
+/// These are non-ARIA elements with onclick, cursor:pointer, tabindex, or contenteditable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CursorInfo {
+    /// "clickable" (cursor:pointer / onclick), "focusable" (tabindex), "editable" (contenteditable)
+    pub kind: String,
+    /// Detection hints: ["cursor:pointer", "onclick", "tabindex", "contenteditable"]
+    pub hints: Vec<String>,
+}
 
 /// Render a flat node list to `content` string per §10.1.
 /// Format: `- role "name" [ref=eN]` with depth-based indentation.
@@ -113,6 +128,10 @@ pub fn render_content(nodes: &[AXNode]) -> String {
         let mut line = format!("{indent}- {} \"{}\"", node.role, escaped_name);
         if !node.ref_id.is_empty() {
             line.push_str(&format!(" [ref={}]", node.ref_id));
+        }
+        // Append cursor-interactive info: " clickable [cursor:pointer, onclick]"
+        if let Some(ref ci) = node.cursor_info {
+            line.push_str(&format!(" {} [{}]", ci.kind, ci.hints.join(", ")));
         }
         lines.push(line);
     }
@@ -150,11 +169,14 @@ fn extract_ax_string(ax_value: &Value) -> String {
 /// `ref_cache`: tab-scoped cache for stable refs across repeated snapshots.
 /// `scope_backend_ids`: if Some, only include nodes whose backendDOMNodeId is in the set
 ///   (used by --selector to restrict to a CSS subtree).
+/// `cursor_elements`: if Some, nodes whose backendDOMNodeId is in this map get
+///   marked as interactive and assigned refs (used by --cursor flag).
 pub fn parse_ax_tree(
     response: &Value,
     options: &SnapshotOptions,
     ref_cache: &mut RefCache,
     scope_backend_ids: Option<&std::collections::HashSet<i64>>,
+    cursor_elements: Option<&std::collections::HashMap<i64, CursorInfo>>,
 ) -> Vec<AXNode> {
     let nodes_json = response["result"]["nodes"].as_array();
     let Some(nodes_json) = nodes_json else {
@@ -209,6 +231,7 @@ pub fn parse_ax_tree(
         result: &mut Vec<AXNode>,
         ref_cache: &mut RefCache,
         scope: Option<&std::collections::HashSet<i64>>,
+        cursor_elements: Option<&std::collections::HashMap<i64, CursorInfo>>,
     ) {
         let node = &nodes_json[idx];
         let role = extract_ax_string(&node["role"]);
@@ -228,6 +251,7 @@ pub fn parse_ax_tree(
                         result,
                         ref_cache,
                         scope,
+                        cursor_elements,
                     );
                 }
             }
@@ -277,19 +301,28 @@ pub fn parse_ax_tree(
         // Extract value (handles string, number, bool)
         let value = extract_ax_string(&node["value"]);
 
-        // Assign ref only for interactive + named content nodes
+        // Check if this node is cursor-interactive (onclick, cursor:pointer, etc.)
         let backend_node_id = node["backendDOMNodeId"].as_i64().unwrap_or(0);
-        let ref_id = if should_assign_ref(&role, &name) {
+        let cursor_info = cursor_elements.and_then(|map| {
+            if backend_node_id > 0 {
+                map.get(&backend_node_id).cloned()
+            } else {
+                None
+            }
+        });
+        let is_cursor = cursor_info.is_some();
+
+        // Assign ref for: interactive roles, named content roles, OR cursor-interactive
+        let should_ref = should_assign_ref(&role, &name) || is_cursor;
+        let ref_id = if should_ref {
             if backend_node_id > 0 {
                 ref_cache.get_or_assign(backend_node_id)
             } else {
-                // No backendNodeId — use AX nodeId hash as stable fallback key.
-                // nodeId is stable within a page load, unlike array index.
                 let node_id_str = node["nodeId"].as_str().unwrap_or("");
                 use std::hash::{Hash, Hasher};
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 node_id_str.hash(&mut hasher);
-                let hash_key = -(hasher.finish() as i64).abs() - 1; // always negative
+                let hash_key = -(hasher.finish() as i64).abs() - 1;
                 ref_cache.get_or_assign(hash_key)
             }
         } else {
@@ -301,9 +334,10 @@ pub fn parse_ax_tree(
             role,
             name,
             value,
-            interactive: is_interactive,
+            interactive: is_interactive || is_cursor,
             depth,
             children: vec![],
+            cursor_info,
         });
 
         // Recurse children at depth + 1
@@ -318,6 +352,7 @@ pub fn parse_ax_tree(
                     result,
                     ref_cache,
                     scope,
+                    cursor_elements,
                 );
             }
         }
@@ -333,14 +368,16 @@ pub fn parse_ax_tree(
             &mut result,
             ref_cache,
             scope_backend_ids,
+            cursor_elements,
         );
     }
 
-    // Apply compact: remove empty structural leaves, then keep only ref/value
-    // nodes with their ancestor chain for maximum compression.
+    // Apply compact: compact_tree_nodes first (preserves ancestor chains for
+    // ref/value nodes), then remove_empty_leaves (cleans remaining structural leaves).
+    // Order matters: removing leaves first can break ancestor chain depth detection.
     if options.compact {
-        result = remove_empty_leaves(result);
         result = compact_tree_nodes(&result);
+        result = remove_empty_leaves(result);
     }
 
     result
@@ -695,6 +732,7 @@ mod tests {
             interactive,
             depth,
             children: vec![],
+            cursor_info: None,
         }
     }
 
@@ -714,6 +752,7 @@ mod tests {
             interactive,
             depth,
             children: vec![],
+            cursor_info: None,
         }
     }
 
@@ -865,6 +904,7 @@ mod tests {
             &SnapshotOptions::default(),
             &mut RefCache::new(),
             None,
+            None,
         );
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0].ref_id, "e1");
@@ -883,6 +923,7 @@ mod tests {
             &SnapshotOptions::default(),
             &mut RefCache::new(),
             None,
+            None,
         );
         assert!(nodes.is_empty());
     }
@@ -894,6 +935,7 @@ mod tests {
             &response,
             &SnapshotOptions::default(),
             &mut RefCache::new(),
+            None,
             None,
         );
         assert!(nodes.is_empty());
@@ -914,7 +956,7 @@ mod tests {
             interactive: true,
             ..Default::default()
         };
-        let nodes = parse_ax_tree(&response, &opts, &mut RefCache::new(), None);
+        let nodes = parse_ax_tree(&response, &opts, &mut RefCache::new(), None, None);
         assert_eq!(nodes.len(), 2);
         assert!(nodes.iter().all(|n| n.interactive));
     }
@@ -933,7 +975,7 @@ mod tests {
             compact: true,
             ..Default::default()
         };
-        let nodes = parse_ax_tree(&response, &opts, &mut RefCache::new(), None);
+        let nodes = parse_ax_tree(&response, &opts, &mut RefCache::new(), None, None);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].role, "button");
     }
@@ -965,7 +1007,7 @@ mod tests {
             depth: Some(0),
             ..Default::default()
         };
-        let nodes = parse_ax_tree(&response, &opts, &mut RefCache::new(), None);
+        let nodes = parse_ax_tree(&response, &opts, &mut RefCache::new(), None, None);
         // After RootWebArea unwrap: navigation=depth 0, button=depth 1 (cut by depth=0)
         assert_eq!(
             nodes.len(),
@@ -995,7 +1037,7 @@ mod tests {
             ..Default::default()
         };
         // Must not panic; actual subtree filtering handled in execute() via CDP node lookup
-        let nodes = parse_ax_tree(&response, &opts, &mut RefCache::new(), None);
+        let nodes = parse_ax_tree(&response, &opts, &mut RefCache::new(), None, None);
         assert!(
             nodes.len() <= 2,
             "selector option must not expand node list"
@@ -1017,6 +1059,7 @@ mod tests {
             &response,
             &SnapshotOptions::default(),
             &mut RefCache::new(),
+            None,
             None,
         );
         assert_eq!(nodes[0].ref_id, "e1");
@@ -1130,6 +1173,7 @@ mod tests {
             &SnapshotOptions::default(),
             &mut RefCache::new(),
             None,
+            None,
         );
 
         // The button should appear (child of ignored node promoted).
@@ -1174,6 +1218,7 @@ mod tests {
             &response,
             &SnapshotOptions::default(),
             &mut RefCache::new(),
+            None,
             None,
         );
 
@@ -1232,6 +1277,7 @@ mod tests {
             &SnapshotOptions::default(),
             &mut RefCache::new(),
             None,
+            None,
         );
 
         // InlineTextBox must be filtered out
@@ -1287,6 +1333,7 @@ mod tests {
             &response,
             &SnapshotOptions::default(),
             &mut RefCache::new(),
+            None,
             None,
         );
 
@@ -1359,6 +1406,7 @@ mod tests {
             &response,
             &SnapshotOptions::default(),
             &mut RefCache::new(),
+            None,
             None,
         );
 
@@ -1719,14 +1767,215 @@ mod tests {
 
     #[test]
     fn test_render_content_escapes_quotes_in_name() {
-        // Codex finding #6: names with quotes must be escaped
         let nodes = vec![make_node("e1", "button", "Click \"here\"", true, 0)];
         let content = render_content(&nodes);
-        // The name should not break the format — quotes must be escaped
-        // or the parser will misinterpret the tree structure
         assert!(
             !content.contains("\"here\"\""),
             "unescaped quotes in name would break parsing"
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Cursor-interactive detection
+    // ══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_parse_cursor_elements_assigns_refs() {
+        // Contract: cursor-mapped nodes get ref + interactive=true + cursor_info
+        // Use generic with EMPTY name so should_assign_ref returns false —
+        // the ONLY path to getting a ref is via cursor_elements.
+        let response = serde_json::json!({
+            "result": {
+                "nodes": [
+                    {
+                        "nodeId": "1", "role": {"value": "RootWebArea"},
+                        "name": {"value": ""}, "childIds": ["2", "3"]
+                    },
+                    {
+                        "nodeId": "2", "backendDOMNodeId": 42,
+                        "role": {"value": "generic"}, "name": {"value": ""},
+                        "childIds": []
+                    },
+                    {
+                        "nodeId": "3", "backendDOMNodeId": 55,
+                        "role": {"value": "generic"}, "name": {"value": ""},
+                        "childIds": []
+                    },
+                ]
+            }
+        });
+        let mut cursor_map = std::collections::HashMap::new();
+        cursor_map.insert(
+            42_i64,
+            CursorInfo {
+                kind: "clickable".to_string(),
+                hints: vec!["cursor:pointer".to_string(), "onclick".to_string()],
+            },
+        );
+
+        // Baseline: without cursor_elements, generic "" gets no ref
+        let baseline = parse_ax_tree(
+            &response,
+            &SnapshotOptions::default(),
+            &mut RefCache::new(),
+            None,
+            None,
+        );
+        let baseline_42 = baseline.iter().find(|n| {
+            // Find by position — both have empty name, check via order
+            true // generic nodes may or may not appear
+        });
+        // Generic with empty name should have no ref in baseline
+        for n in &baseline {
+            if n.role == "generic" {
+                assert!(n.ref_id.is_empty(), "baseline: generic '' must have no ref");
+                assert!(
+                    !n.interactive,
+                    "baseline: generic '' must not be interactive"
+                );
+            }
+        }
+
+        // With cursor_elements: backendNodeId=42 should get ref
+        let nodes = parse_ax_tree(
+            &response,
+            &SnapshotOptions::default(),
+            &mut RefCache::new(),
+            None,
+            Some(&cursor_map),
+        );
+
+        // Find the cursor-mapped node (backendNodeId=42)
+        // It should now have: ref, interactive=true, cursor_info
+        let cursor_node = nodes.iter().find(|n| n.cursor_info.is_some());
+        assert!(
+            cursor_node.is_some(),
+            "cursor element must be present with cursor_info"
+        );
+        let cursor_node = cursor_node.unwrap();
+        assert!(
+            !cursor_node.ref_id.is_empty(),
+            "cursor element must have ref: {:?}",
+            cursor_node
+        );
+        assert!(
+            cursor_node.interactive,
+            "cursor element must have interactive=true"
+        );
+        assert_eq!(cursor_node.cursor_info.as_ref().unwrap().kind, "clickable");
+
+        // Non-cursor generic (backendNodeId=55) should still have no ref
+        let non_cursor: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.role == "generic" && n.cursor_info.is_none())
+            .collect();
+        for n in &non_cursor {
+            assert!(
+                n.ref_id.is_empty(),
+                "non-cursor generic must have no ref: {:?}",
+                n
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_cursor_elements_none_is_noop() {
+        // Contract: None vs Some(empty) produce identical output
+        let response = serde_json::json!({
+            "result": {
+                "nodes": [
+                    {
+                        "nodeId": "1", "role": {"value": "RootWebArea"},
+                        "name": {"value": ""}, "childIds": ["2"]
+                    },
+                    {
+                        "nodeId": "2", "backendDOMNodeId": 42,
+                        "role": {"value": "generic"}, "name": {"value": "div"},
+                        "childIds": []
+                    },
+                ]
+            }
+        });
+        let nodes_without = parse_ax_tree(
+            &response,
+            &SnapshotOptions::default(),
+            &mut RefCache::new(),
+            None,
+            None,
+        );
+        let nodes_with_empty = parse_ax_tree(
+            &response,
+            &SnapshotOptions::default(),
+            &mut RefCache::new(),
+            None,
+            Some(&std::collections::HashMap::new()),
+        );
+        // Must be structurally identical, not just same count
+        assert_eq!(nodes_without, nodes_with_empty);
+    }
+
+    #[test]
+    fn test_parse_cursor_already_interactive_no_duplicate() {
+        // Contract: if a node is already interactive (e.g., button) AND in cursor_map,
+        // it keeps its ref but also gets cursor_info attached.
+        let response = serde_json::json!({
+            "result": {
+                "nodes": [
+                    {
+                        "nodeId": "1", "role": {"value": "RootWebArea"},
+                        "name": {"value": ""}, "childIds": ["2"]
+                    },
+                    {
+                        "nodeId": "2", "backendDOMNodeId": 42,
+                        "role": {"value": "button"}, "name": {"value": "Submit"},
+                        "childIds": []
+                    },
+                ]
+            }
+        });
+        let mut cursor_map = std::collections::HashMap::new();
+        cursor_map.insert(
+            42_i64,
+            CursorInfo {
+                kind: "clickable".to_string(),
+                hints: vec!["onclick".to_string()],
+            },
+        );
+        let nodes = parse_ax_tree(
+            &response,
+            &SnapshotOptions::default(),
+            &mut RefCache::new(),
+            None,
+            Some(&cursor_map),
+        );
+        let btn = nodes.iter().find(|n| n.role == "button").unwrap();
+        // Already interactive → has ref
+        assert!(!btn.ref_id.is_empty());
+        assert!(btn.interactive);
+        // Also has cursor_info attached
+        assert!(
+            btn.cursor_info.is_some(),
+            "already-interactive node in cursor_map should get cursor_info"
+        );
+    }
+
+    #[test]
+    fn test_render_content_with_cursor_info() {
+        // Contract: cursor_info appended after ref as " clickable [cursor:pointer, onclick]"
+        let mut node = make_node("e1", "generic", "Click me", true, 0);
+        node.cursor_info = Some(CursorInfo {
+            kind: "clickable".to_string(),
+            hints: vec!["cursor:pointer".to_string(), "onclick".to_string()],
+        });
+        let content = render_content(&[node]);
+        // Must contain kind and hints
+        assert!(
+            content.contains("clickable"),
+            "content must show cursor kind: {content}"
+        );
+        assert!(
+            content.contains("cursor:pointer"),
+            "content must show cursor hints: {content}"
         );
     }
 }

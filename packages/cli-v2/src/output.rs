@@ -48,6 +48,15 @@ impl JsonEnvelope {
             .get("__truncated")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let warnings: Vec<String> = data
+            .get("__warnings")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
         // Strip internal __* fields from data (used by context/meta extraction only)
         if let Some(obj) = data.as_object_mut() {
             obj.retain(|k, _| !k.starts_with("__"));
@@ -60,7 +69,7 @@ impl JsonEnvelope {
             error: Value::Null,
             meta: ResponseMeta {
                 duration_ms: duration.as_millis() as u64,
-                warnings: vec![],
+                warnings,
                 pagination: Value::Null,
                 truncated,
             },

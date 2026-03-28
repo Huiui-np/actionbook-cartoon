@@ -9,7 +9,7 @@ use crate::daemon::cdp_session::{CdpSession, get_cdp_and_target};
 use crate::daemon::registry::SharedRegistry;
 use crate::output::ResponseContext;
 
-use super::snapshot_transform::{self, SnapshotOptions};
+use super::snapshot_transform::{self, CursorInfo, SnapshotOptions};
 
 /// Capture accessibility snapshot
 #[derive(Args, Debug, Clone, Serialize, Deserialize)]
@@ -30,8 +30,8 @@ pub struct Cmd {
     #[arg(long, short = 'c', default_value_t = false)]
     #[serde(default)]
     pub compact: bool,
-    /// Additionally include cursor-interactive custom elements (P2 — not yet implemented)
-    #[arg(long, default_value_t = false, hide = true)]
+    /// Additionally include cursor-interactive custom elements (cursor:pointer, onclick, tabindex)
+    #[arg(long, default_value_t = false)]
     #[serde(default)]
     pub cursor: bool,
     /// Limit maximum tree depth
@@ -126,11 +126,25 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
     };
 
     // Parse and transform the AX tree
+    // Detect cursor-interactive elements if --cursor flag set
+    let (cursor_elements, cursor_warning) = if cmd.cursor {
+        match detect_cursor_elements(&cdp, &target_id).await {
+            Ok(map) => (Some(map), None),
+            Err(e) => (
+                None,
+                Some(format!("cursor detection failed: {e}, proceeding without")),
+            ),
+        }
+    } else {
+        (None, None)
+    };
+
     let mut nodes = snapshot_transform::parse_ax_tree(
         &cdp_response,
         &options,
         &mut ref_cache,
         scope_backend_ids.as_ref(),
+        cursor_elements.as_ref(),
     );
 
     // Apply token budget truncation (100K tokens max)
@@ -168,6 +182,9 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
     });
     if truncated {
         data["__truncated"] = json!(true);
+    }
+    if let Some(ref warning) = cursor_warning {
+        data["__warnings"] = json!([warning]);
     }
     ActionResult::ok(data)
 }
@@ -248,4 +265,185 @@ fn collect_backend_node_ids(node: &Value, ids: &mut HashSet<i64>) {
     if let Some(content_doc) = node.get("contentDocument") {
         collect_backend_node_ids(content_doc, ids);
     }
+}
+
+/// Detect cursor-interactive elements via JS evaluation + CDP DOM resolution.
+/// Returns a map of backendNodeId → CursorInfo for elements with cursor:pointer,
+/// onclick, tabindex, or contenteditable that are NOT standard interactive elements.
+async fn detect_cursor_elements(
+    cdp: &CdpSession,
+    target_id: &str,
+) -> Result<std::collections::HashMap<i64, CursorInfo>, crate::error::CliError> {
+    // JS evaluation: find all cursor-interactive elements, tag them with data-__ab-ci
+    let js = r#"
+(function() {
+    var results = [];
+    if (!document.body) return results;
+    var interactiveRoles = {
+        'button':1,'link':1,'textbox':1,'checkbox':1,'radio':1,'combobox':1,'listbox':1,
+        'menuitem':1,'menuitemcheckbox':1,'menuitemradio':1,'option':1,'searchbox':1,
+        'slider':1,'spinbutton':1,'switch':1,'tab':1,'treeitem':1
+    };
+    var interactiveTags = {
+        'a':1,'button':1,'input':1,'select':1,'textarea':1,'details':1,'summary':1,'iframe':1
+    };
+    var allElements = document.body.querySelectorAll('*');
+    for (var i = 0; i < allElements.length; i++) {
+        var el = allElements[i];
+        if (el.closest && el.closest('[hidden], [aria-hidden="true"]')) continue;
+        var tagName = el.tagName.toLowerCase();
+        if (interactiveTags[tagName]) continue;
+        var role = el.getAttribute('role');
+        if (role && interactiveRoles[role.toLowerCase()]) continue;
+        var computedStyle = getComputedStyle(el);
+        var hasCursorPointer = computedStyle.cursor === 'pointer';
+        var hasOnClick = el.hasAttribute('onclick') || el.onclick !== null;
+        var tabIndex = el.getAttribute('tabindex');
+        var hasTabIndex = tabIndex !== null && tabIndex !== '-1';
+        var ce = el.getAttribute('contenteditable');
+        var isEditable = ce === '' || ce === 'true';
+        if (!hasCursorPointer && !hasOnClick && !hasTabIndex && !isEditable) continue;
+        if (hasCursorPointer && !hasOnClick && !hasTabIndex && !isEditable) {
+            var parent = el.parentElement;
+            if (parent && getComputedStyle(parent).cursor === 'pointer') continue;
+        }
+        var rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        el.setAttribute('data-__ab-ci', String(results.length));
+        results.push({
+            hasOnClick: hasOnClick,
+            hasCursorPointer: hasCursorPointer,
+            hasTabIndex: hasTabIndex,
+            isEditable: isEditable
+        });
+    }
+    return results;
+})()
+"#;
+
+    let eval_result = cdp
+        .execute_on_tab(
+            target_id,
+            "Runtime.evaluate",
+            json!({"expression": js, "returnByValue": true}),
+        )
+        .await?;
+
+    let elements: Vec<Value> = eval_result["result"]["result"]["value"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+
+    if elements.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+
+    // Resolve backendNodeIds — always clean up data-__ab-ci afterwards
+    let resolve_result = resolve_cursor_backend_ids(cdp, target_id).await;
+
+    // Always clean up data-__ab-ci attributes, even if resolve failed
+    let _ = cdp
+        .execute_on_tab(
+            target_id,
+            "Runtime.evaluate",
+            json!({"expression": "(function(){var els=document.querySelectorAll('[data-__ab-ci]');for(var i=0;i<els.length;i++)els[i].removeAttribute('data-__ab-ci');return els.length;})()", "returnByValue": true}),
+        )
+        .await;
+
+    let idx_to_backend = resolve_result?;
+
+    // Build result map
+    let mut map = std::collections::HashMap::new();
+    for (i, elem) in elements.iter().enumerate() {
+        if let Some(&bid) = idx_to_backend.get(&i) {
+            let has_pointer = elem["hasCursorPointer"].as_bool().unwrap_or(false);
+            let has_onclick = elem["hasOnClick"].as_bool().unwrap_or(false);
+            let has_tabindex = elem["hasTabIndex"].as_bool().unwrap_or(false);
+            let is_editable = elem["isEditable"].as_bool().unwrap_or(false);
+
+            let kind = if has_pointer || has_onclick {
+                "clickable"
+            } else if is_editable {
+                "editable"
+            } else {
+                "focusable"
+            };
+
+            let mut hints = Vec::new();
+            if has_pointer {
+                hints.push("cursor:pointer".to_string());
+            }
+            if has_onclick {
+                hints.push("onclick".to_string());
+            }
+            if has_tabindex {
+                hints.push("tabindex".to_string());
+            }
+            if is_editable {
+                hints.push("contenteditable".to_string());
+            }
+
+            map.insert(
+                bid,
+                CursorInfo {
+                    kind: kind.to_string(),
+                    hints,
+                },
+            );
+        }
+    }
+
+    Ok(map)
+}
+
+/// Resolve data-__ab-ci tagged elements to backendNodeIds via CDP DOM queries.
+async fn resolve_cursor_backend_ids(
+    cdp: &CdpSession,
+    target_id: &str,
+) -> Result<std::collections::HashMap<usize, i64>, crate::error::CliError> {
+    let doc = cdp
+        .execute_on_tab(target_id, "DOM.getDocument", json!({"depth": 0}))
+        .await?;
+    let root_node_id = doc["result"]["root"]["nodeId"].as_i64().unwrap_or(0);
+
+    let query = cdp
+        .execute_on_tab(
+            target_id,
+            "DOM.querySelectorAll",
+            json!({"nodeId": root_node_id, "selector": "[data-__ab-ci]"}),
+        )
+        .await?;
+    let node_ids: Vec<i64> = query["result"]["nodeIds"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
+        .unwrap_or_default();
+
+    let mut idx_to_backend = std::collections::HashMap::new();
+    for &dom_node_id in &node_ids {
+        if let Ok(desc) = cdp
+            .execute_on_tab(
+                target_id,
+                "DOM.describeNode",
+                json!({"nodeId": dom_node_id}),
+            )
+            .await
+        {
+            let backend_id = desc["result"]["node"]["backendNodeId"].as_i64();
+            let ci_idx = desc["result"]["node"]["attributes"]
+                .as_array()
+                .and_then(|attrs| {
+                    attrs
+                        .iter()
+                        .enumerate()
+                        .find(|(_, v)| v.as_str() == Some("data-__ab-ci"))
+                        .and_then(|(i, _)| attrs.get(i + 1))
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<usize>().ok())
+                });
+            if let (Some(bid), Some(idx)) = (backend_id, ci_idx) {
+                idx_to_backend.insert(idx, bid);
+            }
+        }
+    }
+    Ok(idx_to_backend)
 }

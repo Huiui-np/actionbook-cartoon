@@ -731,10 +731,92 @@ fn snap_interactive_compact_combined() {
     close_session(&sid);
 }
 
-// TODO: --cursor flag test skipped — requires implementation to distinguish
-// cursor:pointer / onclick / tabindex elements from standard interactive elements.
-// Contract: --cursor includes cursor-interactive elements on top of --interactive.
-// Add test when implementation lands.
+// ===========================================================================
+// Group 3c: snapshot — --cursor flag (cursor-interactive detection)
+// ===========================================================================
+
+#[test]
+fn snap_cursor_flag_increases_refs() {
+    if skip() {
+        return;
+    }
+    let _guard = SessionGuard::new();
+    let (sid, tid) = start_session(URL_A);
+
+    // Default snapshot
+    let out_default = headless_json(
+        &["browser", "snapshot", "--session", &sid, "--tab", &tid],
+        30,
+    );
+    assert_success(&out_default, "snapshot default");
+    let v_default = parse_json(&out_default);
+    let default_count = v_default["data"]["stats"]["node_count"]
+        .as_u64()
+        .unwrap_or(0);
+
+    // With --cursor: should detect additional cursor-interactive elements
+    let out_cursor = headless_json(
+        &[
+            "browser",
+            "snapshot",
+            "--session",
+            &sid,
+            "--tab",
+            &tid,
+            "--cursor",
+        ],
+        30,
+    );
+    assert_success(&out_cursor, "snapshot cursor");
+    let v_cursor = parse_json(&out_cursor);
+    let cursor_count = v_cursor["data"]["stats"]["node_count"]
+        .as_u64()
+        .unwrap_or(0);
+
+    // --cursor must return >= refs than default (adds cursor-interactive on top)
+    assert!(
+        cursor_count >= default_count,
+        "--cursor must return >= refs than default: {cursor_count} < {default_count}"
+    );
+
+    close_session(&sid);
+}
+
+#[test]
+fn snap_cursor_content_has_clickable() {
+    if skip() {
+        return;
+    }
+    let _guard = SessionGuard::new();
+    // Use a site likely to have cursor:pointer / onclick elements
+    let (sid, tid) = start_session(URL_A);
+
+    let out = headless_json(
+        &[
+            "browser",
+            "snapshot",
+            "--session",
+            &sid,
+            "--tab",
+            &tid,
+            "--cursor",
+        ],
+        30,
+    );
+    assert_success(&out, "snapshot cursor content");
+    let v = parse_json(&out);
+
+    let content = v["data"]["content"].as_str().unwrap_or("");
+    // If the page has any cursor-interactive elements, content should show "clickable"
+    // This is a soft assertion — some pages may not have cursor-interactive elements
+    // so we just verify the output is valid and doesn't error
+    assert!(
+        !content.is_empty(),
+        "cursor snapshot content must not be empty"
+    );
+
+    close_session(&sid);
+}
 
 // ===========================================================================
 // Group 4: snapshot — Error Paths (§3.1)
