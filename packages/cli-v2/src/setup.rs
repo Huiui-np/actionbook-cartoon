@@ -473,4 +473,33 @@ mod tests {
         );
         assert!(config::config_path().exists(), "config file should exist");
     }
+
+    #[test]
+    fn execute_reset_without_non_interactive_still_clears_config() {
+        let _lock = test_lock();
+        let (_tmp, _guard) = make_home();
+
+        let initial = Cmd {
+            api_key: Some("sk-test".to_string()),
+            browser: Some("extension".to_string()),
+            non_interactive: true,
+            ..Cmd::default()
+        };
+        execute(&initial, true).expect("seed config");
+
+        let reset = Cmd {
+            reset: true,
+            ..Cmd::default()
+        };
+        execute(&reset, true).expect("reset config");
+
+        let config = config::load_config().expect("load reset config");
+        assert_eq!(config.api.api_key, None);
+        assert_eq!(config.browser.mode, Mode::Local);
+        assert_eq!(
+            config.browser.default_profile,
+            crate::config::DEFAULT_PROFILE
+        );
+        assert!(config::config_path().exists(), "config file should exist");
+    }
 }
