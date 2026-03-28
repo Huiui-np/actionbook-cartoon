@@ -45,9 +45,7 @@ pub(crate) async fn configure_browser(
             }
             Ok(())
         }
-        Mode::Cloud => Err(CliError::InvalidArgument(
-            "setup only supports isolated/local or extension browser modes".to_string(),
-        )),
+        Mode::Cloud => Err(unsupported_setup_mode_error()),
     }
 }
 
@@ -91,9 +89,7 @@ fn apply_existing_browser_mode(
             }
         }
         Mode::Cloud => {
-            return Err(CliError::InvalidArgument(
-                "setup only supports isolated/local or extension browser modes".to_string(),
-            ));
+            return Err(unsupported_setup_mode_error());
         }
     }
 
@@ -223,6 +219,13 @@ fn browser_label(browser: &BrowserInfo) -> String {
     format!("{}{} ({})", browser.name, version, browser.path.display())
 }
 
+fn unsupported_setup_mode_error() -> CliError {
+    CliError::InvalidArgument(
+        "setup no longer supports browser.mode='cloud'; change it to 'local' or 'extension', or run `actionbook setup --reset`"
+            .to_string(),
+    )
+}
+
 fn apply_browser_mode(
     json: bool,
     env: &EnvironmentInfo,
@@ -244,9 +247,7 @@ fn apply_browser_mode(
             config.browser.headless = false;
         }
         Mode::Cloud => {
-            return Err(CliError::InvalidArgument(
-                "setup only supports isolated/local or extension browser modes".to_string(),
-            ));
+            return Err(unsupported_setup_mode_error());
         }
     }
 
@@ -351,6 +352,44 @@ mod tests {
         assert_eq!(
             config.browser.executable_path,
             Some("/custom/chrome".to_string())
+        );
+    }
+
+    #[test]
+    fn test_apply_existing_local_mode_populates_detected_browser() {
+        let browser = BrowserInfo {
+            name: "Google Chrome".to_string(),
+            path: PathBuf::from("/usr/bin/chrome"),
+            version: Some("131.0".to_string()),
+        };
+        let env = make_env_with_browsers(vec![browser]);
+        let mut config = ConfigFile::default();
+        config.browser.mode = Mode::Local;
+        config.browser.executable_path = None;
+
+        let result = apply_existing_browser_mode(false, &env, &mut config);
+
+        assert!(result.is_ok());
+        assert_eq!(config.browser.mode, Mode::Local);
+        assert_eq!(
+            config.browser.executable_path,
+            Some("/usr/bin/chrome".to_string())
+        );
+    }
+
+    #[test]
+    fn test_apply_existing_cloud_mode_returns_migration_hint() {
+        let env = make_env_with_browsers(vec![]);
+        let mut config = ConfigFile::default();
+        config.browser.mode = Mode::Cloud;
+
+        let err =
+            apply_existing_browser_mode(false, &env, &mut config).expect_err("cloud should fail");
+
+        assert_eq!(err.error_code(), "INVALID_ARGUMENT");
+        assert_eq!(
+            err.to_string(),
+            "invalid argument: setup no longer supports browser.mode='cloud'; change it to 'local' or 'extension', or run `actionbook setup --reset`"
         );
     }
 

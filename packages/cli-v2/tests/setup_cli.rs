@@ -127,3 +127,50 @@ fn setup_invalid_browser_value_exits_non_zero() {
         "setup should not spawn a daemon process on failure"
     );
 }
+
+#[test]
+fn setup_non_interactive_existing_cloud_config_returns_migration_hint() {
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let home = tmp.path().join("actionbook-home");
+    std::fs::create_dir_all(&home).expect("create actionbook home");
+    std::fs::write(
+        home.join("config.toml"),
+        r#"[browser]
+mode = "cloud"
+headless = false
+profile_name = "actionbook"
+"#,
+    )
+    .expect("seed cloud config");
+
+    let output = Command::cargo_bin("actionbook")
+        .expect("binary exists")
+        .env("ACTIONBOOK_HOME", &home)
+        .args(["setup", "--non-interactive"])
+        .output()
+        .expect("run setup");
+
+    assert!(
+        !output.status.success(),
+        "expected existing cloud config to fail\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("browser.mode='cloud'"),
+        "stderr should mention the unsupported cloud mode"
+    );
+    assert!(
+        stderr.contains("actionbook setup --reset"),
+        "stderr should include the migration hint"
+    );
+    assert!(
+        !home.join("daemon.sock").exists(),
+        "setup should not go through the daemon on config migration failure"
+    );
+    assert!(
+        !home.join("daemon.pid").exists(),
+        "setup should not spawn a daemon process on config migration failure"
+    );
+}
