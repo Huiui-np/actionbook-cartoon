@@ -241,10 +241,12 @@ impl CdpSession {
             }
         }
 
-        // Connection dropped — fail all pending requests
+        // Connection dropped — fail all pending requests with cloud-aware error
         let mut map = pending.lock().await;
         for (_, tx) in map.drain() {
-            let _ = tx.send(Err(CliError::CdpError("connection closed".to_string())));
+            let _ = tx.send(Err(CliError::CloudConnectionLost(
+                "WebSocket connection closed".to_string(),
+            )));
         }
     }
 

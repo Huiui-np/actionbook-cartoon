@@ -240,7 +240,7 @@ async fn execute_cloud(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
     };
 
     // Zero-page handling: create a tab if none exist
-    let tabs = if tabs.is_empty() {
+    let mut tabs = if tabs.is_empty() {
         let raw_url = cmd.open_url.as_deref().unwrap_or("about:blank");
         let url = match ensure_scheme_or_fatal(raw_url) {
             Ok(u) => u,
@@ -280,13 +280,29 @@ async fn execute_cloud(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
                     .execute_on_tab(&first.id.0, "Page.navigate", json!({ "url": final_url }))
                     .await
                 {
-                    tracing::warn!("cloud reuse navigate failed: {e}");
+                    let mut reg = registry.lock().await;
+                    reg.remove(session_id.as_str());
+                    return ActionResult::fatal(
+                        "NAVIGATION_FAILED",
+                        format!("cloud navigate to '{}' failed: {e}", final_url),
+                    );
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
         }
         tabs
     };
+
+    // Update first tab URL if --open-url was provided and navigation succeeded
+    if cmd.open_url.is_some() {
+        if let Some(first) = tabs.first_mut() {
+            if let Some(url) = &cmd.open_url {
+                if let Ok(final_url) = ensure_scheme_or_fatal(url) {
+                    first.url = final_url;
+                }
+            }
+        }
+    }
 
     let first_tab_id = tabs.first().map(|t| t.id.0.clone()).unwrap_or_default();
     let first_url = tabs.first().map(|t| t.url.clone()).unwrap_or_default();
