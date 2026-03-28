@@ -160,7 +160,11 @@ pub fn ensure_scheme(url: &str) -> Result<String, crate::error::CliError> {
             &url[..url.len().min(30)]
         )));
     }
-    if url.contains("://") || url.starts_with("about:") || url.starts_with("chrome:") {
+    if url.contains("://")
+        || lower.starts_with("about:")
+        || lower.starts_with("chrome:")
+        || lower.starts_with("data:")
+    {
         Ok(url.to_string())
     } else {
         Ok(format!("https://{url}"))

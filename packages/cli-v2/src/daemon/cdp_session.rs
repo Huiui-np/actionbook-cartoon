@@ -239,12 +239,12 @@ impl CdpSession {
             }
         }
 
-        // Connection dropped — fail all pending requests with cloud-aware error
+        // Connection dropped — fail all pending requests
+        // Use generic CdpError here; cdp_error_to_result will upgrade to
+        // CloudConnectionLost for cloud sessions based on session mode.
         let mut map = pending.lock().await;
         for (_, tx) in map.drain() {
-            let _ = tx.send(Err(CliError::CloudConnectionLost(
-                "WebSocket connection closed".to_string(),
-            )));
+            let _ = tx.send(Err(CliError::CdpError("connection closed".to_string())));
         }
     }
 
@@ -297,8 +297,9 @@ pub async fn get_cdp_and_target(
     Ok((cdp, tab_id.to_string()))
 }
 
-/// Convert a CliError from CDP operations into an ActionResult,
-/// preserving CloudConnectionLost with its specific error code.
+/// Convert a CliError from CDP operations into an ActionResult.
+/// For cloud sessions, connection drops are surfaced as CLOUD_CONNECTION_LOST.
+/// For local sessions, they use the default_code.
 pub fn cdp_error_to_result(e: CliError, default_code: &str) -> crate::action_result::ActionResult {
     match &e {
         CliError::CloudConnectionLost(_) => crate::action_result::ActionResult::fatal_with_hint(
