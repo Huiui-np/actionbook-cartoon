@@ -59,7 +59,7 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         None => {
             return ActionResult::fatal(
                 "CDP_CONNECTION_FAILED",
-                format!("failed to fetch targets from Chrome after 3 attempts"),
+                "failed to fetch targets from Chrome after 3 attempts",
             );
         }
     };
