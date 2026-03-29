@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use clap::Args;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -8,21 +10,21 @@ use crate::daemon::cdp_session::{cdp_error_to_result, get_cdp_and_target};
 use crate::daemon::registry::SharedRegistry;
 use crate::output::ResponseContext;
 
-/// Type text character by character
+/// Upload files to a file input
 #[derive(Args, Debug, Clone, Serialize, Deserialize)]
 #[command(after_help = "\
 Examples:
-  actionbook browser type \"#search\" \"hello world\" --session s1 --tab t1
-  actionbook browser type \"textarea\" \"line one\\nline two\" --session s1 --tab t1
+  actionbook browser upload \"input[type=file]\" /tmp/photo.png --session s1 --tab t1
+  actionbook browser upload \"#attachments\" /tmp/a.pdf /tmp/b.pdf --session s1 --tab t1
 
-Types each character individually, firing keydown/keypress/keyup events.
-Use for fields with autocomplete, live validation, or input listeners.
-For simple value setting without events, use fill instead.")]
+Sets files on a <input type=\"file\"> element. Paths must be absolute.
+Pass multiple paths for multi-file inputs.")]
 pub struct Cmd {
-    /// Target element selector
+    /// File input element selector
     pub selector: String,
-    /// Text to type
-    pub text: String,
+    /// Absolute file paths to upload
+    #[arg(required = true, num_args = 1..)]
+    pub files: Vec<String>,
     /// Session ID
     #[arg(long)]
     #[serde(rename = "session_id")]
@@ -33,7 +35,7 @@ pub struct Cmd {
     pub tab: String,
 }
 
-pub const COMMAND_NAME: &str = "browser.type";
+pub const COMMAND_NAME: &str = "browser.upload";
 
 pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
     if let ActionResult::Fatal { code, .. } = result
@@ -64,76 +66,53 @@ pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
 }
 
 pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
+    // Validate that all file paths are absolute
+    for file in &cmd.files {
+        if !Path::new(file).is_absolute() {
+            return ActionResult::fatal(
+                "INVALID_ARGUMENT",
+                format!("file path must be absolute: '{file}'"),
+            );
+        }
+    }
+
+    // Get CDP session and verify tab
     let (cdp, target_id) = match get_cdp_and_target(registry, &cmd.session, &cmd.tab).await {
         Ok(v) => v,
         Err(e) => return e,
     };
 
-    // Resolve and focus the target element
+    // Resolve the file input element
     let node_id = match element::resolve_node(&cdp, &target_id, &cmd.selector).await {
         Ok(id) => id,
         Err(e) => return e,
     };
 
+    // Set files on the input via DOM.setFileInputFiles
     if let Err(e) = cdp
-        .execute_on_tab(&target_id, "DOM.focus", json!({ "nodeId": node_id }))
+        .execute_on_tab(
+            &target_id,
+            "DOM.setFileInputFiles",
+            json!({
+                "files": cmd.files,
+                "nodeId": node_id,
+            }),
+        )
         .await
     {
         return cdp_error_to_result(e, "CDP_ERROR");
-    }
-
-    // Move cursor to end of existing value so typed text appends
-    let _ = cdp
-        .execute_on_tab(
-            &target_id,
-            "Runtime.evaluate",
-            json!({
-                "expression": "(() => { const el = document.activeElement; if (el && el.setSelectionRange) el.setSelectionRange(el.value.length, el.value.length); })()",
-            }),
-        )
-        .await;
-
-    // Type each character: keyDown (with text insertion) + keyUp
-    for ch in cmd.text.chars() {
-        let key = ch.to_string();
-
-        if let Err(e) = cdp
-            .execute_on_tab(
-                &target_id,
-                "Input.dispatchKeyEvent",
-                json!({
-                    "type": "keyDown",
-                    "key": key,
-                    "text": key,
-                }),
-            )
-            .await
-        {
-            return cdp_error_to_result(e, "CDP_ERROR");
-        }
-
-        if let Err(e) = cdp
-            .execute_on_tab(
-                &target_id,
-                "Input.dispatchKeyEvent",
-                json!({
-                    "type": "keyUp",
-                    "key": key,
-                }),
-            )
-            .await
-        {
-            return cdp_error_to_result(e, "CDP_ERROR");
-        }
     }
 
     let url = navigation::get_tab_url(&cdp, &target_id).await;
     let title = navigation::get_tab_title(&cdp, &target_id).await;
 
     ActionResult::ok(json!({
-        "action": "type",
+        "action": "upload",
         "target": { "selector": cmd.selector },
-        "value_summary": { "text_length": cmd.text.chars().count() },
+        "value_summary": {
+            "files": cmd.files,
+            "count": cmd.files.len(),
+        },
         "post_url": url,
         "post_title": title,
     }))

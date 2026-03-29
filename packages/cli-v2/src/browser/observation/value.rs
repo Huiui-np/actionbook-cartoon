@@ -1,18 +1,24 @@
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::action_result::ActionResult;
-use crate::daemon::cdp_session::get_cdp_and_target;
+use crate::browser::{element, navigation};
+use crate::daemon::cdp_session::{cdp_error_to_result, get_cdp_and_target};
 use crate::daemon::registry::SharedRegistry;
 use crate::output::ResponseContext;
 
-/// Get current page title
+/// Read input element value
 #[derive(Args, Debug, Clone, Serialize, Deserialize)]
 #[command(after_help = "\
 Examples:
-  actionbook browser title --session s1 --tab t1")]
+  actionbook browser value \"#email\" --session s1 --tab t1
+  actionbook browser value \"input[name=q]\" --session s1 --tab t1
+
+Returns the current value of an input, textarea, or select element.")]
 pub struct Cmd {
+    /// Target element selector
+    pub selector: String,
     /// Session ID
     #[arg(long)]
     #[serde(rename = "session_id")]
@@ -23,7 +29,7 @@ pub struct Cmd {
     pub tab: String,
 }
 
-pub const COMMAND_NAME: &str = "browser.title";
+pub const COMMAND_NAME: &str = "browser.value";
 
 pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
     if let ActionResult::Fatal { code, .. } = result
@@ -64,12 +70,42 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         Err(e) => return e,
     };
 
-    let title = crate::browser::navigation::get_tab_title(&cdp, &target_id).await;
-    let url = crate::browser::navigation::get_tab_url(&cdp, &target_id).await;
+    let value = match get_value(&cdp, &target_id, &cmd.selector).await {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let url = navigation::get_tab_url(&cdp, &target_id).await;
+    let title = navigation::get_tab_title(&cdp, &target_id).await;
 
     ActionResult::ok(json!({
-        "value": title,
+        "target": { "selector": cmd.selector },
+        "value": value,
         "__ctx_url": url,
         "__ctx_title": title,
     }))
+}
+
+async fn get_value(
+    cdp: &crate::daemon::cdp_session::CdpSession,
+    target_id: &str,
+    selector: &str,
+) -> Result<Value, ActionResult> {
+    let (_, object_id) = element::resolve_selector_object(cdp, target_id, selector).await?;
+    let resp = cdp
+        .execute_on_tab(
+            target_id,
+            "Runtime.callFunctionOn",
+            json!({
+                "objectId": object_id,
+                "functionDeclaration": r#"function() { return this.value; }"#,
+                "returnByValue": true,
+            }),
+        )
+        .await
+        .map_err(|e| cdp_error_to_result(e, "CDP_ERROR"))?;
+
+    Ok(resp
+        .pointer("/result/result/value")
+        .cloned()
+        .unwrap_or(Value::Null))
 }

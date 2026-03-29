@@ -7,11 +7,14 @@ use crate::daemon::cdp_session::get_cdp_and_target;
 use crate::daemon::registry::SharedRegistry;
 use crate::output::ResponseContext;
 
-/// Get current page URL
+/// Get the current cursor position
 #[derive(Args, Debug, Clone, Serialize, Deserialize)]
 #[command(after_help = "\
 Examples:
-  actionbook browser url --session s1 --tab t1")]
+  actionbook browser cursor-position --session s1 --tab t1
+
+Returns the last known x,y cursor position for the tab.
+Updated after click, mouse-move, and drag commands.")]
 pub struct Cmd {
     /// Session ID
     #[arg(long)]
@@ -23,7 +26,7 @@ pub struct Cmd {
     pub tab: String,
 }
 
-pub const COMMAND_NAME: &str = "browser.url";
+pub const COMMAND_NAME: &str = "browser.cursor-position";
 
 pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
     if let ActionResult::Fatal { code, .. } = result
@@ -31,39 +34,31 @@ pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
     {
         return None;
     }
-    let tab_id = if let ActionResult::Fatal { code, .. } = result
-        && code == "TAB_NOT_FOUND"
-    {
-        None
-    } else {
-        Some(cmd.tab.clone())
-    };
-    let url = match result {
-        ActionResult::Ok { data } => data
-            .get("__ctx_url")
-            .and_then(|v| v.as_str())
-            .map(String::from),
-        _ => None,
-    };
     Some(ResponseContext {
         session_id: cmd.session.clone(),
-        tab_id,
+        tab_id: Some(cmd.tab.clone()),
         window_id: None,
-        url,
+        url: None,
         title: None,
     })
 }
 
 pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
-    let (cdp, target_id) = match get_cdp_and_target(registry, &cmd.session, &cmd.tab).await {
+    // Verify session and tab exist
+    let (_cdp, _target_id) = match get_cdp_and_target(registry, &cmd.session, &cmd.tab).await {
         Ok(v) => v,
         Err(e) => return e,
     };
 
-    let url = crate::browser::navigation::get_tab_url(&cdp, &target_id).await;
+    // Read cursor position from registry
+    let (x, y) = {
+        let reg = registry.lock().await;
+        reg.get_cursor_position(&cmd.session, &cmd.tab)
+            .unwrap_or((0.0, 0.0))
+    };
 
     ActionResult::ok(json!({
-        "value": url,
-        "__ctx_url": url,
+        "x": x as i64,
+        "y": y as i64,
     }))
 }

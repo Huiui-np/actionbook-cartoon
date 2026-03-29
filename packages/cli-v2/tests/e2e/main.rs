@@ -11,11 +11,16 @@
 
 mod browser_lifecycle;
 mod cloud_mode;
+mod describe_state;
+mod element_details;
+mod element_read;
 mod harness;
 mod inspect_point;
 mod interaction;
 mod navigation;
 mod page_info;
+mod pdf;
+mod query;
 mod screenshot;
 mod snapshot;
 mod tab_management;

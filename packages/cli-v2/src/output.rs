@@ -196,12 +196,21 @@ pub fn format_text(
                     | "browser.forward"
                     | "browser.reload"
                     | "browser.click"
+                    | "browser.hover"
+                    | "browser.focus"
+                    | "browser.press"
                     | "browser.type"
                     | "browser.fill"
                     | "browser.screenshot"
                     | "browser.select"
+                    | "browser.drag"
+                    | "browser.upload"
+                    | "browser.mouse-move"
+                    | "browser.cursor-position"
+                    | "browser.scroll"
                     | "browser.new-tab"
                     | "browser.close-tab"
+                    | "browser.pdf"
             );
 
             if is_action {
@@ -368,6 +377,67 @@ fn format_data_fields(command: &str, data: &Value, lines: &mut Vec<String>) {
                 lines.push(format!("target: {coords}"));
             }
         }
+        "browser.hover" | "browser.focus" => {
+            if let Some(sel) = data.pointer("/target/selector").and_then(|v| v.as_str()) {
+                lines.push(format!("target: {sel}"));
+            }
+        }
+        "browser.mouse-move" => {
+            if let Some(coords) = data.pointer("/target/coordinates").and_then(|v| v.as_str()) {
+                lines.push(format!("target: {coords}"));
+            }
+        }
+        "browser.cursor-position" => {
+            if let Some(x) = data.get("x").and_then(|v| v.as_f64()) {
+                lines.push(format!("x: {}", x as i64));
+            }
+            if let Some(y) = data.get("y").and_then(|v| v.as_f64()) {
+                lines.push(format!("y: {}", y as i64));
+            }
+        }
+        "browser.scroll" => {
+            if let Some(dir) = data.get("direction").and_then(|v| v.as_str()) {
+                lines.push(format!("direction: {dir}"));
+            }
+            if let Some(sel) = data.pointer("/target/selector").and_then(|v| v.as_str()) {
+                lines.push(format!("target: {sel}"));
+            }
+            if let Some(container) = data.get("container").and_then(|v| v.as_str()) {
+                lines.push(format!("container: {container}"));
+            }
+        }
+        "browser.drag" => {
+            if let Some(sel) = data.pointer("/target/selector").and_then(|v| v.as_str()) {
+                lines.push(format!("target: {sel}"));
+            }
+            if let Some(sel) = data
+                .pointer("/destination/selector")
+                .and_then(|v| v.as_str())
+            {
+                lines.push(format!("destination: {sel}"));
+            } else if let Some(coords) = data
+                .pointer("/destination/coordinates")
+                .and_then(|v| v.as_str())
+            {
+                lines.push(format!("destination: {coords}"));
+            }
+        }
+        "browser.upload" => {
+            if let Some(sel) = data.pointer("/target/selector").and_then(|v| v.as_str()) {
+                lines.push(format!("target: {sel}"));
+            }
+            if let Some(count) = data
+                .pointer("/value_summary/count")
+                .and_then(|v| v.as_u64())
+            {
+                lines.push(format!("count: {count}"));
+            }
+        }
+        "browser.press" => {
+            if let Some(keys) = data.get("keys").and_then(|v| v.as_str()) {
+                lines.push(format!("keys: {keys}"));
+            }
+        }
         "browser.screenshot" => {
             if let Some(path) = data.pointer("/artifact/path").and_then(|v| v.as_str()) {
                 lines.push(format!("path: {path}"));
@@ -377,6 +447,11 @@ fn format_data_fields(command: &str, data: &Value, lines: &mut Vec<String>) {
             // §10.1: text mode outputs content directly (no "ok" prefix)
             if let Some(content) = data.get("content").and_then(|v| v.as_str()) {
                 lines.push(content.to_string());
+            }
+        }
+        "browser.html" | "browser.text" | "browser.value" | "browser.attr" => {
+            if let Some(val) = data.get("value") {
+                lines.push(text_scalar(val));
             }
         }
         "browser.title" | "browser.url" => {
@@ -389,6 +464,149 @@ fn format_data_fields(command: &str, data: &Value, lines: &mut Vec<String>) {
             let height = data.get("height").and_then(|v| v.as_u64());
             if let (Some(w), Some(h)) = (width, height) {
                 lines.push(format!("{w}x{h}"));
+            }
+        }
+        "browser.attrs" => {
+            if let Some(sel) = data.pointer("/target/selector").and_then(|v| v.as_str()) {
+                lines.push(format!("target: {sel}"));
+            }
+            if let Some(attrs) = data.get("value").and_then(|v| v.as_object()) {
+                let mut order: Vec<String> = data
+                    .get("__attr_order")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if order.is_empty() {
+                    order = attrs.keys().cloned().collect();
+                    order.sort();
+                }
+                for key in order {
+                    if let Some(value) = attrs.get(&key) {
+                        lines.push(format!("{key}: {}", text_scalar(value)));
+                    }
+                }
+            }
+        }
+        "browser.box" => {
+            if let Some(sel) = data.pointer("/target/selector").and_then(|v| v.as_str()) {
+                lines.push(format!("target: {sel}"));
+            }
+            if let Some(value) = data.get("value") {
+                for key in ["x", "y", "width", "height", "right", "bottom"] {
+                    if let Some(field) = value.get(key) {
+                        lines.push(format!("{key}: {}", text_scalar(field)));
+                    }
+                }
+            }
+        }
+        "browser.styles" => {
+            if let Some(sel) = data.pointer("/target/selector").and_then(|v| v.as_str()) {
+                lines.push(format!("target: {sel}"));
+            }
+            if let Some(styles) = data.get("value").and_then(|v| v.as_object()) {
+                let order: Vec<String> = data
+                    .get("__prop_order")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_else(|| styles.keys().cloned().collect());
+                for key in order {
+                    if let Some(value) = styles.get(&key) {
+                        lines.push(format!("{key}: {}", text_scalar(value)));
+                    }
+                }
+            }
+        }
+        "browser.describe" => {
+            let summary = {
+                let role = data.get("role").and_then(|v| v.as_str()).unwrap_or("");
+                let name = data.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                if name.is_empty() {
+                    role.to_string()
+                } else {
+                    format!("{role} \"{name}\"")
+                }
+            };
+            lines.push(summary);
+            if let Some(nearby) = data.get("nearby").filter(|v| !v.is_null()) {
+                if let Some(p) = nearby.get("parent").and_then(|v| v.as_str()) {
+                    lines.push(format!("parent: {p}"));
+                }
+                if let Some(ps) = nearby.get("previous_sibling").and_then(|v| v.as_str()) {
+                    lines.push(format!("previous_sibling: {ps}"));
+                }
+                if let Some(ns) = nearby.get("next_sibling").and_then(|v| v.as_str()) {
+                    lines.push(format!("next_sibling: {ns}"));
+                }
+                if let Some(children) = nearby.get("children").and_then(|v| v.as_array()) {
+                    for child in children {
+                        if let Some(s) = child.as_str() {
+                            lines.push(format!("child: {s}"));
+                        }
+                    }
+                }
+            }
+        }
+        "browser.state" => {
+            for key in [
+                "visible", "enabled", "checked", "focused", "editable", "selected",
+            ] {
+                if let Some(val) = data.pointer(&format!("/state/{key}")) {
+                    lines.push(format!("{key}: {}", text_scalar(val)));
+                }
+            }
+        }
+        "browser.query" => {
+            let mode = data.get("mode").and_then(|v| v.as_str()).unwrap_or("");
+            let count = data.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+            match mode {
+                "one" => {
+                    lines.push("1 match".to_string());
+                    if let Some(item) = data.get("item") {
+                        if let Some(sel) = item.get("selector").and_then(|v| v.as_str()) {
+                            lines.push(format!("selector: {sel}"));
+                        }
+                        if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                            lines.push(format!("text: {text}"));
+                        }
+                    }
+                }
+                "all" => {
+                    lines.push(format!("{count} matches"));
+                    if let Some(items) = data.get("items").and_then(|v| v.as_array()) {
+                        for (i, item) in items.iter().enumerate() {
+                            if let Some(sel) = item.get("selector").and_then(|v| v.as_str()) {
+                                lines.push(format!("{}. {sel}", i + 1));
+                            }
+                            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                                lines.push(format!("   {text}"));
+                            }
+                        }
+                    }
+                }
+                "nth" => {
+                    let index = data.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+                    lines.push(format!("match {index}/{count}"));
+                    if let Some(item) = data.get("item") {
+                        if let Some(sel) = item.get("selector").and_then(|v| v.as_str()) {
+                            lines.push(format!("selector: {sel}"));
+                        }
+                        if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                            lines.push(format!("text: {text}"));
+                        }
+                    }
+                }
+                "count" => {
+                    lines.push(format!("{count}"));
+                }
+                _ => {}
             }
         }
         "browser.inspect-point" => {
@@ -416,6 +634,16 @@ fn format_data_fields(command: &str, data: &Value, lines: &mut Vec<String>) {
                 }
             }
         }
+        "browser.pdf" => {
+            // §10.3: path line
+            if let Some(path) = data
+                .get("artifact")
+                .and_then(|a| a.get("path"))
+                .and_then(|v| v.as_str())
+            {
+                lines.push(format!("path: {path}"));
+            }
+        }
         "browser.eval" => {
             if let Some(val) = data.get("value") {
                 lines.push(val.as_str().unwrap_or(&val.to_string()).to_string());
@@ -427,5 +655,15 @@ fn format_data_fields(command: &str, data: &Value, lines: &mut Vec<String>) {
                 lines.push(s.to_string());
             }
         }
+    }
+}
+
+fn text_scalar(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        other => other.to_string(),
     }
 }

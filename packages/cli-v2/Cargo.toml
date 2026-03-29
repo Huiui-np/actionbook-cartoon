@@ -37,7 +37,7 @@ thiserror = "2"
 # HTTP (for Chrome CDP discovery endpoints)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
-# Base64 (screenshot decoding)
+# Base64 (screenshot/PDF decoding)
 base64 = "0.22"
 
 # URL encoding

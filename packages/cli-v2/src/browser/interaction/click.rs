@@ -21,6 +21,15 @@ fn default_count() -> u32 {
 
 /// Click an element or coordinates
 #[derive(Args, Debug, Clone, Serialize, Deserialize)]
+#[command(after_help = "\
+Examples:
+  actionbook browser click \"#submit\" --session s1 --tab t1
+  actionbook browser click 420,310 --session s1 --tab t1
+  actionbook browser click \"a.link\" --new-tab --session s1 --tab t1
+  actionbook browser click \"#item\" --count 2 --session s1 --tab t1
+
+Accepts a CSS selector, XPath, snapshot ref (@eN), or x,y coordinates.
+Use --count 2 for double-click. Use --new-tab to open links in a new tab.")]
 pub struct Cmd {
     /// CSS selector or x,y coordinates
     pub selector: String,
@@ -195,6 +204,12 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
     // Dispatch click events
     if let Err(e) = dispatch_click(&cdp, &target_id, x, y, &cmd.button, cmd.count).await {
         return e;
+    }
+
+    // Store cursor position in registry for cursor-position command
+    {
+        let mut reg = registry.lock().await;
+        reg.set_cursor_position(&cmd.session, &cmd.tab, x, y);
     }
 
     // Wait for potential navigation: poll for URL change with early exit.
