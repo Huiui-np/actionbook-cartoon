@@ -25,3 +25,4 @@ mod query;
 mod screenshot;
 mod snapshot;
 mod tab_management;
+mod wait;
