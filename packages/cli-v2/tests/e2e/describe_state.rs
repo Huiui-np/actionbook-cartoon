@@ -7,6 +7,9 @@ use crate::harness::{
 
 const DESCRIBE_SELECTOR: &str = "#describe-target";
 const STATE_SELECTOR: &str = "#state-target";
+const STATE_CHECKED_SELECTOR: &str = "#state-checked";
+const STATE_DISABLED_SELECTOR: &str = "#state-disabled";
+const STATE_HIDDEN_SELECTOR: &str = "#state-hidden";
 
 fn start_session() -> (String, String) {
     let out = headless_json(
@@ -56,6 +59,9 @@ document.body.innerHTML = `
     </li>
   </ul>
   <input id="state-target" type="text" value="query" placeholder="Search">
+  <input id="state-checked" type="checkbox" checked>
+  <input id="state-disabled" type="text" value="locked" disabled>
+  <button id="state-hidden" style="display:none">Hidden Action</button>
 `;
 document.title = 'Describe State Fixture';
 document.querySelector('#state-target').focus();
@@ -200,6 +206,45 @@ fn describe_text_output() {
 }
 
 #[test]
+fn describe_nearby_text_output() {
+    if skip() {
+        return;
+    }
+
+    let (sid, tid) = start_session();
+    let _guard = SessionGuard::new(&sid);
+    inject_fixture(&sid, &tid);
+
+    let out = headless(
+        &[
+            "browser",
+            "describe",
+            DESCRIBE_SELECTOR,
+            "--nearby",
+            "--session",
+            &sid,
+            "--tab",
+            &tid,
+        ],
+        10,
+    );
+    assert_success(&out, "describe nearby text");
+    let text = stdout_str(&out);
+    let lines: Vec<&str> = text.lines().collect();
+
+    assert!(
+        lines
+            .first()
+            .unwrap_or(&"")
+            .starts_with(&format!("[{sid} {tid}]")),
+        "header must start with [session_id tab_id]: {text}"
+    );
+    assert_eq!(lines.get(1), Some(&"button \"Edit\""));
+    assert_eq!(lines.get(2), Some(&"parent: listitem \"John Smith\""));
+    assert_eq!(lines.get(3), Some(&"previous_sibling: text \"John Smith\""));
+}
+
+#[test]
 fn state_json_happy_path() {
     if skip() {
         return;
@@ -241,6 +286,114 @@ fn state_json_happy_path() {
 }
 
 #[test]
+fn state_json_checked_true() {
+    if skip() {
+        return;
+    }
+
+    let (sid, tid) = start_session();
+    let _guard = SessionGuard::new(&sid);
+    inject_fixture(&sid, &tid);
+
+    let out = headless_json(
+        &[
+            "browser",
+            "state",
+            STATE_CHECKED_SELECTOR,
+            "--session",
+            &sid,
+            "--tab",
+            &tid,
+        ],
+        10,
+    );
+    assert_success(&out, "state checked json");
+    let v = parse_json(&out);
+
+    assert_eq!(v["command"], "browser.state");
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["data"]["target"]["selector"], STATE_CHECKED_SELECTOR);
+    assert_eq!(v["data"]["state"]["visible"], true);
+    assert_eq!(v["data"]["state"]["enabled"], true);
+    assert_eq!(v["data"]["state"]["checked"], true);
+    assert_eq!(v["data"]["state"]["focused"], false);
+    assert_eq!(v["data"]["state"]["editable"], false);
+    assert_eq!(v["data"]["state"]["selected"], false);
+}
+
+#[test]
+fn state_json_enabled_false() {
+    if skip() {
+        return;
+    }
+
+    let (sid, tid) = start_session();
+    let _guard = SessionGuard::new(&sid);
+    inject_fixture(&sid, &tid);
+
+    let out = headless_json(
+        &[
+            "browser",
+            "state",
+            STATE_DISABLED_SELECTOR,
+            "--session",
+            &sid,
+            "--tab",
+            &tid,
+        ],
+        10,
+    );
+    assert_success(&out, "state disabled json");
+    let v = parse_json(&out);
+
+    assert_eq!(v["command"], "browser.state");
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["data"]["target"]["selector"], STATE_DISABLED_SELECTOR);
+    assert_eq!(v["data"]["state"]["visible"], true);
+    assert_eq!(v["data"]["state"]["enabled"], false);
+    assert_eq!(v["data"]["state"]["checked"], false);
+    assert_eq!(v["data"]["state"]["focused"], false);
+    assert_eq!(v["data"]["state"]["editable"], false);
+    assert_eq!(v["data"]["state"]["selected"], false);
+}
+
+#[test]
+fn state_json_visible_false() {
+    if skip() {
+        return;
+    }
+
+    let (sid, tid) = start_session();
+    let _guard = SessionGuard::new(&sid);
+    inject_fixture(&sid, &tid);
+
+    let out = headless_json(
+        &[
+            "browser",
+            "state",
+            STATE_HIDDEN_SELECTOR,
+            "--session",
+            &sid,
+            "--tab",
+            &tid,
+        ],
+        10,
+    );
+    assert_success(&out, "state hidden json");
+    let v = parse_json(&out);
+
+    assert_eq!(v["command"], "browser.state");
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["data"]["target"]["selector"], STATE_HIDDEN_SELECTOR);
+    assert_eq!(v["data"]["state"]["visible"], false);
+    assert_eq!(v["data"]["state"]["enabled"], true);
+    assert_eq!(v["data"]["state"]["checked"], false);
+    assert_eq!(v["data"]["state"]["focused"], false);
+    assert_eq!(v["data"]["state"]["editable"], false);
+    assert_eq!(v["data"]["state"]["selected"], false);
+}
+
+#[test]
 fn state_text_output() {
     if skip() {
         return;
@@ -272,6 +425,10 @@ fn state_text_output() {
             .unwrap_or(&"")
             .starts_with(&format!("[{sid} {tid}]")),
         "header must start with [session_id tab_id]: {text}"
+    );
+    assert!(
+        lines.first().unwrap_or(&"").contains("about:blank"),
+        "header must contain current URL: {text}"
     );
     assert_eq!(lines.get(1), Some(&"visible: true"));
     assert_eq!(lines.get(2), Some(&"enabled: true"));
@@ -467,6 +624,7 @@ fn describe_js_exception_returns_error() {
     let _guard = SessionGuard::new(&sid);
     inject_fixture(&sid, &tid);
 
+    // `describe` computes `state.visible`, which reaches `getComputedStyle`.
     let patch_out = headless_json(
         &[
             "browser",
