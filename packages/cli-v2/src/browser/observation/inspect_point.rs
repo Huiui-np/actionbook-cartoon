@@ -13,6 +13,7 @@ use super::snapshot_transform::RefCache;
 #[derive(Args, Debug, Clone, Serialize, Deserialize)]
 pub struct Cmd {
     /// Point to inspect as "x,y" (e.g. "100,200")
+    #[arg(allow_hyphen_values = true)]
     pub coordinates: String,
     /// Session ID
     #[arg(long)]
@@ -218,6 +219,9 @@ async fn get_ax_info_for_backend_node(
 
 /// Walk up the DOM parent chain, collecting up to `depth` ancestors.
 /// Returns a JSON array of {role, name, selector} objects, nearest parent first.
+///
+/// Uses iterative DOM.describeNode calls to traverse the parent chain, which
+/// is more broadly supported than DOM.getAncestors.
 async fn collect_parents(
     cdp: &CdpSession,
     target_id: &str,
@@ -225,52 +229,54 @@ async fn collect_parents(
     depth: u32,
     ref_cache: &mut RefCache,
 ) -> Result<Value, ActionResult> {
-    // Resolve DOM nodeId for the starting element
-    let desc = cdp
-        .execute_on_tab(
-            target_id,
-            "DOM.describeNode",
-            json!({ "backendNodeId": start_backend_node_id }),
-        )
-        .await
-        .map_err(|e| cdp_error_to_result(e, "INTERNAL_ERROR"))?;
-
-    let node_id = desc["result"]["node"]["nodeId"].as_i64().unwrap_or(0);
-    if node_id == 0 {
-        return Ok(json!([]));
-    }
-
-    // DOM.getAncestors returns all ancestors from immediate parent to document root.
-    // Take the first `depth` element-type ancestors.
-    let ancestors_resp = cdp
-        .execute_on_tab(target_id, "DOM.getAncestors", json!({ "nodeId": node_id }))
-        .await;
-
-    let ancestor_nodes = match ancestors_resp {
-        Ok(ref resp) => resp["result"]["nodes"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default(),
-        Err(_) => return Ok(json!([])),
-    };
-
     let mut parents = Vec::new();
-    for ancestor in ancestor_nodes.iter() {
-        if parents.len() >= depth as usize {
+    let mut current_backend_id = start_backend_node_id;
+
+    while parents.len() < depth as usize {
+        // Describe current node to find its parentId
+        let desc = cdp
+            .execute_on_tab(
+                target_id,
+                "DOM.describeNode",
+                json!({ "backendNodeId": current_backend_id }),
+            )
+            .await;
+        let desc = match desc {
+            Ok(v) => v,
+            Err(_) => break,
+        };
+
+        let parent_id = desc["result"]["node"]["parentId"].as_i64().unwrap_or(0);
+        if parent_id == 0 {
             break;
         }
-        // Only include Element nodes (nodeType 1)
-        let node_type = ancestor["nodeType"].as_i64().unwrap_or(0);
-        if node_type != 1 {
-            continue;
+
+        // Describe the parent node
+        let parent_desc = cdp
+            .execute_on_tab(
+                target_id,
+                "DOM.describeNode",
+                json!({ "nodeId": parent_id }),
+            )
+            .await;
+        let parent_desc = match parent_desc {
+            Ok(v) => v,
+            Err(_) => break,
+        };
+
+        let node = &parent_desc["result"]["node"];
+        let node_type = node["nodeType"].as_i64().unwrap_or(0);
+        let parent_backend_id = node["backendNodeId"].as_i64().unwrap_or(0);
+
+        // Stop at non-element nodes (document, doctype, etc.)
+        if node_type != 1 || parent_backend_id == 0 {
+            break;
         }
-        let parent_backend_id = ancestor["backendNodeId"].as_i64().unwrap_or(0);
-        if parent_backend_id == 0 {
-            continue;
-        }
+
         let parent_info =
             get_ax_info_for_backend_node(cdp, target_id, parent_backend_id, ref_cache).await?;
         parents.push(parent_info);
+        current_backend_id = parent_backend_id;
     }
 
     Ok(json!(parents))
