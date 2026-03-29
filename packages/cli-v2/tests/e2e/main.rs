@@ -17,6 +17,7 @@ mod element_read;
 mod harness;
 mod inspect_point;
 mod interaction;
+mod logs;
 mod navigation;
 mod page_info;
 mod pdf;
