@@ -10,6 +10,8 @@ use crate::output::ResponseContext;
 
 /// JS hook that monkey-patches console.* methods and listens for error/unhandledrejection events.
 /// Idempotent: checks window.__ab_console_logs / window.__ab_error_logs before installing.
+/// console.* calls → __ab_console_logs only.
+/// Uncaught exceptions + unhandled rejections → __ab_error_logs only.
 pub const ENSURE_LOG_CAPTURE_JS: &str = r#"(function() {
     if (typeof window.__ab_log_seq === 'undefined') { window.__ab_log_seq = 0; }
     if (typeof window.__ab_err_seq === 'undefined') { window.__ab_err_seq = 0; }
@@ -40,18 +42,6 @@ pub const ENSURE_LOG_CAPTURE_JS: &str = r#"(function() {
     }
     if (!window.__ab_error_logs) {
         window.__ab_error_logs = [];
-        var origErr = console.error;
-        console.error = function() {
-            var args = Array.prototype.slice.call(arguments);
-            window.__ab_error_logs.push({
-                id: 'err-' + (++window.__ab_err_seq),
-                level: 'error',
-                text: args.map(function(a) { return typeof a === 'object' ? JSON.stringify(a) : String(a); }).join(' '),
-                source: location.href || 'javascript',
-                timestamp_ms: Date.now()
-            });
-            origErr.apply(console, args);
-        };
         window.addEventListener('error', function(e) {
             window.__ab_error_logs.push({
                 id: 'err-' + (++window.__ab_err_seq),
