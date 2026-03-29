@@ -373,6 +373,11 @@ fn format_data_fields(command: &str, data: &Value, lines: &mut Vec<String>) {
                 lines.push(content.to_string());
             }
         }
+        "browser.html" | "browser.text" | "browser.value" | "browser.attr" => {
+            if let Some(val) = data.get("value") {
+                lines.push(text_scalar(val));
+            }
+        }
         "browser.title" | "browser.url" => {
             if let Some(val) = data.get("value").and_then(|v| v.as_str()) {
                 lines.push(val.to_string());
@@ -421,5 +426,15 @@ fn format_data_fields(command: &str, data: &Value, lines: &mut Vec<String>) {
                 lines.push(s.to_string());
             }
         }
+    }
+}
+
+fn text_scalar(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        other => other.to_string(),
     }
 }

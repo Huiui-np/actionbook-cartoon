@@ -29,6 +29,10 @@ pub enum Action {
     Title(observation::title::Cmd),
     Url(observation::url::Cmd),
     Viewport(observation::viewport::Cmd),
+    Html(observation::html::Cmd),
+    Text(observation::text::Cmd),
+    Value(observation::value::Cmd),
+    Attr(observation::attr::Cmd),
     InspectPoint(observation::inspect_point::Cmd),
 
     // ── Interaction ────────────────────────────────────────────
@@ -59,6 +63,10 @@ impl Action {
             Action::Title(_) => observation::title::COMMAND_NAME,
             Action::Url(_) => observation::url::COMMAND_NAME,
             Action::Viewport(_) => observation::viewport::COMMAND_NAME,
+            Action::Html(_) => observation::html::COMMAND_NAME,
+            Action::Text(_) => observation::text::COMMAND_NAME,
+            Action::Value(_) => observation::value::COMMAND_NAME,
+            Action::Attr(_) => observation::attr::COMMAND_NAME,
             Action::InspectPoint(_) => observation::inspect_point::COMMAND_NAME,
             Action::Eval(_) => interaction::eval::COMMAND_NAME,
             Action::Click(_) => interaction::click::COMMAND_NAME,
