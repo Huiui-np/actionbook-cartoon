@@ -349,6 +349,41 @@ fn wait_condition_json_happy_path() {
 }
 
 #[test]
+fn wait_condition_timeout_json() {
+    if skip() {
+        return;
+    }
+
+    let (sid, tid) = start_session("about:blank");
+    let _guard = SessionGuard::new(&sid);
+
+    let out = headless_json(
+        &[
+            "browser",
+            "wait",
+            "condition",
+            "window.__waitNever === true",
+            "--session",
+            &sid,
+            "--tab",
+            &tid,
+            "--timeout",
+            "150",
+        ],
+        10,
+    );
+    assert_failure(&out, "wait condition timeout");
+    let v = parse_json(&out);
+
+    assert_eq!(v["command"], "browser.wait.condition");
+    assert!(v["context"].is_object());
+    assert_eq!(v["context"]["session_id"], sid);
+    assert_eq!(v["context"]["tab_id"], tid);
+    assert_error_envelope(&v, "TIMEOUT");
+    assert_eq!(v["error"]["retryable"], true);
+}
+
+#[test]
 fn wait_condition_text_output() {
     if skip() {
         return;
