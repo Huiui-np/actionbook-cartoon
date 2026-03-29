@@ -78,7 +78,9 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
     let idle_window_ms: u64 = 500;
     let start = Instant::now();
 
-    // Resolve the CDP flat-session ID for event subscription.
+    // Resolve the CDP flat-session ID.  `attach()` already called `Network.enable`
+    // on this session, so `tab_net_pending` tracks ALL requests since tab attachment —
+    // including those that started before this `wait network-idle` call.
     let cdp_session_id = match cdp.get_cdp_session_id(&target_id).await {
         Some(sid) => sid,
         None => {
@@ -89,30 +91,8 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         }
     };
 
-    // Subscribe to Network domain events BEFORE enabling the domain to avoid a
-    // race where requests fire between Network.enable and our first poll.
-    let mut req_rx = cdp
-        .subscribe_events(&cdp_session_id, "Network.requestWillBeSent")
-        .await;
-    let mut finished_rx = cdp
-        .subscribe_events(&cdp_session_id, "Network.loadingFinished")
-        .await;
-    let mut failed_rx = cdp
-        .subscribe_events(&cdp_session_id, "Network.loadingFailed")
-        .await;
-    let mut cached_rx = cdp
-        .subscribe_events(&cdp_session_id, "Network.requestServedFromCache")
-        .await;
-
-    // Enable the Network domain on this tab.
-    let _ = cdp
-        .execute_on_tab(&target_id, "Network.enable", json!({}))
-        .await;
-
-    // JS guard: document.readyState must be complete and all DOM-attached <img>
-    // elements must be loaded.  This catches requests that were already in-flight
-    // before Network.enable was called, and same-document navigations where no
-    // Network events fire.
+    // JS guard: readyState must be complete and DOM-attached <img> elements loaded.
+    // This ensures the page itself has finished parsing, independent of XHR/fetch traffic.
     let js = r#"(function() {
         if (document.readyState !== 'complete') { return { ready: false, unloaded_imgs: 1 }; }
         var imgs = Array.prototype.slice.call(document.querySelectorAll('img'));
@@ -120,29 +100,13 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         return { ready: true, unloaded_imgs: unloaded };
     })()"#;
 
-    // in-flight request count tracked via CDP Network events.
-    let mut pending: i64 = 0;
-    // When pending first drops to 0 (and js_idle), we record the time.
-    // Idle is only declared after idle_window_ms passes with no new requests.
+    // When pending first reaches 0 (and js_idle), we record the start of the quiet
+    // window.  Idle is declared only after idle_window_ms with no new requests.
     let mut quiet_start: Option<Instant> = None;
 
     loop {
-        // Drain Network events to update the in-flight request count.
-        while req_rx.try_recv().is_ok() {
-            pending += 1;
-            quiet_start = None; // new request resets the quiet window
-        }
-        while finished_rx.try_recv().is_ok() {
-            pending = (pending - 1).max(0);
-        }
-        while failed_rx.try_recv().is_ok() {
-            pending = (pending - 1).max(0);
-        }
-        // requestServedFromCache is the terminal event for cache-served requests
-        // (paired with requestWillBeSent, so we decrement pending).
-        while cached_rx.try_recv().is_ok() {
-            pending = (pending - 1).max(0);
-        }
+        // Read the live in-flight counter maintained by reader_loop.
+        let pending = cdp.network_pending(&cdp_session_id).await;
 
         // JS fallback: readyState + DOM-attached img.complete.
         let js_idle = cdp

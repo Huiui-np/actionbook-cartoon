@@ -21,6 +21,8 @@ use crate::error::CliError;
 type PendingResponseTx = oneshot::Sender<Result<Value, CliError>>;
 type PendingRequests = Arc<Mutex<HashMap<u64, PendingResponseTx>>>;
 type EventSubs = Arc<Mutex<HashMap<String, Vec<mpsc::Sender<Value>>>>>;
+/// Per-tab in-flight network request counter, keyed by CDP flat-session ID.
+type TabNetPending = Arc<Mutex<HashMap<String, i64>>>;
 
 /// Persistent CDP connection for a single browser session.
 ///
@@ -39,6 +41,10 @@ pub struct CdpSession {
     tab_sessions: Arc<Mutex<HashMap<String, String>>>,
     /// Event subscribers keyed by `"{cdp_session_id}:{method}"`.
     event_subs: EventSubs,
+    /// In-flight Network request count per CDP flat-session ID.
+    /// Maintained by reader_loop from Network domain events; Network.enable is
+    /// called in attach() so tracking starts before any user commands run.
+    tab_net_pending: TabNetPending,
 }
 
 impl CdpSession {
@@ -75,11 +81,18 @@ impl CdpSession {
         let next_id = Arc::new(AtomicU64::new(1));
         let (writer_tx, writer_rx) = mpsc::channel::<String>(64);
         let event_subs: EventSubs = Arc::new(Mutex::new(HashMap::new()));
+        let tab_net_pending: TabNetPending = Arc::new(Mutex::new(HashMap::new()));
 
         tokio::spawn(Self::writer_loop(ws_writer, writer_rx));
         let pending_clone = pending.clone();
         let event_subs_clone = event_subs.clone();
-        tokio::spawn(Self::reader_loop(ws_reader, pending_clone, event_subs_clone));
+        let tab_net_pending_clone = tab_net_pending.clone();
+        tokio::spawn(Self::reader_loop(
+            ws_reader,
+            pending_clone,
+            event_subs_clone,
+            tab_net_pending_clone,
+        ));
 
         Ok(CdpSession {
             writer_tx,
@@ -87,6 +100,7 @@ impl CdpSession {
             next_id,
             tab_sessions: Arc::new(Mutex::new(HashMap::new())),
             event_subs,
+            tab_net_pending,
         })
     }
 
@@ -125,6 +139,13 @@ impl CdpSession {
             .await
             .insert(target_id.to_string(), session_id.clone());
 
+        // Enable the Network domain immediately so reader_loop tracks in-flight
+        // requests from tab birth, before any user command (including wait network-idle)
+        // is invoked.  Idempotent if called again on an already-enabled session.
+        let _ = self
+            .execute("Network.enable", json!({}), Some(&session_id))
+            .await;
+
         Ok(session_id)
     }
 
@@ -143,6 +164,9 @@ impl CdpSession {
             None,
         )
         .await?;
+
+        // Clean up the pending counter for this session.
+        self.tab_net_pending.lock().await.remove(&session_id);
 
         Ok(())
     }
@@ -177,6 +201,21 @@ impl CdpSession {
     /// Return the CDP flat-session ID for a target, or `None` if not attached.
     pub async fn get_cdp_session_id(&self, target_id: &str) -> Option<String> {
         self.tab_sessions.lock().await.get(target_id).cloned()
+    }
+
+    /// Return the current in-flight Network request count for a tab's CDP session.
+    ///
+    /// This counter is maintained by `reader_loop` from the moment `attach()` is
+    /// called (which enables the Network domain), so it reflects ALL requests since
+    /// tab attachment — not just those that started after `wait network-idle` was
+    /// invoked.
+    pub async fn network_pending(&self, cdp_session_id: &str) -> i64 {
+        *self
+            .tab_net_pending
+            .lock()
+            .await
+            .get(cdp_session_id)
+            .unwrap_or(&0)
     }
 
     /// Subscribe to a CDP event for a specific flat-session.
@@ -240,8 +279,12 @@ impl CdpSession {
     }
 
     /// Background task: read WS messages and route responses/events to callers.
-    async fn reader_loop<S>(mut reader: S, pending: PendingRequests, event_subs: EventSubs)
-    where
+    async fn reader_loop<S>(
+        mut reader: S,
+        pending: PendingRequests,
+        event_subs: EventSubs,
+        tab_net_pending: TabNetPending,
+    ) where
         S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
     {
         while let Some(raw) = reader.next().await {
@@ -263,9 +306,26 @@ impl CdpSession {
                     let _ = tx.send(Ok(resp));
                 }
             } else if let Some(method) = resp.get("method").and_then(|v| v.as_str()) {
-                // Event: route to subscribers keyed by "{sessionId}:{method}".
-                // Browser-level events have no sessionId → key is ":{method}".
+                // Event: extract sessionId (empty string for browser-level events).
                 let session_id = resp.get("sessionId").and_then(|v| v.as_str()).unwrap_or("");
+
+                // Maintain per-tab Network pending counter.
+                if !session_id.is_empty() {
+                    let delta: i64 = match method {
+                        "Network.requestWillBeSent" => 1,
+                        "Network.loadingFinished"
+                        | "Network.loadingFailed"
+                        | "Network.requestServedFromCache" => -1,
+                        _ => 0,
+                    };
+                    if delta != 0 {
+                        let mut tp = tab_net_pending.lock().await;
+                        let count = tp.entry(session_id.to_string()).or_insert(0);
+                        *count = (*count + delta).max(0);
+                    }
+                }
+
+                // Route to external event subscribers keyed by "{sessionId}:{method}".
                 let key = format!("{session_id}:{method}");
                 let mut subs = event_subs.lock().await;
                 if let Some(txs) = subs.get_mut(&key) {
@@ -493,6 +553,12 @@ mod tests {
         )
         .await;
 
+        // attach() enables Network domain immediately after storing the session.
+        let net_msg = read_json(&mut reader).await;
+        assert_eq!(net_msg["method"], "Network.enable");
+        assert_eq!(net_msg["sessionId"], "CDP_SESS_1");
+        send_json(&mut writer, json!({"id": net_msg["id"], "result": {}})).await;
+
         let session_id = attach_handle.await.unwrap().unwrap();
         assert_eq!(session_id, "CDP_SESS_1");
 
@@ -647,7 +713,90 @@ mod tests {
         );
     }
 
-    // ── 7. test_event_routing ─────────────────────────────────────────
+    // ── 7. test_network_pending_counter ──────────────────────────────
+
+    #[tokio::test]
+    async fn test_network_pending_counter() {
+        let (url, mut conns) = mock_ws_server().await;
+        let cdp = CdpSession::connect(&url).await.unwrap();
+        let (_, mut writer) = conns.recv().await.unwrap();
+
+        // Pre-populate a tab session (simulates attach having stored the session).
+        cdp.tab_sessions
+            .lock()
+            .await
+            .insert("T_NET".to_string(), "S_NET".to_string());
+
+        // Initially 0
+        assert_eq!(cdp.network_pending("S_NET").await, 0);
+
+        // Simulate Network.requestWillBeSent event (no id field)
+        send_json(
+            &mut writer,
+            json!({
+                "method": "Network.requestWillBeSent",
+                "sessionId": "S_NET",
+                "params": { "requestId": "r1" }
+            }),
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(cdp.network_pending("S_NET").await, 1);
+
+        // Second request
+        send_json(
+            &mut writer,
+            json!({
+                "method": "Network.requestWillBeSent",
+                "sessionId": "S_NET",
+                "params": { "requestId": "r2" }
+            }),
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(cdp.network_pending("S_NET").await, 2);
+
+        // First finishes
+        send_json(
+            &mut writer,
+            json!({
+                "method": "Network.loadingFinished",
+                "sessionId": "S_NET",
+                "params": { "requestId": "r1" }
+            }),
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(cdp.network_pending("S_NET").await, 1);
+
+        // Second fails
+        send_json(
+            &mut writer,
+            json!({
+                "method": "Network.loadingFailed",
+                "sessionId": "S_NET",
+                "params": { "requestId": "r2" }
+            }),
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(cdp.network_pending("S_NET").await, 0);
+
+        // Does not go negative on extra terminal events
+        send_json(
+            &mut writer,
+            json!({
+                "method": "Network.loadingFinished",
+                "sessionId": "S_NET",
+                "params": { "requestId": "r_unknown" }
+            }),
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(cdp.network_pending("S_NET").await, 0);
+    }
+
+    // ── 9. test_event_routing ─────────────────────────────────────────
 
     #[tokio::test]
     async fn test_event_routing() {
@@ -687,7 +836,7 @@ mod tests {
         assert_eq!(event["params"]["requestId"], "req-42");
     }
 
-    // ── 8. test_event_not_routed_to_wrong_session ─────────────────────
+    // ── 10. test_event_not_routed_to_wrong_session ────────────────────
 
     #[tokio::test]
     async fn test_event_not_routed_to_wrong_session() {
