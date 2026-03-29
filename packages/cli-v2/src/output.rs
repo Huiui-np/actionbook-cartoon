@@ -209,6 +209,7 @@ pub fn format_text(
                     | "browser.scroll"
                     | "browser.new-tab"
                     | "browser.close-tab"
+                    | "browser.pdf"
             );
 
             if is_action {
