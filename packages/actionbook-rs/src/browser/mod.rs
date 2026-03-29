@@ -28,8 +28,6 @@ pub mod wait_hints; // Domain-aware wait strategies (I5) // Enhanced stealth bas
 pub use app_discovery::{discover_electron_apps, ElectronAppInfo};
 pub use backend::BrowserBackend;
 #[allow(unused_imports)]
-pub use cdp_types::PendingDialog;
-#[allow(unused_imports)]
 pub use discovery::{discover_all_browsers, BrowserInfo, BrowserType};
 #[allow(unused_imports)]
 pub use stealth::{build_stealth_profile, stealth_status};
