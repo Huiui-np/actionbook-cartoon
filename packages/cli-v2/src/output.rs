@@ -209,6 +209,7 @@ pub fn format_text(
                     | "browser.scroll"
                     | "browser.new-tab"
                     | "browser.close-tab"
+                    | "browser.pdf"
             );
 
             if is_action {
@@ -625,6 +626,16 @@ fn format_data_fields(command: &str, data: &Value, lines: &mut Vec<String>) {
                 } else {
                     lines.push(format!("point: {x},{y}"));
                 }
+            }
+        }
+        "browser.pdf" => {
+            // §10.3: path line
+            if let Some(path) = data
+                .get("artifact")
+                .and_then(|a| a.get("path"))
+                .and_then(|v| v.as_str())
+            {
+                lines.push(format!("path: {path}"));
             }
         }
         "browser.eval" => {
