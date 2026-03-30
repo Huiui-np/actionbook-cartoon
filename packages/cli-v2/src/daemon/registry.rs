@@ -225,6 +225,11 @@ impl SessionRegistry {
         self.sessions.values().collect()
     }
 
+    /// Returns `true` if any session is in Starting or Running state.
+    pub fn has_active_sessions(&self) -> bool {
+        self.sessions.values().any(|entry| entry.status.is_active())
+    }
+
     /// Get url and title for a tab.
     pub fn get_tab_url_title(
         &self,
@@ -381,5 +386,33 @@ mod tests {
             registry.get(next.as_str()).map(|entry| entry.status),
             Some(SessionState::Starting)
         );
+    }
+
+    #[test]
+    fn has_active_sessions_empty_registry() {
+        let registry = SessionRegistry::new();
+        assert!(!registry.has_active_sessions());
+    }
+
+    #[test]
+    fn has_active_sessions_with_starting_session() {
+        let mut registry = SessionRegistry::new();
+        registry
+            .reserve_session_start(Some("s1"), Some("prof"), "prof", Mode::Local, true)
+            .unwrap();
+        assert!(registry.has_active_sessions());
+    }
+
+    #[test]
+    fn has_active_sessions_all_closed() {
+        let mut registry = SessionRegistry::new();
+        let sid = registry
+            .reserve_session_start(Some("s1"), Some("prof"), "prof", Mode::Local, true)
+            .unwrap();
+        // Transition to Closed
+        if let Some(entry) = registry.get_mut(sid.as_str()) {
+            entry.status = SessionState::Closed;
+        }
+        assert!(!registry.has_active_sessions());
     }
 }
