@@ -8,9 +8,8 @@ use crate::action_result::ActionResult;
 use crate::browser::element::TabContext;
 use crate::browser::navigation;
 use crate::daemon::cdp_session::{CdpSession, cdp_error_to_result};
-use crate::daemon::registry::{SharedRegistry, TabEntry};
+use crate::daemon::registry::SharedRegistry;
 use crate::output::ResponseContext;
-use crate::types::TabId;
 
 fn default_button() -> String {
     "left".to_string()
@@ -358,11 +357,7 @@ async fn open_in_new_tab(
     let mut reg = registry.lock().await;
     match reg.get_mut(session_id) {
         Some(entry) => {
-            entry.tabs.push(TabEntry {
-                id: TabId(new_target_id),
-                url: url.to_string(),
-                title: String::new(),
-            });
+            entry.push_tab(new_target_id, url.to_string(), String::new());
         }
         None => {
             // Session vanished concurrently — detach and close the orphan

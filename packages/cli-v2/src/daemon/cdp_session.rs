@@ -364,12 +364,12 @@ impl CdpSession {
 
 // ─── Helper ──────────────────────────────────────────────────────────
 
-/// Extract CdpSession and tab target_id from the registry.
+/// Extract CdpSession and native target_id from the registry.
 ///
+/// `tab_id` is the short user-facing ID (e.g. "t1"); the returned target_id
+/// is Chrome's native CDP target ID needed for `execute_on_tab`.
 /// Returns `ActionResult` errors for SESSION_NOT_FOUND, TAB_NOT_FOUND,
 /// or missing CDP connection.
-/// Extract CdpSession from the registry and verify the tab exists.
-/// Since tab_id IS the native target_id, just return it directly.
 pub async fn get_cdp_and_target(
     registry: &crate::daemon::registry::SharedRegistry,
     session_id: &str,
@@ -388,14 +388,18 @@ pub async fn get_cdp_and_target(
             format!("no CDP connection for session '{session_id}'"),
         )
     })?;
-    if !entry.tabs.iter().any(|t| t.id.0 == tab_id) {
-        return Err(crate::action_result::ActionResult::fatal(
-            "TAB_NOT_FOUND",
-            format!("tab '{tab_id}' not found"),
-        ));
-    }
-    // tab_id IS the native target_id
-    Ok((cdp, tab_id.to_string()))
+    let native_id = entry
+        .tabs
+        .iter()
+        .find(|t| t.id.0 == tab_id)
+        .map(|t| t.native_id.clone())
+        .ok_or_else(|| {
+            crate::action_result::ActionResult::fatal(
+                "TAB_NOT_FOUND",
+                format!("tab '{tab_id}' not found"),
+            )
+        })?;
+    Ok((cdp, native_id))
 }
 
 /// Convert a CliError from CDP operations into an ActionResult.

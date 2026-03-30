@@ -9,10 +9,11 @@ use crate::daemon::cdp_session::CdpSession;
 use crate::error::CliError;
 use crate::types::{Mode, SessionId, TabId};
 
-/// Tab metadata. `id` is Chrome's native CDP target ID.
+/// Tab metadata. `id` is the short user-facing ID (e.g. "t1"). `native_id` is Chrome's CDP target ID.
 #[derive(Debug, Clone)]
 pub struct TabEntry {
     pub id: TabId,
+    pub native_id: String,
     pub url: String,
     pub title: String,
 }
@@ -57,6 +58,8 @@ pub struct SessionEntry {
     pub cdp_endpoint: Option<String>,
     /// Custom headers for cloud CDP connections (e.g. auth tokens).
     pub headers: Vec<(String, String)>,
+    /// Counter for assigning short tab IDs (t1, t2, ...).
+    pub next_tab_id: u32,
 }
 
 impl SessionEntry {
@@ -74,11 +77,24 @@ impl SessionEntry {
             cdp: None,
             cdp_endpoint: None,
             headers: Vec::new(),
+            next_tab_id: 1,
         }
     }
 
     pub fn tabs_count(&self) -> usize {
         self.tabs.len()
+    }
+
+    /// Append a tab with an auto-assigned short ID (t1, t2, ...).
+    pub fn push_tab(&mut self, native_id: String, url: String, title: String) {
+        let short_id = format!("t{}", self.next_tab_id);
+        self.next_tab_id += 1;
+        self.tabs.push(TabEntry {
+            id: TabId(short_id),
+            native_id,
+            url,
+            title,
+        });
     }
 }
 
