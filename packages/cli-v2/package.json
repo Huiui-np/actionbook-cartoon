@@ -12,7 +12,10 @@
     "lint:fmt": "cargo fmt -- --check",
     "lint:clippy": "cargo clippy -- -D warnings",
     "fmt": "cargo fmt",
-    "clean": "cargo clean"
+    "clean": "cargo clean",
+    "dev": "cargo watch -w src -w Cargo.toml -x build",
+    "dev:check": "cargo watch -w src -w Cargo.toml -x check",
+    "dev:test": "cargo watch -w src -w tests -w Cargo.toml -x test"
   },
   "license": "MIT"
 }
