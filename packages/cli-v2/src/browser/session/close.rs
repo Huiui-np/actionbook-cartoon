@@ -33,10 +33,8 @@ pub fn context(cmd: &Cmd, _result: &ActionResult) -> Option<ResponseContext> {
 }
 
 pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
-    // Extract everything we need from the registry, then release the lock
-    // before any slow I/O (Chrome kill, profile deletion).
     // Extract everything from registry then release the lock before slow I/O.
-    let (closed_tabs, cdp, chrome_process) = {
+    let (closed_tabs, cdp, chrome_process, profile_to_clean) = {
         let mut reg = registry.lock().await;
         let mut entry = match reg.remove(&cmd.session) {
             Some(e) => e,
@@ -49,8 +47,19 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
             }
         };
         let tabs = entry.tabs_count();
+
+        // Only delete non-default profile directories for local sessions.
+        // The default profile ("actionbook") is long-lived and preserves
+        // user state (cookies, localStorage) across sessions.
+        let profile =
+            if entry.chrome_process.is_some() && entry.profile != crate::config::DEFAULT_PROFILE {
+                Some(entry.profile.clone())
+            } else {
+                None
+            };
+
         reg.clear_session_ref_caches(&cmd.session);
-        (tabs, entry.cdp.take(), entry.chrome_process.take())
+        (tabs, entry.cdp.take(), entry.chrome_process.take(), profile)
     };
     // Registry lock released here — slow I/O below won't block other sessions.
 
@@ -61,6 +70,14 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
 
     if let Some(child) = chrome_process {
         crate::daemon::chrome_reaper::kill_and_reap_async(child).await;
+    }
+
+    // Remove non-default profile directory after Chrome has fully exited.
+    if let Some(profile) = profile_to_clean {
+        let profile_dir = crate::config::profiles_dir().join(&profile);
+        if profile_dir.exists() {
+            let _ = std::fs::remove_dir_all(&profile_dir);
+        }
     }
 
     ActionResult::ok(json!({
