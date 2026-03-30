@@ -68,6 +68,7 @@ fn assert_session_context(v: &serde_json::Value, expected_sid: &str) {
     assert!(v["context"]["tab_id"].is_null());
 }
 
+#[allow(clippy::too_many_arguments)]
 fn assert_cookie_shape(
     item: &serde_json::Value,
     expected_name: &str,
