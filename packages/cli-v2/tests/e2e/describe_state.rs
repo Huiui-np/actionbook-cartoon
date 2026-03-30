@@ -9,6 +9,7 @@ const DESCRIBE_SELECTOR: &str = "#describe-target";
 const DESCRIBE_DISABLED_SELECTOR: &str = "#describe-disabled";
 const DESCRIBE_CHECKED_SELECTOR: &str = "#describe-checked";
 const DESCRIBE_MULTI_SELECTOR: &str = "#describe-multi";
+const DESCRIBE_NEARBY_FILTER_SELECTOR: &str = "#describe-nearby-target";
 const DESCRIBE_UNCHECKED_SELECTOR: &str = "#describe-unchecked";
 const DESCRIBE_SELECTED_SELECTOR: &str = "#describe-selected";
 const DESCRIBE_UNSELECTED_SELECTOR: &str = "#describe-unselected";
@@ -82,6 +83,25 @@ document.querySelector('#state-target').focus();
 void(0)"#;
     let out = headless_json(&["browser", "eval", js, "--session", sid, "--tab", tid], 10);
     assert_success(&out, "inject fixture");
+}
+
+fn inject_nearby_significance_fixture(sid: &str, tid: &str) {
+    let js = r#"document.body.style.margin = '0';
+document.body.innerHTML = `
+  <div id="nearby-structural-parent">
+    <div id="nearby-empty-previous"></div>
+    <div id="describe-nearby-target" aria-label="Profile card">
+      <div id="nearby-empty-child"></div>
+      <span id="nearby-text-child">Helper text</span>
+      <button id="nearby-button-child" type="button">Open</button>
+    </div>
+    <div id="nearby-named-next" aria-label="Status chip"></div>
+  </div>
+`;
+document.title = 'Describe Nearby Filter Fixture';
+void(0)"#;
+    let out = headless_json(&["browser", "eval", js, "--session", sid, "--tab", tid], 10);
+    assert_success(&out, "inject nearby significance fixture");
 }
 
 fn assert_meta(v: &serde_json::Value) {
@@ -290,6 +310,84 @@ fn describe_nearby_text_output() {
     assert_eq!(lines.get(1), Some(&"button \"Edit\""));
     assert_eq!(lines.get(2), Some(&"parent: listitem \"John Smith\""));
     assert_eq!(lines.get(3), Some(&"previous_sibling: text \"John Smith\""));
+}
+
+#[test]
+fn describe_nearby_filters_structural_nodes_json() {
+    if skip() {
+        return;
+    }
+
+    let (sid, tid) = start_session();
+    let _guard = SessionGuard::new(&sid);
+    inject_nearby_significance_fixture(&sid, &tid);
+
+    let out = headless_json(
+        &[
+            "browser",
+            "describe",
+            DESCRIBE_NEARBY_FILTER_SELECTOR,
+            "--nearby",
+            "--session",
+            &sid,
+            "--tab",
+            &tid,
+        ],
+        10,
+    );
+    assert_success(&out, "describe nearby significance json");
+    let v = parse_json(&out);
+
+    let nearby = &v["data"]["nearby"];
+    assert!(nearby["parent"].is_null());
+    assert!(nearby["previous_sibling"].is_null());
+    assert_eq!(nearby["next_sibling"], "div \"Status chip\"");
+
+    let children = nearby["children"].as_array().unwrap();
+    assert_eq!(children.len(), 2);
+    assert_eq!(children[0], "text \"Helper text\"");
+    assert_eq!(children[1], "button \"Open\"");
+}
+
+#[test]
+fn describe_nearby_filters_structural_nodes_text_output() {
+    if skip() {
+        return;
+    }
+
+    let (sid, tid) = start_session();
+    let _guard = SessionGuard::new(&sid);
+    inject_nearby_significance_fixture(&sid, &tid);
+
+    let out = headless(
+        &[
+            "browser",
+            "describe",
+            DESCRIBE_NEARBY_FILTER_SELECTOR,
+            "--nearby",
+            "--session",
+            &sid,
+            "--tab",
+            &tid,
+        ],
+        10,
+    );
+    assert_success(&out, "describe nearby significance text");
+    let text = stdout_str(&out);
+    let lines: Vec<&str> = text.lines().collect();
+
+    assert!(
+        lines
+            .first()
+            .unwrap_or(&"")
+            .starts_with(&format!("[{sid} {tid}]")),
+        "header must start with [session_id tab_id]: {text}"
+    );
+    assert_eq!(lines.get(1), Some(&"div \"Profile card\""));
+    assert_eq!(lines.get(2), Some(&"next_sibling: div \"Status chip\""));
+    assert_eq!(lines.get(3), Some(&"child: text \"Helper text\""));
+    assert_eq!(lines.get(4), Some(&"child: button \"Open\""));
+    assert_eq!(lines.len(), 5);
 }
 
 #[test]
