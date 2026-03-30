@@ -1090,3 +1090,203 @@ fn lifecycle_set_session_id_rejects_duplicate_id() {
         "must return SESSION_ALREADY_EXISTS for duplicate ID"
     );
 }
+
+// ===========================================================================
+// Daemon singleton and lifecycle tests
+// ===========================================================================
+
+/// Two concurrent `browser start` commands should share one daemon.
+#[test]
+fn daemon_singleton_concurrent_start() {
+    if skip() {
+        return;
+    }
+    let env = Arc::new(SoloEnv::new());
+    let barrier = Arc::new(Barrier::new(2));
+
+    let handles: Vec<_> = (0..2)
+        .map(|i| {
+            let env = env.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                env.headless_json(
+                    &[
+                        "browser",
+                        "start",
+                        "--mode",
+                        "local",
+                        "--headless",
+                        "--set-session-id",
+                        &format!("conc-{i}"),
+                    ],
+                    30,
+                )
+            })
+        })
+        .collect();
+
+    let results: Vec<Output> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+    // Both CLI invocations must succeed (one starts the daemon, one reuses it)
+    for (i, out) in results.iter().enumerate() {
+        assert!(
+            out.status.success(),
+            "concurrent start {i} must succeed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    // Only one daemon process should be running (check PID file)
+    let pid_path = std::path::Path::new(&env.actionbook_home).join("daemon.pid");
+    let pid_str = std::fs::read_to_string(&pid_path).expect("PID file should exist");
+    let pid: u32 = pid_str.trim().parse().expect("PID should be a number");
+    let status = std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .output()
+        .unwrap();
+    assert!(status.status.success(), "daemon PID {pid} should be alive");
+}
+
+/// Daemon exits after idle timeout when no sessions are active.
+#[test]
+fn daemon_idle_timeout() {
+    if skip() {
+        return;
+    }
+    let env = SoloEnv::new();
+
+    // Start with short idle timeout (2s) and short housekeeping (use default 60s
+    // but we override idle to be very short — daemon checks every 60s so we need
+    // to wait at least that long).
+    let out = env.headless_json_with_env(
+        &[
+            "browser",
+            "start",
+            "--mode",
+            "local",
+            "--headless",
+            "--set-session-id",
+            "idle-test",
+        ],
+        &[("ACTIONBOOK_DAEMON_IDLE_TIMEOUT_SECS", "2")],
+        30,
+    );
+    assert_success(&out, "start for idle test");
+
+    // Close the session
+    let out = env.headless_json(&["browser", "close", "--session", "idle-test"], 10);
+    assert_success(&out, "close for idle test");
+
+    // Read daemon PID
+    let pid_path = std::path::Path::new(&env.actionbook_home).join("daemon.pid");
+    let pid_str = std::fs::read_to_string(&pid_path).expect("PID file should exist");
+    let pid: u32 = pid_str.trim().parse().expect("PID should be a number");
+
+    // Wait for housekeeping tick (up to 75 seconds: 60s interval + 2s idle + margin)
+    let start = std::time::Instant::now();
+    let mut exited = false;
+    while start.elapsed() < Duration::from_secs(75) {
+        let status = std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .unwrap();
+        if !status.status.success() {
+            exited = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    assert!(exited, "daemon should have exited after idle timeout");
+}
+
+/// Daemon does NOT exit when sessions are still active, even past idle timeout.
+#[test]
+fn daemon_no_idle_exit_with_active_session() {
+    if skip() {
+        return;
+    }
+    let env = SoloEnv::new();
+
+    let out = env.headless_json_with_env(
+        &[
+            "browser",
+            "start",
+            "--mode",
+            "local",
+            "--headless",
+            "--set-session-id",
+            "keep-alive",
+        ],
+        &[("ACTIONBOOK_DAEMON_IDLE_TIMEOUT_SECS", "2")],
+        30,
+    );
+    assert_success(&out, "start for keep-alive test");
+
+    let pid_path = std::path::Path::new(&env.actionbook_home).join("daemon.pid");
+    let pid_str = std::fs::read_to_string(&pid_path).expect("PID file should exist");
+    let pid: u32 = pid_str.trim().parse().expect("PID should be a number");
+
+    // Wait 70 seconds — past the idle timeout + housekeeping interval
+    std::thread::sleep(Duration::from_secs(70));
+
+    // Daemon should still be alive because the session was never closed
+    let status = std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .output()
+        .unwrap();
+    assert!(
+        status.status.success(),
+        "daemon should still be alive with active session"
+    );
+}
+
+/// After daemon crash (SIGKILL), a new CLI invocation recovers.
+#[test]
+fn daemon_crash_recovery() {
+    if skip() {
+        return;
+    }
+    let env = SoloEnv::new();
+
+    // Start daemon
+    let out = env.headless_json(
+        &[
+            "browser",
+            "start",
+            "--mode",
+            "local",
+            "--headless",
+            "--set-session-id",
+            "crash-test",
+        ],
+        30,
+    );
+    assert_success(&out, "start before crash");
+
+    // Kill daemon with SIGKILL
+    let pid_path = std::path::Path::new(&env.actionbook_home).join("daemon.pid");
+    let pid_str = std::fs::read_to_string(&pid_path).expect("PID file should exist");
+    let pid: u32 = pid_str.trim().parse().expect("PID should be a number");
+    let _ = std::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .output();
+
+    // Wait for process to exit
+    std::thread::sleep(Duration::from_secs(1));
+
+    // New CLI invocation should auto-start a new daemon and succeed
+    let out = env.headless_json(
+        &[
+            "browser",
+            "start",
+            "--mode",
+            "local",
+            "--headless",
+            "--set-session-id",
+            "crash-recovery",
+        ],
+        30,
+    );
+    assert_success(&out, "start after crash recovery");
+}
