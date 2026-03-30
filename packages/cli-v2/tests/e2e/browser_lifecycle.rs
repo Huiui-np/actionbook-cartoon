@@ -1437,6 +1437,111 @@ fn daemon_shutdown_kills_all_chrome() {
     );
 }
 
+/// After `browser restart`, old Chrome processes must be killed and new ones spawned.
+#[test]
+fn restart_kills_old_chrome_and_spawns_new() {
+    if skip() {
+        return;
+    }
+    let env = SoloEnv::new();
+    let profiles_dir = std::path::Path::new(&env.actionbook_home).join("profiles");
+
+    // Start a session
+    let out = env.headless_json(
+        &[
+            "browser",
+            "start",
+            "--mode",
+            "local",
+            "--headless",
+            "--set-session-id",
+            "restart-leak",
+            "--profile",
+            "restart-leak-prof",
+        ],
+        30,
+    );
+    assert_success(&out, "start restart-leak");
+
+    // Record Chrome PIDs before restart
+    let pids_before = find_chrome_pids_for_dir(&profiles_dir);
+    assert!(
+        !pids_before.is_empty(),
+        "expected Chrome processes before restart"
+    );
+
+    // Restart the session
+    let out = env.headless_json(&["browser", "restart", "--session", "restart-leak"], 30);
+    assert_success(&out, "restart restart-leak");
+
+    // Wait for old Chrome to fully exit
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Verify: old PIDs should all be gone
+    for old_pid in &pids_before {
+        let alive = std::process::Command::new("kill")
+            .args(["-0", &old_pid.to_string()])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        assert!(
+            !alive,
+            "old Chrome PID {old_pid} should be dead after restart"
+        );
+    }
+
+    // Verify: new Chrome processes should exist
+    let pids_after = find_chrome_pids_for_dir(&profiles_dir);
+    assert!(
+        !pids_after.is_empty(),
+        "expected new Chrome processes after restart"
+    );
+
+    // Verify: the new PIDs are different from the old ones
+    for new_pid in &pids_after {
+        assert!(
+            !pids_before.contains(new_pid),
+            "new PID {new_pid} should not be in old PID set {:?}",
+            pids_before
+        );
+    }
+
+    // Clean up
+    let _ = env.headless_json(&["browser", "close", "--session", "restart-leak"], 30);
+}
+
+/// Closing an already-closed session returns SESSION_NOT_FOUND (no panic/crash).
+#[test]
+fn double_close_returns_not_found() {
+    if skip() {
+        return;
+    }
+    let env = SoloEnv::new();
+
+    let out = env.headless_json(
+        &[
+            "browser",
+            "start",
+            "--mode",
+            "local",
+            "--headless",
+            "--set-session-id",
+            "double-close",
+        ],
+        30,
+    );
+    assert_success(&out, "start double-close");
+
+    // First close succeeds
+    let out = env.headless_json(&["browser", "close", "--session", "double-close"], 30);
+    assert_success(&out, "first close");
+
+    // Second close returns SESSION_NOT_FOUND
+    let out = env.headless_json(&["browser", "close", "--session", "double-close"], 30);
+    assert_failure(&out, "second close should fail");
+    let v = parse_json(&out);
+    assert_eq!(v["error"]["code"], "SESSION_NOT_FOUND");
+}
+
 /// Helper: find Chrome PIDs whose --user-data-dir is under the given directory.
 /// Uses `--` to prevent pgrep from interpreting the pattern as options.
 fn find_chrome_pids_for_dir(profiles_dir: &std::path::Path) -> Vec<u32> {
