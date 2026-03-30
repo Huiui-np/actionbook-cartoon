@@ -196,6 +196,10 @@ fn handle_http(mut stream: std::net::TcpStream) {
         "/page-a" => "Page A",
         "/page-b" => "Page B",
         "/page-c" => "Page C",
+        "/slow" => {
+            std::thread::sleep(Duration::from_millis(250));
+            "Slow Page"
+        }
         other => other.trim_start_matches('/'),
     };
 
@@ -224,6 +228,11 @@ pub fn url_b() -> String {
 /// URL for page C (tertiary test page).
 pub fn url_c() -> String {
     format!("http://127.0.0.1:{}/page-c", local_server().port)
+}
+
+/// URL for a slow page used to verify CLI-level timeouts.
+pub fn url_slow() -> String {
+    format!("http://127.0.0.1:{}/slow", local_server().port)
 }
 
 // ── Per-test session isolation ─────────────────────────────────────

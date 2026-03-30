@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use clap::Parser;
 use serde_json::json;
@@ -76,10 +76,11 @@ async fn main() {
 
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let json_mode = cli.json;
+    let timeout_ms = cli.timeout;
 
     match cli.command.unwrap() {
         Commands::Browser { command } => {
-            handle_browser(command, json_mode).await?;
+            handle_browser(command, json_mode, timeout_ms).await?;
         }
         Commands::Setup(cmd) => {
             actionbook_cli::setup::execute(&cmd, json_mode).await?;
@@ -97,6 +98,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 async fn handle_browser(
     command: BrowserCommands,
     json_mode: bool,
+    timeout_ms: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if matches!(command, BrowserCommands::Help) {
         handle_browser_help(json_mode);
@@ -159,9 +161,37 @@ async fn handle_browser(
         }
     };
 
-    // Connect to daemon and execute
-    let mut client = DaemonClient::connect().await?;
-    let result = client.send_action(&action).await?;
+    // Connect to daemon and execute, with optional global timeout across the whole request.
+    let result = if let Some(timeout_ms) = timeout_ms {
+        let execution = async {
+            let mut client = DaemonClient::connect().await?;
+            client.send_action(&action).await
+        };
+        match tokio::time::timeout(Duration::from_millis(timeout_ms), execution).await {
+            Ok(result) => result?,
+            Err(_) => {
+                let result = ActionResult::fatal_with_hint(
+                    "TIMEOUT",
+                    format!("{command_name} timed out after {timeout_ms}ms"),
+                    "increase --timeout or retry the command",
+                );
+                let duration = start.elapsed();
+                let context = command.context(&result);
+                if json_mode {
+                    let envelope =
+                        JsonEnvelope::from_result(&command_name, context, &result, duration);
+                    println!("{}", serde_json::to_string(&envelope)?);
+                } else {
+                    let text = output::format_text(&command_name, &context, &result);
+                    println!("{text}");
+                }
+                std::process::exit(1);
+            }
+        }
+    } else {
+        let mut client = DaemonClient::connect().await?;
+        client.send_action(&action).await?
+    };
     let duration = start.elapsed();
 
     // Build context from command + result
