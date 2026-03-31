@@ -505,6 +505,11 @@ impl CdpSession {
                 "session was closed while command was pending".to_string(),
             )));
         }
+
+        // Also clear all event subscribers so their recv() returns None
+        // instead of hanging forever. This unblocks waiters like goto's
+        // Page.loadEventFired subscription.
+        event_subs.lock().await.clear();
     }
 
     /// Background task: forward channel messages to WS writer.

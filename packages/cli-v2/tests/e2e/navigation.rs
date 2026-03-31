@@ -883,3 +883,164 @@ fn nav_reload_missing_tab_arg() {
     let out = headless_json(&["browser", "reload", "--session", "some-session"], 10);
     assert_failure(&out, "reload missing --tab");
 }
+
+// ===========================================================================
+// Group 11: goto --wait-until
+// ===========================================================================
+
+/// Default goto (--wait-until load) waits for page load and returns correct URL/title.
+#[test]
+fn nav_goto_default_waits_for_load() {
+    if skip() {
+        return;
+    }
+    let (sid, tid) = start_session(&url_a());
+    let _guard = SessionGuard::new(&sid);
+
+    let url_b = url_b();
+    let out = headless_json(
+        &["browser", "goto", &url_b, "--session", &sid, "--tab", &tid],
+        30,
+    );
+    assert_success(&out, "goto default wait");
+    let v = parse_json(&out);
+
+    // After waiting for load, to_url and title must reflect the new page
+    let to_url = v["data"]["to_url"].as_str().unwrap_or("");
+    assert!(
+        to_url.contains("page-b"),
+        "to_url should contain page-b after load wait, got: {to_url}"
+    );
+    let title = v["data"]["title"].as_str().unwrap_or("");
+    assert!(
+        !title.is_empty(),
+        "title should be populated after load wait"
+    );
+}
+
+/// --wait-until none returns immediately (backward compat).
+#[test]
+fn nav_goto_wait_until_none() {
+    if skip() {
+        return;
+    }
+    let (sid, tid) = start_session(&url_a());
+    let _guard = SessionGuard::new(&sid);
+
+    let url_b = url_b();
+    let out = headless_json(
+        &[
+            "browser",
+            "goto",
+            &url_b,
+            "--session",
+            &sid,
+            "--tab",
+            &tid,
+            "--wait-until",
+            "none",
+        ],
+        30,
+    );
+    assert_success(&out, "goto --wait-until none");
+}
+
+/// --wait-until domcontentloaded waits for DOMContentLoaded.
+#[test]
+fn nav_goto_wait_until_domcontentloaded() {
+    if skip() {
+        return;
+    }
+    let (sid, tid) = start_session(&url_a());
+    let _guard = SessionGuard::new(&sid);
+
+    let url_b = url_b();
+    let out = headless_json(
+        &[
+            "browser",
+            "goto",
+            &url_b,
+            "--session",
+            &sid,
+            "--tab",
+            &tid,
+            "--wait-until",
+            "domcontentloaded",
+        ],
+        30,
+    );
+    assert_success(&out, "goto --wait-until domcontentloaded");
+    let v = parse_json(&out);
+    let to_url = v["data"]["to_url"].as_str().unwrap_or("");
+    assert!(
+        to_url.contains("page-b"),
+        "to_url should contain page-b after domcontentloaded, got: {to_url}"
+    );
+}
+
+/// --wait-until load waits for full load event.
+#[test]
+fn nav_goto_wait_until_load() {
+    if skip() {
+        return;
+    }
+    let (sid, tid) = start_session(&url_a());
+    let _guard = SessionGuard::new(&sid);
+
+    let url_b = url_b();
+    let out = headless_json(
+        &[
+            "browser",
+            "goto",
+            &url_b,
+            "--session",
+            &sid,
+            "--tab",
+            &tid,
+            "--wait-until",
+            "load",
+        ],
+        30,
+    );
+    assert_success(&out, "goto --wait-until load");
+    let v = parse_json(&out);
+    let to_url = v["data"]["to_url"].as_str().unwrap_or("");
+    assert!(
+        to_url.contains("page-b"),
+        "to_url should contain page-b after load, got: {to_url}"
+    );
+    let title = v["data"]["title"].as_str().unwrap_or("");
+    assert_eq!(title, "Page B", "title should be Page B after load");
+}
+
+/// After goto with wait, snapshot refs should be stable for subsequent interactions.
+#[test]
+fn nav_goto_wait_then_snapshot_refs_stable() {
+    if skip() {
+        return;
+    }
+    let (sid, tid) = start_session(&url_a());
+    let _guard = SessionGuard::new(&sid);
+
+    let url_b = url_b();
+    // goto with default wait (load)
+    let out = headless_json(
+        &["browser", "goto", &url_b, "--session", &sid, "--tab", &tid],
+        30,
+    );
+    assert_success(&out, "goto url_b");
+
+    // snapshot — should get stable refs
+    let out = headless_json(
+        &["browser", "snapshot", "--session", &sid, "--tab", &tid],
+        10,
+    );
+    assert_success(&out, "snapshot after goto");
+
+    // hover on first ref — should work, not REF_STALE
+    let out = headless_json(
+        &["browser", "hover", "@e1", "--session", &sid, "--tab", &tid],
+        10,
+    );
+    assert_success(&out, "hover @e1 after goto+wait should not be REF_STALE");
+}
