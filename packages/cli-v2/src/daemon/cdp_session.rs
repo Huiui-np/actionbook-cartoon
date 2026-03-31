@@ -175,8 +175,16 @@ impl CdpSession {
             .execute("Network.enable", json!({}), Some(&session_id))
             .await
         {
-            // Roll back session mapping on failure to avoid a half-initialized tab.
+            // Roll back: remove local mapping AND detach from Chrome to avoid
+            // an orphaned browser-side session that is unreachable from our map.
             self.tab_sessions.lock().await.remove(target_id);
+            let _ = self
+                .execute(
+                    "Target.detachFromTarget",
+                    json!({ "sessionId": session_id }),
+                    None,
+                )
+                .await;
             return Err(e);
         }
 
@@ -1211,6 +1219,11 @@ mod tests {
             json!({"id": msg["id"], "error": {"code": -32000, "message": "Network.enable failed"}}),
         )
         .await;
+
+        // 3. attach() rollback sends Target.detachFromTarget — reply to avoid timeout
+        let msg = read_json(&mut reader).await;
+        assert_eq!(msg["method"], "Target.detachFromTarget");
+        send_json(&mut writer, json!({"id": msg["id"], "result": {}})).await;
 
         let result = handle.await.unwrap();
         assert!(
