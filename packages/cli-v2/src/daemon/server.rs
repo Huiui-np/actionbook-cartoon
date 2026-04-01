@@ -34,6 +34,11 @@ pub fn pid_path() -> PathBuf {
     socket_path().with_extension("pid")
 }
 
+/// Version file path (same directory as socket).
+pub fn version_path() -> PathBuf {
+    socket_path().with_extension("version")
+}
+
 /// Check if a daemon is already running by probing the PID file lock.
 ///
 /// Uses `flock(LOCK_EX | LOCK_NB)` — if the lock cannot be acquired, a daemon
@@ -64,11 +69,31 @@ pub fn read_daemon_pid() -> Option<i32> {
 }
 
 /// Send SIGTERM to a process.
-pub fn send_sigterm(pid: i32) {
+/// Returns `true` if signal was delivered, `false` if process doesn't exist (ESRCH).
+/// Panics on EPERM (wrong user) — caller should validate PID ownership.
+pub fn send_sigterm(pid: i32) -> bool {
     unsafe extern "C" {
         safe fn kill(pid: i32, sig: i32) -> i32;
     }
-    kill(pid, 15); // SIGTERM = 15
+    if kill(pid, 15) == 0 {
+        return true;
+    }
+    // ESRCH (3) = no such process — already dead
+    std::io::Error::last_os_error().raw_os_error() != Some(3)
+}
+
+/// Check if a specific process is still alive (kill -0).
+/// Returns `true` if the process exists (including EPERM — the process is
+/// alive but we cannot signal it).  Only ESRCH means definitely dead.
+pub fn is_pid_alive(pid: i32) -> bool {
+    unsafe extern "C" {
+        safe fn kill(pid: i32, sig: i32) -> i32;
+    }
+    if kill(pid, 0) == 0 {
+        return true; // Signal succeeded → alive
+    }
+    // kill failed — check errno: EPERM means alive but no permission
+    std::io::Error::last_os_error().raw_os_error() == Some(1) // EPERM = 1
 }
 
 /// Try to acquire an exclusive non-blocking file lock.
@@ -197,6 +222,10 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         crate::BUILD_VERSION
     );
 
+    // Write version file for version mismatch detection
+    let ver_path = version_path();
+    std::fs::write(&ver_path, crate::BUILD_VERSION)?;
+
     // Write ready signal with build version for CLI version check
     std::fs::write(&ready_path, crate::BUILD_VERSION)?;
 
@@ -299,6 +328,7 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     // Cleanup files
     std::fs::remove_file(&path).ok();
     std::fs::remove_file(&ready_path).ok();
+    std::fs::remove_file(version_path()).ok();
     std::fs::remove_file(&pid_file).ok();
 
     info!("daemon shutdown complete (pid={})", std::process::id());
