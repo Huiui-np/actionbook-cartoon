@@ -2,7 +2,7 @@
 
 > **Date:** 2026-03-31
 > **Status:** Draft
-> **Scope:** `packages/cli-v2`
+> **Scope:** `packages/cli`
 
 ## Overview
 
