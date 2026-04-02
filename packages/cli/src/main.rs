@@ -318,15 +318,16 @@ Commands:
 Global flags:
   --json          Output as JSON envelope
   --timeout <ms>  Set command timeout
-  --api-key       API key for authenticated access (env: ACTIONBOOK_API_KEY)
 
 Quick start:
-  actionbook search \"airbnb search\"
+  actionbook search \"find a room next week in SF on airbnb\" --domain airbnb.com
   actionbook get \"airbnb.com:/:default\"
-  actionbook browser start --set-session-id my-session
-  actionbook browser goto https://example.com --session my-session --tab t1
-  actionbook browser snapshot --session my-session --tab t1
-  actionbook browser click \"#login\" --session my-session --tab t1
+  actionbook browser start --set-session-id s1
+  actionbook browser goto https://airbnb.com --session s1 --tab t1
+  actionbook browser snapshot --session s1 --tab t1
+  actionbook browser fill @e3 \"San Francisco\" --session s1 --tab t1
+  actionbook browser click @e7 --session s1 --tab t1
+  actionbook browser wait navigation --session s1 --tab t1
 
 Run actionbook browser --help to see all browser subcommands.";
 
