@@ -277,6 +277,13 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
     let key = cdp_key(&main_key, modifiers != 0);
     let def = key_definition(&key);
 
+    // Chrome routes Input.dispatchKeyEvent to the active (foreground) tab,
+    // ignoring the CDP sessionId.  Activate our target tab first so key
+    // events reach the right page.  Matches Playwright's Page.bringToFront().
+    let _ = cdp
+        .execute_browser("Target.activateTarget", json!({ "targetId": target_id }))
+        .await;
+
     // Chrome CDP dispatches key events with specific type semantics:
     //   - "keyDown" with `text`: generates both keydown + keypress DOM events
     //     and triggers native behaviours (form submit, focus switch, etc.)

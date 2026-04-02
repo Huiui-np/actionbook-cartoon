@@ -145,50 +145,25 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         }
     }
 
-    // Move cursor to end of existing value so typed text appends
+    // Move cursor to end of existing value so typed text appends.
+    // For contentEditable elements, use Selection/Range API instead.
     let _ = ctx
         .execute_on_element(
             "Runtime.evaluate",
             json!({
-                "expression": "(() => { const el = document.activeElement; if (el && el.setSelectionRange) el.setSelectionRange(el.value.length, el.value.length); })()",
+                "expression": "(() => { const el = document.activeElement; if (el && el.setSelectionRange) { el.setSelectionRange(el.value.length, el.value.length); } else if (el && el.isContentEditable) { const r = document.createRange(); const s = window.getSelection(); r.selectNodeContents(el); r.collapse(false); s.removeAllRanges(); s.addRange(r); } })()",
             }),
         )
         .await;
 
-    // Type each character: keyDown (with text insertion) + keyUp
-    for ch in text.chars() {
-        let key = ch.to_string();
-
-        if let Err(e) = ctx
-            .cdp
-            .execute_on_tab(
-                &ctx.target_id,
-                "Input.dispatchKeyEvent",
-                json!({
-                    "type": "keyDown",
-                    "key": key,
-                    "text": key,
-                }),
-            )
-            .await
-        {
-            return cdp_error_to_result(e, "CDP_ERROR");
-        }
-
-        if let Err(e) = ctx
-            .cdp
-            .execute_on_tab(
-                &ctx.target_id,
-                "Input.dispatchKeyEvent",
-                json!({
-                    "type": "keyUp",
-                    "key": key,
-                }),
-            )
-            .await
-        {
-            return cdp_error_to_result(e, "CDP_ERROR");
-        }
+    // Use Input.insertText which routes via CDP session (unlike
+    // Input.dispatchKeyEvent which always targets the active tab).
+    if let Err(e) = ctx
+        .cdp
+        .execute_on_tab(&ctx.target_id, "Input.insertText", json!({ "text": text }))
+        .await
+    {
+        return cdp_error_to_result(e, "CDP_ERROR");
     }
 
     let url = navigation::get_tab_url(&ctx.cdp, &ctx.target_id).await;
