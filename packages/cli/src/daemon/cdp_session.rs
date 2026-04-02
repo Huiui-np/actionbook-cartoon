@@ -21,8 +21,11 @@ use crate::error::CliError;
 type PendingResponseTx = oneshot::Sender<Result<Value, CliError>>;
 type PendingRequests = Arc<Mutex<HashMap<u64, PendingResponseTx>>>;
 type EventSubs = Arc<Mutex<HashMap<String, Vec<mpsc::Sender<Value>>>>>;
-/// Per-tab in-flight network request counter, keyed by CDP flat-session ID.
-type TabNetPending = Arc<Mutex<HashMap<String, i64>>>;
+/// Per-tab in-flight network request set, keyed by CDP flat-session ID.
+/// Inner value: map of requestId → insertion timestamp (for stale cleanup).
+/// Using a map (like Playwright's Set) instead of a counter avoids mismatches
+/// when loadingFinished fires on a different CDP session (cross-origin iframes).
+type TabNetPending = Arc<Mutex<HashMap<String, HashMap<String, std::time::Instant>>>>;
 /// Cross-origin iframe frame_id → dedicated CDP session_id.
 /// Populated by reader_loop from Target.attachedToTarget events.
 type IframeSessions = Arc<Mutex<HashMap<String, String>>>;
@@ -98,27 +101,25 @@ impl CdpSession {
         let tab_net_pending: TabNetPending = Arc::new(Mutex::new(HashMap::new()));
         let iframe_sessions: IframeSessions = Arc::new(Mutex::new(HashMap::new()));
         let pending_iframe_enables: PendingIframeEnables = Arc::new(Mutex::new(Vec::new()));
+        let tab_sessions: Arc<Mutex<HashMap<String, String>>> =
+            Arc::new(Mutex::new(HashMap::new()));
 
         tokio::spawn(Self::writer_loop(ws_writer, writer_rx));
-        let pending_clone = pending.clone();
-        let event_subs_clone = event_subs.clone();
-        let tab_net_pending_clone = tab_net_pending.clone();
-        let iframe_sessions_clone = iframe_sessions.clone();
-        let pending_iframe_enables_clone = pending_iframe_enables.clone();
         tokio::spawn(Self::reader_loop(
             ws_reader,
-            pending_clone,
-            event_subs_clone,
-            tab_net_pending_clone,
-            iframe_sessions_clone,
-            pending_iframe_enables_clone,
+            pending.clone(),
+            event_subs.clone(),
+            tab_net_pending.clone(),
+            iframe_sessions.clone(),
+            pending_iframe_enables.clone(),
+            tab_sessions.clone(),
         ));
 
         Ok(CdpSession {
             writer_tx: Arc::new(Mutex::new(Some(writer_tx))),
             pending,
             next_id,
-            tab_sessions: Arc::new(Mutex::new(HashMap::new())),
+            tab_sessions,
             event_subs,
             tab_net_pending,
             iframe_sessions,
@@ -323,13 +324,19 @@ impl CdpSession {
     /// called (which enables the Network domain), so it reflects ALL requests since
     /// tab attachment — not just those that started after `wait network-idle` was
     /// invoked.
+    /// Returns the number of in-flight network requests for this session.
+    /// Requests older than 10 seconds are considered stale (their
+    /// loadingFinished likely fired on a different CDP session, e.g.
+    /// cross-origin iframe) and are automatically evicted.
     pub async fn network_pending(&self, cdp_session_id: &str) -> i64 {
-        *self
-            .tab_net_pending
-            .lock()
-            .await
-            .get(cdp_session_id)
-            .unwrap_or(&0)
+        let mut tp = self.tab_net_pending.lock().await;
+        if let Some(map) = tp.get_mut(cdp_session_id) {
+            let cutoff = std::time::Instant::now() - std::time::Duration::from_secs(3);
+            map.retain(|_, ts| *ts > cutoff);
+            map.len() as i64
+        } else {
+            0
+        }
     }
 
     /// Subscribe to a CDP event for a specific flat-session.
@@ -462,6 +469,7 @@ impl CdpSession {
         tab_net_pending: TabNetPending,
         iframe_sessions: IframeSessions,
         pending_iframe_enables: PendingIframeEnables,
+        _tab_sessions: Arc<Mutex<HashMap<String, String>>>,
     ) where
         S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
     {
@@ -521,17 +529,59 @@ impl CdpSession {
                     _ => {}
                 }
 
-                // Maintain per-tab Network pending counter.
+                // Maintain per-tab in-flight request set (Playwright-style).
+                // Using a Set<requestId> instead of a counter ensures that
+                // cross-origin iframe requests (whose loadingFinished fires on
+                // a child CDP session) don't permanently inflate the count.
+                // Only track requests from the main frame (frameId == target_id)
+                // to match Playwright's per-frame idle semantics.
                 if !session_id.is_empty() {
-                    let delta: i64 = match method {
-                        "Network.requestWillBeSent" => 1,
-                        "Network.loadingFinished" | "Network.loadingFailed" => -1,
-                        _ => 0,
-                    };
-                    if delta != 0 {
-                        let mut tp = tab_net_pending.lock().await;
-                        let count = tp.entry(session_id.to_string()).or_insert(0);
-                        *count = (*count + delta).max(0);
+                    match method {
+                        "Network.requestWillBeSent" => {
+                            let params = resp.get("params");
+                            let req_type = params
+                                .and_then(|p| p.get("type"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let url = params
+                                .and_then(|p| p.pointer("/request/url"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let req_id = params
+                                .and_then(|p| p.get("requestId"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            // Exclude request types that don't reliably fire
+                            // loadingFinished on the same CDP session:
+                            // - WebSocket/EventSource: persistent, never finish.
+                            // - Favicon, data: URLs: Playwright compatibility.
+                            // Requests from iframes whose loadingFinished arrives
+                            // on a different CDP session are cleaned up by the
+                            // stale eviction in network_pending().
+                            let skip = req_type == "WebSocket"
+                                || req_type == "EventSource"
+                                || url.ends_with("/favicon.ico")
+                                || url.starts_with("data:");
+                            if !skip && !req_id.is_empty() {
+                                let mut tp = tab_net_pending.lock().await;
+                                tp.entry(session_id.to_string())
+                                    .or_default()
+                                    .insert(req_id.to_string(), std::time::Instant::now());
+                            }
+                        }
+                        "Network.loadingFinished" | "Network.loadingFailed" => {
+                            let req_id = resp
+                                .pointer("/params/requestId")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            if !req_id.is_empty() {
+                                let mut tp = tab_net_pending.lock().await;
+                                if let Some(set) = tp.get_mut(session_id) {
+                                    set.remove(req_id);
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
 
@@ -974,7 +1024,7 @@ mod tests {
             json!({
                 "method": "Network.requestWillBeSent",
                 "sessionId": "S_NET",
-                "params": { "requestId": "r1" }
+                "params": { "requestId": "r1", "frameId": "T_NET" }
             }),
         )
         .await;
@@ -987,7 +1037,7 @@ mod tests {
             json!({
                 "method": "Network.requestWillBeSent",
                 "sessionId": "S_NET",
-                "params": { "requestId": "r2" }
+                "params": { "requestId": "r2", "frameId": "T_NET" }
             }),
         )
         .await;
@@ -1000,7 +1050,7 @@ mod tests {
             json!({
                 "method": "Network.loadingFinished",
                 "sessionId": "S_NET",
-                "params": { "requestId": "r1" }
+                "params": { "requestId": "r1", "frameId": "T_NET" }
             }),
         )
         .await;
@@ -1013,7 +1063,7 @@ mod tests {
             json!({
                 "method": "Network.loadingFailed",
                 "sessionId": "S_NET",
-                "params": { "requestId": "r2" }
+                "params": { "requestId": "r2", "frameId": "T_NET" }
             }),
         )
         .await;
@@ -1032,6 +1082,157 @@ mod tests {
         .await;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(cdp.network_pending("S_NET").await, 0);
+    }
+
+    // ── 8b. test_network_counter_skips_websocket_favicon_data ─────────
+
+    /// WebSocket, favicon, and data: requests must not increment the pending
+    /// counter.  Their loadingFinished/loadingFailed must also be suppressed
+    /// so they don't undercount other in-flight requests.
+    #[tokio::test]
+    async fn test_network_counter_skips_websocket_favicon_data() {
+        let (url, mut conns) = mock_ws_server().await;
+        let cdp = CdpSession::connect(&url).await.unwrap();
+        let (_, mut writer) = conns.recv().await.unwrap();
+
+        cdp.tab_sessions
+            .lock()
+            .await
+            .insert("T_SKIP".to_string(), "S_SKIP".to_string());
+
+        // ── WebSocket request: should be skipped ──
+        send_json(
+            &mut writer,
+            json!({
+                "method": "Network.requestWillBeSent",
+                "sessionId": "S_SKIP",
+                "params": {
+                    "requestId": "ws1",
+                    "type": "WebSocket",
+                    "request": { "url": "wss://example.com/socket" }
+                }
+            }),
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            cdp.network_pending("S_SKIP").await,
+            0,
+            "WebSocket request must not increment counter"
+        );
+
+        // ── Favicon request: should be skipped ──
+        send_json(
+            &mut writer,
+            json!({
+                "method": "Network.requestWillBeSent",
+                "sessionId": "S_SKIP",
+                "params": {
+                    "requestId": "fav1",
+                    "request": { "url": "https://example.com/favicon.ico" }
+                }
+            }),
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            cdp.network_pending("S_SKIP").await,
+            0,
+            "favicon request must not increment counter"
+        );
+
+        // ── data: URL request: should be skipped ──
+        send_json(
+            &mut writer,
+            json!({
+                "method": "Network.requestWillBeSent",
+                "sessionId": "S_SKIP",
+                "params": {
+                    "requestId": "data1",
+                    "request": { "url": "data:image/png;base64,iVBOR..." }
+                }
+            }),
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            cdp.network_pending("S_SKIP").await,
+            0,
+            "data: URL must not increment counter"
+        );
+
+        // ── Normal request: should be counted ──
+        send_json(
+            &mut writer,
+            json!({
+                "method": "Network.requestWillBeSent",
+                "sessionId": "S_SKIP",
+                "params": {
+                    "requestId": "r1",
+                    "frameId": "T_SKIP",
+                    "request": { "url": "https://example.com/api/data" }
+                }
+            }),
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            cdp.network_pending("S_SKIP").await,
+            1,
+            "normal request must increment counter"
+        );
+
+        // ── Favicon loadingFinished must NOT undercount ──
+        // (This is the P0 bug that Codex bot caught)
+        send_json(
+            &mut writer,
+            json!({
+                "method": "Network.loadingFinished",
+                "sessionId": "S_SKIP",
+                "params": { "requestId": "fav1" }
+            }),
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            cdp.network_pending("S_SKIP").await,
+            1,
+            "favicon finish must not decrement — its +1 was skipped"
+        );
+
+        // ── data: loadingFinished must NOT undercount ──
+        send_json(
+            &mut writer,
+            json!({
+                "method": "Network.loadingFinished",
+                "sessionId": "S_SKIP",
+                "params": { "requestId": "data1" }
+            }),
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            cdp.network_pending("S_SKIP").await,
+            1,
+            "data: finish must not decrement — its +1 was skipped"
+        );
+
+        // ── Normal request finishes: counter should go to 0 ──
+        send_json(
+            &mut writer,
+            json!({
+                "method": "Network.loadingFinished",
+                "sessionId": "S_SKIP",
+                "params": { "requestId": "r1", "frameId": "T_NET" }
+            }),
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            cdp.network_pending("S_SKIP").await,
+            0,
+            "normal request finish should bring counter to 0"
+        );
     }
 
     // ── 9. test_event_routing ─────────────────────────────────────────
@@ -1448,7 +1649,7 @@ mod tests {
             json!({
                 "method": "Network.requestWillBeSent",
                 "sessionId": "S_CACHE",
-                "params": { "requestId": "r1" }
+                "params": { "requestId": "r1", "frameId": "T_CACHE" }
             }),
         )
         .await;
@@ -1461,7 +1662,7 @@ mod tests {
             json!({
                 "method": "Network.requestServedFromCache",
                 "sessionId": "S_CACHE",
-                "params": { "requestId": "r1" }
+                "params": { "requestId": "r1", "frameId": "T_CACHE" }
             }),
         )
         .await;
@@ -1478,7 +1679,7 @@ mod tests {
             json!({
                 "method": "Network.loadingFinished",
                 "sessionId": "S_CACHE",
-                "params": { "requestId": "r1" }
+                "params": { "requestId": "r1", "frameId": "T_CACHE" }
             }),
         )
         .await;
