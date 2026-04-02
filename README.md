@@ -35,12 +35,9 @@ so your agent operates any website instantly. One tab or dozens, concurrently.
 
 ### ❌ Without Actionbook
 
-Building reliable browser agents is difficult and expensive:
-
-- **Slow Execution:** Agents waste time parsing full HTML pages to find elements.
-- **High Token Costs:** Sending entire DOM trees to LLMs consumes massive context windows.
-- **Brittle Selectors:** Updates to website UIs break hardcoded selectors and agent logic immediately.
-- **Hallucinations:** LLMs often guess incorrect actions when faced with complex, unstructured DOMs.
+- **Slow.** Agents take a snapshot after every single step, parse the page, then decide what to do next. Searching one room on Airbnb takes 15 minutes.
+- **Brittle.** Modern websites use virtual DOMs, streaming components, and SPAs. Agents don't understand these rendering mechanisms, so they fail to interact with dropdowns, date pickers, and dynamic content.
+- **One at a time.** Your agent finishes one page before it can start the next. Need to check 30 company websites? That's 30 rounds, one after another.
 
 ### ✅ With Actionbook
 
