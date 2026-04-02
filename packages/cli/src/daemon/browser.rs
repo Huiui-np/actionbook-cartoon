@@ -105,11 +105,11 @@ pub async fn launch_chrome(
         });
 
         let port = rx
-            .recv_timeout(std::time::Duration::from_secs(15))
+            .recv_timeout(std::time::Duration::from_secs(30))
             .map_err(|_| {
                 crate::daemon::chrome_reaper::kill_and_reap(&mut child);
                 CliError::CdpConnectionFailed(
-                    "Chrome did not print DevTools listening URL within 15s".to_string(),
+                    "Chrome did not print DevTools listening URL within 30s".to_string(),
                 )
             })?;
 
@@ -127,8 +127,8 @@ pub async fn discover_ws_url(port: u16) -> Result<String, CliError> {
 pub async fn discover_ws_url_from_base(base_url: &str) -> Result<String, CliError> {
     let url = format!("{}/json/version", base_url.trim_end_matches('/'));
 
-    // Up to 15 seconds (75 × 200ms)
-    for attempt in 0..75 {
+    // Up to 30 seconds (150 × 200ms)
+    for attempt in 0..150 {
         if attempt > 0 {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
@@ -144,7 +144,7 @@ pub async fn discover_ws_url_from_base(base_url: &str) -> Result<String, CliErro
         }
     }
     Err(CliError::CdpConnectionFailed(format!(
-        "Chrome did not expose CDP at {base_url} within 15s"
+        "Chrome did not expose CDP at {base_url} within 30s"
     )))
 }
 

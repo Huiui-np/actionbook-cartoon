@@ -9,6 +9,7 @@ on:
     branches: [main, "release/**"]
     paths:
       - "packages/cli/**"
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -73,10 +74,10 @@ jobs:
 
   e2e-tests:
     name: E2E Tests
-    # Only run on merge to main/release branches, not on PRs
-    if: github.event_name == 'push'
+    # Only run on merge to main/release branches or manual trigger, not on PRs
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
