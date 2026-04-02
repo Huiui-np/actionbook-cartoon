@@ -107,11 +107,23 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
                     if let Err(e) = ctx.scroll_into_view(node_id).await {
                         return e;
                     }
-                    if let Err(e) = ctx
-                        .execute_on_element("DOM.focus", json!({ "nodeId": node_id }))
-                        .await
-                    {
-                        return cdp_error_to_result(e, "CDP_ERROR");
+
+                    // Check if element is contenteditable via resolved DOM node.
+                    // Rich text editors (Slate, ProseMirror, Lark) need a click
+                    // to establish the internal cursor, not just DOM.focus.
+                    let is_ce = is_contenteditable(&ctx, node_id).await;
+
+                    if is_ce {
+                        // Click center to place cursor in rich text editor
+                        let frame_id = ctx.resolved_frame_id().map(String::from);
+                        if let Ok((cx, cy)) = ctx.get_center(node_id, &s, frame_id.as_deref()).await
+                        {
+                            let _ = dispatch_mouse_click(&ctx, cx, cy).await;
+                        }
+                    } else {
+                        if let Err(e) = ctx.focus_element(node_id).await {
+                            return e;
+                        }
                     }
                 }
                 Err(e) => return e,
@@ -176,6 +188,26 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         "post_url": url,
         "post_title": title,
     }))
+}
+
+/// Check if a DOM node is contenteditable by resolving it to a JS object.
+async fn is_contenteditable(ctx: &TabContext, node_id: i64) -> bool {
+    let obj_id = match ctx.resolve_object_id(node_id).await {
+        Ok(id) => id,
+        Err(_) => return false,
+    };
+    ctx.execute_on_element(
+        "Runtime.callFunctionOn",
+        json!({
+            "functionDeclaration": "function() { return this.isContentEditable === true; }",
+            "objectId": obj_id,
+            "returnByValue": true,
+        }),
+    )
+    .await
+    .ok()
+    .and_then(|v| v.pointer("/result/result/value").and_then(|b| b.as_bool()))
+    .unwrap_or(false)
 }
 
 /// Click at coordinates to focus the element at that position.
