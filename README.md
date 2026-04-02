@@ -6,9 +6,6 @@
 
 ![GitHub last commit](https://img.shields.io/github/last-commit/actionbook/actionbook) [![NPM Downloads](https://img.shields.io/npm/d18m/%40actionbookdev%2Fcli)](https://www.npmjs.com/package/@actionbookdev/cli) [![npm version](https://img.shields.io/npm/v/%40actionbookdev%2Fcli)](https://www.npmjs.com/package/@actionbookdev/cli) [![skills](https://img.shields.io/badge/skills-ready-blue)](https://skills.sh/actionbook/actionbook/actionbook)
 
-
-
-
 **Browser Action Engine for AI Agents**
 <br />
 Actionbook provides up-to-date action manuals built for the modern web,
@@ -45,9 +42,9 @@ so your agent operates any website instantly. One tab or dozens, concurrently.
 - **Accurate.** Built for virtual DOMs, SPAs, and streaming components. Agents operate reliably.
 - **Concurrent.** Stateless architecture. Operate dozens of tabs in parallel.
 
-An agent visits 192 First Round portfolio company websites and collects their taglines in 2 minutes.
+See an agent visits **192** First Round portfolio company websites and collects their taglines in 3 minutes. (**Video is not sped up or edited**)
 
-https://github.com/user-attachments/assets/6bf4aa80-b1cc-4278-a248-37e3b38f0579
+https://github.com/user-attachments/assets/174458b8-efd3-4fa6-9ef4-2422587edf4b
 
 ## Quick Start
 
