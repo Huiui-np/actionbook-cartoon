@@ -1,5 +1,9 @@
 # @actionbookdev/cli
 
+## 1.0.1
+
+See 1.0.0 release notes below.
+
 ## 1.0.0
 
 ### Patch Changes
