@@ -181,6 +181,11 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
     // Expand 1 level of iframe content (only from main frame, no recursion)
     expand_iframes(&cdp, &target_id, &mut nodes, &mut ref_cache, &options).await;
 
+    // Expand OOPIF frames that weren't discovered via AX tree Iframe nodes
+    // (e.g., iframes inside closed shadow roots — invisible to DOM but
+    // Chrome still creates dedicated CDP sessions for them).
+    expand_undiscovered_oopifs(&cdp, &target_id, &mut nodes, &mut ref_cache, &options).await;
+
     // Apply token budget truncation (100K tokens max)
     const MAX_TOKENS: usize = 100_000;
     let truncated = {
@@ -345,10 +350,33 @@ async fn expand_iframes(
         // Resolve child frame ID
         let child_frame_id = match resolve_iframe_frame_id(cdp, target_id, backend_node_id).await {
             Ok(fid) => fid,
-            Err(_) => continue, // silently skip inaccessible iframes
+            Err(_) => continue,
         };
 
-        // Fetch child AX tree
+        // Remap any refs that were parsed from the main AX tree (frame_id=None)
+        // but actually belong to this iframe.  Chrome's AX tree penetrates
+        // closed shadow roots and includes iframe content inline, so these
+        // nodes get parsed with frame_id=None.  We fix that here by scanning
+        // the snapshot for nodes that are children of the Iframe node and
+        // remapping their RefCache entries to use the correct frame_id.
+        {
+            // Collect backendNodeIds of all nodes nested under this Iframe
+            let child_backend_ids: Vec<i64> = nodes
+                .iter()
+                .skip(idx + 1)
+                .take_while(|n| n.depth > iframe_depth)
+                .filter(|n| !n.ref_id.is_empty())
+                .filter_map(|n| ref_cache.backend_node_id_for_ref(&n.ref_id))
+                .filter(|&bid| bid > 0)
+                .collect();
+
+            if !child_backend_ids.is_empty() {
+                ref_cache
+                    .remap_frame_id_for_backend_nodes(&child_backend_ids, &child_frame_id);
+            }
+        }
+
+        // Fetch child AX tree (may duplicate nodes already in main AX tree)
         let child_response =
             match fetch_iframe_ax_tree(cdp, target_id, &child_frame_id, &iframe_sessions).await {
                 Ok(resp) => resp,
@@ -366,6 +394,8 @@ async fn expand_iframes(
         );
 
         if child_nodes.is_empty() {
+            // Child nodes may be empty because refs were already created
+            // from the main AX tree. The remap above already fixed the frame_id.
             continue;
         }
 
@@ -381,6 +411,76 @@ async fn expand_iframes(
         let tail = nodes.split_off(insert_at);
         nodes.extend(child_nodes);
         nodes.extend(tail);
+    }
+}
+
+/// Expand OOPIF frames that weren't discovered via AX tree Iframe nodes.
+///
+/// Chrome creates dedicated CDP sessions for cross-origin iframes (OOPIFs)
+/// even when they're inside closed shadow roots and invisible to the DOM.
+/// `expand_iframes` only processes Iframe nodes found in the AX tree.
+/// This function catches the remaining OOPIF sessions: it fetches their
+/// AX trees and appends them to the snapshot with proper frame_id tagging
+/// so that ref-based click coordinates get the iframe offset correction.
+async fn expand_undiscovered_oopifs(
+    cdp: &CdpSession,
+    _target_id: &str,
+    nodes: &mut Vec<snapshot_transform::AXNode>,
+    ref_cache: &mut snapshot_transform::RefCache,
+    options: &SnapshotOptions,
+) {
+    let iframe_sessions = cdp.iframe_sessions().await;
+    if iframe_sessions.is_empty() {
+        return;
+    }
+
+    // Collect frame_ids already expanded by expand_iframes
+    let already_expanded: std::collections::HashSet<String> = ref_cache
+        .all_frame_ids()
+        .into_iter()
+        .collect();
+
+    for (frame_id, session_id) in &iframe_sessions {
+        if already_expanded.contains(frame_id) {
+            continue;
+        }
+
+        // Fetch AX tree for this undiscovered OOPIF
+        let child_response = match cdp
+            .execute("Accessibility.getFullAXTree", json!({}), Some(session_id))
+            .await
+        {
+            Ok(resp) => resp,
+            Err(_) => continue,
+        };
+
+        let mut child_nodes = snapshot_transform::parse_ax_tree(
+            &child_response,
+            options,
+            ref_cache,
+            None,
+            None,
+            Some(frame_id),
+        );
+
+        if child_nodes.is_empty() {
+            continue;
+        }
+
+        // Find the best insertion point: look for an Iframe node in the
+        // existing snapshot whose name/role suggests it owns this frame.
+        // If not found, append at the end with depth 0 (top-level).
+        let insert_depth = nodes
+            .iter()
+            .find(|n| n.role == "Iframe")
+            .map(|n| n.depth + 1)
+            .unwrap_or(0);
+
+        for child in &mut child_nodes {
+            child.depth += insert_depth;
+        }
+
+        nodes.extend(child_nodes);
     }
 }
 

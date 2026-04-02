@@ -706,6 +706,40 @@ impl RefCache {
             .get(ref_id)
             .and_then(|key| self.id_to_ref.get(key))
     }
+
+    /// Remap refs that were parsed as main-frame (frame_id=None) to a
+    /// specific frame_id.  This happens when Chrome's AX tree includes
+    /// iframe content inline (e.g., closed shadow root iframes) but we
+    /// discover the actual frame_id later via expand_iframes.
+    pub fn remap_frame_id_for_backend_nodes(
+        &mut self,
+        backend_node_ids: &[i64],
+        new_frame_id: &str,
+    ) {
+        for &bid in backend_node_ids {
+            let old_key: RefKey = (None, bid);
+            if let Some(mut entry) = self.id_to_ref.remove(&old_key) {
+                let ref_id = entry.ref_id.clone();
+                entry.frame_id = Some(new_frame_id.to_string());
+                let new_key: RefKey = (Some(new_frame_id.to_string()), bid);
+                self.id_to_ref.insert(new_key.clone(), entry);
+                // Update reverse lookup
+                self.ref_to_id.insert(ref_id, new_key);
+            }
+        }
+    }
+
+    /// Collect all unique frame_ids that have been assigned to refs.
+    /// Used to detect which frames have already been expanded.
+    pub fn all_frame_ids(&self) -> Vec<String> {
+        let mut ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for entry in self.id_to_ref.values() {
+            if let Some(ref fid) = entry.frame_id {
+                ids.insert(fid.clone());
+            }
+        }
+        ids.into_iter().collect()
+    }
 }
 
 // ── P0: Empty leaf removal ───────────────────────────────────────────
