@@ -22,14 +22,27 @@ Examples:
   actionbook browser snapshot --session s1 --tab t1
   actionbook browser snapshot -i --session s1 --tab t1
   actionbook browser snapshot -i -c --session s1 --tab t1
-  actionbook browser snapshot -i --depth 3 --session s1 --tab t1
+  actionbook browser snapshot --depth 3 --session s1 --tab t1
   actionbook browser snapshot --selector \"#main\" --session s1 --tab t1
 
-Flags: -i (interactive only), -c (compact), --cursor (cursor-interactive on by default).
-Elements are labeled with refs (e.g. @e1, @e2). Use the @eN syntax to target
-elements in other commands: click @e5, fill @e7 \"text\", hover @e3.
+The default snapshot contains all information including interactive elements,
+structural nodes, and cursor-interactive elements. Use additional flags as needed.
+
+Output includes a `path` field pointing to the saved snapshot file.
+Elements are labeled with refs (e.g. @e8, @e9). Use @eN to target elements
+in other commands: click @e5, fill @e7 \"text\", hover @e3.
 Refs are stable across snapshots — if the DOM node stays the same, the ref
-stays the same. This lets agents chain commands without re-snapshotting after every step.")]
+stays the same. This lets agents chain commands without re-snapshotting.
+
+Sample output:
+  - generic
+    - link \"Home\" [ref=e8] url=https://example.com/
+    - generic
+      - combobox \"Search\" [ref=e9]
+      - image \"clear\" [ref=e10] clickable [cursor:pointer]
+    - generic
+      - link \"Help\" [ref=e11] url=https://example.com/help
+        - image \"Help\"")]
 pub struct Cmd {
     /// Session ID
     #[arg(long)]

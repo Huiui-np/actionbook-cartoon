@@ -152,9 +152,24 @@ actionbook browser inspect-point 420,310 --session s1 --tab t1        # Inspect 
 actionbook browser snapshot --session s1 --tab t1                     # Full accessibility tree
 actionbook browser snapshot -i --session s1 --tab t1                  # Interactive elements only
 actionbook browser snapshot -i -c --session s1 --tab t1               # Interactive + compact
-actionbook browser snapshot -i --depth 3 --session s1 --tab t1        # Limit tree depth
+actionbook browser snapshot --depth 3 --session s1 --tab t1           # Limit tree depth
 actionbook browser snapshot --selector "#main" --session s1 --tab t1  # Subtree only
 ```
+
+Output includes a `path` field pointing to the saved snapshot file. Sample output:
+
+```
+- generic
+  - link "Home" [ref=e8] url=https://example.com/
+  - generic
+    - combobox "Search" [ref=e9]
+    - image "clear" [ref=e10] clickable [cursor:pointer]
+  - generic
+    - link "Help" [ref=e11] url=https://example.com/help
+      - image "Help"
+```
+
+The default snapshot contains all information including interactive elements, structural nodes, and cursor-interactive elements. Use additional flags as needed.
 
 Snapshot refs (`@eN`) are **stable across snapshots** — if the DOM node stays the same, the ref stays the same. This lets agents chain commands without re-snapshotting after every step.
 
@@ -256,7 +271,7 @@ actionbook setup --reset                      # Reset configuration
 ```bash
 actionbook browser start --set-session-id s1
 actionbook browser goto "https://example.com/form" --session s1 --tab t1
-actionbook browser snapshot -i --session s1 --tab t1
+actionbook browser snapshot --session s1 --tab t1
 # Read snapshot refs, then use them:
 actionbook browser fill "@e3" "user@example.com" --session s1 --tab t1
 actionbook browser fill "@e5" "password123" --session s1 --tab t1
@@ -270,10 +285,10 @@ actionbook browser text "h1" --session s1 --tab t1
 ```bash
 actionbook browser start --set-session-id s1
 actionbook browser goto "https://example.com" --session s1 --tab t1
-actionbook browser snapshot -i --session s1 --tab t1
+actionbook browser snapshot --session s1 --tab t1
 actionbook browser click "@e4" --session s1 --tab t1
 actionbook browser wait navigation --session s1 --tab t1
-actionbook browser snapshot -i --session s1 --tab t1
+actionbook browser snapshot --session s1 --tab t1
 actionbook browser click "@e2" --session s1 --tab t1
 actionbook browser wait navigation --session s1 --tab t1
 actionbook browser text ".product-details" --session s1 --tab t1
