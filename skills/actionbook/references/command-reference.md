@@ -12,7 +12,6 @@ Selectors accept CSS, XPath, or snapshot refs (`@eN` from `snapshot` output).
 ```
 --json            Output as JSON envelope
 --timeout <ms>    Command timeout in milliseconds
---api-key <key>   API key for authenticated access (also: ACTIONBOOK_API_KEY env var)
 ```
 
 ## Action Search & Retrieval
