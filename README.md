@@ -21,8 +21,9 @@ so your agent operates any website instantly. One tab or dozens, concurrently.
 ## Table of Contents
 
 - [Why Actionbook?](#why-actionbook)
-- [Quick Start](#quick-start)
 - [Installation](#installation)
+- [Quick Start](#quick-start)
+- [AI Agent Skills](#ai-agent-skills)
 - [Examples](#examples)
 - [Available Tools](#available-tools)
 - [Documentation](#documentation)
@@ -46,25 +47,23 @@ See an agent visits **192** First Round portfolio company websites and collects 
 
 https://github.com/user-attachments/assets/174458b8-efd3-4fa6-9ef4-2422587edf4b
 
-## Quick Start
+## Installation
 
-Get started with Actionbook in under 2 minutes:
+Install via npm:
 
-**Step 1: Install the CLI**
-
-macOS / Linux
 ```bash
-curl -fsSL https://actionbook.dev/install.sh | bash
+npm install -g @actionbookdev/cli
 ```
 
-Windows (PowerShell)
-```
-irm https://actionbook.dev/install.ps1 | iex
+Or build from source:
+
+```bash
+cargo install --git https://github.com/actionbook/actionbook --path packages/cli --locked
 ```
 
 The Rust-based CLI uses your existing system browser (Chrome, Brave, Edge, Arc, Chromium), so no extra browser install step is required.
 
-**Step 2: Use with any AI Agent**
+## Quick Start
 
 When working with any AI coding assistant (Claude Code, Cursor, etc.), add this to your prompt:
 
@@ -74,43 +73,13 @@ Use Actionbook to understand and operate the web page.
 
 The agent will automatically use the CLI to fetch action manuals and execute browser operations.
 
-**Step 3 (Optional): Add the Skill**
+## AI Agent Skills
 
-For enhanced agent integration, add the Actionbook skill:
+Actionbook ships with Agent Skills that teach your AI agent how to use the CLI. Add them with one command:
 
 ```bash
 npx skills add actionbook/actionbook
 ```
-
-## Installation
-
-### macOS / Linux
-
-```bash
-curl -fsSL https://actionbook.dev/install.sh | bash
-```
-
-### Windows
-
-```powershell
-irm https://actionbook.dev/install.ps1 | iex
-```
-
-### npm
-
-```bash
-npm install -g @actionbookdev/cli
-```
-
-### Setup
-
-```bash
-actionbook setup
-```
-
-For more install options (Homebrew, from source) and upgrade instructions, see the [Installation Guide](https://actionbook.dev/docs/guides/installation).
-
-The CLI is all you need to get started. For advanced use cases, Actionbook also offers an [MCP Server](https://actionbook.dev/docs/guides/mcp-server) and [JavaScript SDK](https://actionbook.dev/docs/guides/sdk-integration).
 
 
 ## Examples
