@@ -4,7 +4,6 @@ use crate::action::Action;
 use crate::action_result::ActionResult;
 use crate::browser::{cookies, interaction, navigation, observation, session, storage, tab, wait};
 use crate::output::ResponseContext;
-use crate::setup;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -91,8 +90,6 @@ CSS selectors. Use the area_id from `actionbook search` results.")]
         #[command(subcommand)]
         command: BrowserCommands,
     },
-    /// Interactive configuration wizard
-    Setup(setup::Cmd),
     /// Show help
     Help,
     /// Print version
@@ -723,31 +720,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn try_parse_from_parses_setup_non_interactive_flags() {
-        let cli = Cli::try_parse_from([
-            "actionbook",
-            "setup",
-            "--target",
-            "codex",
-            "--api-key",
-            "sk-test",
-            "--browser",
-            "local",
-            "--non-interactive",
-            "--reset",
-        ])
-        .expect("parse setup");
+    fn try_parse_from_rejects_setup_command() {
+        let cli = Cli::try_parse_from(["actionbook", "setup"]);
 
-        match cli.command {
-            Some(Commands::Setup(cmd)) => {
-                assert_eq!(cmd.target.as_deref(), Some("codex"));
-                assert_eq!(cmd.api_key.as_deref(), Some("sk-test"));
-                assert_eq!(cmd.browser.as_deref(), Some("local"));
-                assert!(cmd.non_interactive);
-                assert!(cmd.reset);
-            }
-            other => panic!("expected setup command, got {other:?}"),
-        }
+        assert!(cli.is_err(), "setup command should no longer parse");
     }
 
     #[test]
