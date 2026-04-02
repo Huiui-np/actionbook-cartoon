@@ -475,6 +475,9 @@ jobs:
             console.log('Replaced workspace:* with ${VERSION} in CLI optionalDependencies');
           "
 
+      - name: Copy root README to CLI package
+        run: cp README.md packages/cli/README.md
+
       - name: Publish CLI package
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
