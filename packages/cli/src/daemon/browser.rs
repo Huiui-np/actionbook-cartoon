@@ -51,7 +51,6 @@ pub async fn launch_chrome(
         args.push("--disable-dev-shm-usage".to_string());
         args.push("--disable-save-password-bubble".to_string());
         args.push("--disable-translate".to_string());
-        args.push("--window-size=1920,1080".to_string());
         args.push("--force-webrtc-ip-handling-policy=disable_non_proxied_udp".to_string());
     }
     if headless {
