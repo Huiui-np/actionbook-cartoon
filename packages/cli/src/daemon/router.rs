@@ -18,6 +18,7 @@ pub async fn route(action: &Action, registry: &SharedRegistry) -> ActionResult {
         Action::Reload(cmd) => browser::navigation::reload::execute(cmd, registry).await,
         Action::ListTabs(cmd) => browser::tab::list::execute(cmd, registry).await,
         Action::NewTab(cmd) => browser::tab::open::execute(cmd, registry).await,
+        Action::BatchOpen(cmd) => browser::tab::batch_open::execute(cmd, registry).await,
         Action::CloseTab(cmd) => browser::tab::close::execute(cmd, registry).await,
         Action::Snapshot(cmd) => browser::observation::snapshot::execute(cmd, registry).await,
         Action::Screenshot(cmd) => browser::observation::screenshot::execute(cmd, registry).await,

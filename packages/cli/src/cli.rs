@@ -135,6 +135,9 @@ pub enum BrowserCommands {
     /// Open a new tab
     #[command(alias = "open")]
     NewTab(tab::open::Cmd),
+    /// Open multiple tabs in one call (batch)
+    #[command(alias = "batch-open")]
+    BatchNewTab(tab::batch_open::Cmd),
     /// Close a tab
     CloseTab(tab::close::Cmd),
 
@@ -385,6 +388,7 @@ impl BrowserCommands {
             Self::Restart(cmd) => Action::Restart(cmd.clone()),
             Self::ListTabs(cmd) => Action::ListTabs(cmd.clone()),
             Self::NewTab(cmd) => Action::NewTab(cmd.clone()),
+            Self::BatchNewTab(cmd) => Action::BatchOpen(cmd.clone()),
             Self::CloseTab(cmd) => Action::CloseTab(cmd.clone()),
             Self::Goto(cmd) => Action::Goto(cmd.clone()),
             Self::Back(a) => Action::Back(navigation::back::Cmd {
@@ -467,6 +471,7 @@ impl BrowserCommands {
             Self::Restart(_) => session::restart::COMMAND_NAME,
             Self::ListTabs(_) => tab::list::COMMAND_NAME,
             Self::NewTab(_) => tab::open::COMMAND_NAME,
+            Self::BatchNewTab(_) => tab::batch_open::COMMAND_NAME,
             Self::CloseTab(_) => tab::close::COMMAND_NAME,
             Self::Goto(_) => navigation::goto::COMMAND_NAME,
             Self::Back(_) => "browser back",
@@ -540,6 +545,7 @@ impl BrowserCommands {
             Self::Restart(cmd) => session::restart::context(cmd, result),
             Self::ListTabs(cmd) => tab::list::context(cmd, result),
             Self::NewTab(cmd) => tab::open::context(cmd, result),
+            Self::BatchNewTab(cmd) => tab::batch_open::context(cmd, result),
             Self::CloseTab(cmd) => tab::close::context(cmd, result),
             Self::Goto(cmd) => navigation::goto::context(cmd, result),
             Self::Snapshot(cmd) => observation::snapshot::context(cmd, result),
@@ -1081,6 +1087,87 @@ mod tests {
             result.is_err(),
             "--session and --set-session-id should conflict"
         );
+    }
+
+    #[test]
+    fn try_parse_from_accepts_browser_batch_new_tab() {
+        let cli = Cli::try_parse_from([
+            "actionbook",
+            "browser",
+            "batch-new-tab",
+            "--urls",
+            "https://a.com",
+            "https://b.com",
+            "--session",
+            "s1",
+        ])
+        .expect("batch-new-tab should parse");
+
+        match cli.command {
+            Some(Commands::Browser {
+                command: BrowserCommands::BatchNewTab(cmd),
+            }) => {
+                assert_eq!(cmd.urls, vec!["https://a.com", "https://b.com"]);
+                assert!(cmd.tabs.is_empty());
+                assert_eq!(cmd.session, "s1");
+            }
+            other => panic!("expected browser batch-new-tab, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_parse_from_accepts_browser_batch_new_tab_with_tabs() {
+        let cli = Cli::try_parse_from([
+            "actionbook",
+            "browser",
+            "batch-new-tab",
+            "--urls",
+            "https://a.com",
+            "https://b.com",
+            "--tabs",
+            "inbox",
+            "settings",
+            "--session",
+            "s1",
+        ])
+        .expect("batch-new-tab with --tabs should parse");
+
+        match cli.command {
+            Some(Commands::Browser {
+                command: BrowserCommands::BatchNewTab(cmd),
+            }) => {
+                assert_eq!(cmd.urls, vec!["https://a.com", "https://b.com"]);
+                assert_eq!(cmd.tabs, vec!["inbox", "settings"]);
+                assert_eq!(cmd.session, "s1");
+            }
+            other => panic!("expected browser batch-new-tab, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_parse_from_accepts_browser_batch_open_alias() {
+        let cli = Cli::try_parse_from([
+            "actionbook",
+            "browser",
+            "batch-open",
+            "--urls",
+            "https://a.com",
+            "--session",
+            "s1",
+        ]);
+        assert!(cli.is_ok(), "batch-open alias should parse");
+    }
+
+    #[test]
+    fn try_parse_from_rejects_batch_new_tab_no_urls() {
+        let cli = Cli::try_parse_from([
+            "actionbook",
+            "browser",
+            "batch-new-tab",
+            "--session",
+            "s1",
+        ]);
+        assert!(cli.is_err(), "batch-new-tab without --urls should fail");
     }
 
     #[test]

@@ -15,6 +15,7 @@ pub enum Action {
 
     // ── Tab management ─────────────────────────────────────────
     NewTab(tab::open::Cmd),
+    BatchOpen(tab::batch_open::Cmd),
     CloseTab(tab::close::Cmd),
     ListTabs(tab::list::Cmd),
 
@@ -108,6 +109,7 @@ impl Action {
 
             // Tab management
             Action::NewTab(c) => s_only!(c),
+            Action::BatchOpen(c) => s_only!(c),
             Action::CloseTab(c) => st!(c),
             Action::ListTabs(c) => s_only!(c),
 
@@ -185,6 +187,7 @@ impl Action {
             Action::Close(_) => session::close::COMMAND_NAME,
             Action::Restart(_) => session::restart::COMMAND_NAME,
             Action::NewTab(_) => tab::open::COMMAND_NAME,
+            Action::BatchOpen(_) => tab::batch_open::COMMAND_NAME,
             Action::CloseTab(_) => tab::close::COMMAND_NAME,
             Action::ListTabs(_) => tab::list::COMMAND_NAME,
             Action::Goto(_) => navigation::goto::COMMAND_NAME,

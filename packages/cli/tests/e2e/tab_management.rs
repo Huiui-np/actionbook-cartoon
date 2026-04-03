@@ -729,6 +729,298 @@ fn tab_list_tabs_preserves_known_ids_after_sync() {
 // --tab alias for --set-tab-id
 // ===========================================================================
 
+// ===========================================================================
+// Group 8: batch-new-tab
+// ===========================================================================
+
+#[test]
+fn tab_batch_open_json() {
+    if skip() {
+        return;
+    }
+    let (sid, t1) = start_session(&url_a());
+    let _guard = SessionGuard::new(&sid);
+
+    let ub = url_b();
+    let uc = url_c();
+    let out = headless_json(
+        &[
+            "browser",
+            "batch-new-tab",
+            "--urls",
+            &ub,
+            &uc,
+            "--session",
+            &sid,
+        ],
+        30,
+    );
+    assert_success(&out, "batch-new-tab json");
+    let v = parse_json(&out);
+
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["command"], "browser batch-new-tab");
+    assert!(v["error"].is_null());
+    assert_context_object(&v);
+    assert_eq!(v["context"]["session_id"], sid);
+
+    assert_eq!(v["data"]["action"], "batch-new-tab");
+    assert_eq!(v["data"]["opened"], 2);
+    let tabs = v["data"]["tabs"].as_array().expect("tabs array");
+    assert_eq!(tabs.len(), 2);
+    for tab in tabs {
+        assert_tab_id(&tab["tab_id"]);
+        assert_native_tab_id(&tab["native_tab_id"]);
+        assert!(tab["url"].is_string());
+    }
+    // Tab IDs should be sequential after t1
+    let t2 = tabs[0]["tab_id"].as_str().unwrap();
+    let t3 = tabs[1]["tab_id"].as_str().unwrap();
+    assert_ne!(t2, t1);
+    assert_ne!(t2, t3);
+    assert_meta(&v);
+}
+
+#[test]
+fn tab_batch_open_text() {
+    if skip() {
+        return;
+    }
+    let (sid, _t1) = start_session(&url_a());
+    let _guard = SessionGuard::new(&sid);
+
+    let ub = url_b();
+    let uc = url_c();
+    let out = headless(
+        &[
+            "browser",
+            "batch-new-tab",
+            "--urls",
+            &ub,
+            &uc,
+            "--session",
+            &sid,
+        ],
+        30,
+    );
+    assert_success(&out, "batch-new-tab text");
+    let text = stdout_str(&out);
+    assert!(text.contains(&format!("[{sid}]")));
+    assert!(text.contains("ok browser batch-new-tab"));
+}
+
+#[test]
+fn tab_batch_open_custom_tabs_json() {
+    if skip() {
+        return;
+    }
+    let (sid, _t1) = start_session(&url_a());
+    let _guard = SessionGuard::new(&sid);
+
+    let ub = url_b();
+    let uc = url_c();
+    let out = headless_json(
+        &[
+            "browser",
+            "batch-new-tab",
+            "--urls",
+            &ub,
+            &uc,
+            "--tabs",
+            "inbox",
+            "settings",
+            "--session",
+            &sid,
+        ],
+        30,
+    );
+    assert_success(&out, "batch-new-tab custom tabs");
+    let v = parse_json(&out);
+
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["data"]["opened"], 2);
+    let tabs = v["data"]["tabs"].as_array().unwrap();
+    assert_eq!(tabs[0]["tab_id"], "inbox");
+    assert_eq!(tabs[1]["tab_id"], "settings");
+    assert_native_tab_id(&tabs[0]["native_tab_id"]);
+    assert_native_tab_id(&tabs[1]["native_tab_id"]);
+}
+
+#[test]
+fn tab_batch_open_alias_json() {
+    if skip() {
+        return;
+    }
+    let (sid, _t1) = start_session(&url_a());
+    let _guard = SessionGuard::new(&sid);
+
+    let ub = url_b();
+    let out = headless_json(
+        &[
+            "browser",
+            "batch-open",
+            "--urls",
+            &ub,
+            "--session",
+            &sid,
+        ],
+        30,
+    );
+    assert_success(&out, "batch-open alias");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["command"], "browser batch-new-tab");
+    assert_eq!(v["data"]["action"], "batch-new-tab");
+    assert_eq!(v["data"]["opened"], 1);
+}
+
+#[test]
+fn tab_batch_open_tabs_list_json() {
+    if skip() {
+        return;
+    }
+    let (sid, _t1) = start_session(&url_a());
+    let _guard = SessionGuard::new(&sid);
+
+    let ub = url_b();
+    let uc = url_c();
+    let out = headless_json(
+        &[
+            "browser",
+            "batch-new-tab",
+            "--urls",
+            &ub,
+            &uc,
+            "--session",
+            &sid,
+        ],
+        30,
+    );
+    assert_success(&out, "batch-new-tab before list");
+
+    // list-tabs should show 3 tabs (original t1 + 2 batch-opened)
+    let out = headless_json(&["browser", "list-tabs", "--session", &sid], 10);
+    assert_success(&out, "list-tabs after batch-open");
+    let v = parse_json(&out);
+    assert_eq!(v["data"]["total_tabs"], serde_json::json!(3));
+}
+
+#[test]
+fn tab_batch_open_size_mismatch_json() {
+    if skip() {
+        return;
+    }
+    let (sid, _t1) = start_session(&url_a());
+    let _guard = SessionGuard::new(&sid);
+
+    let ub = url_b();
+    let uc = url_c();
+    let out = headless_json(
+        &[
+            "browser",
+            "batch-new-tab",
+            "--urls",
+            &ub,
+            &uc,
+            &url_a(),
+            "--tabs",
+            "a",
+            "b",
+            "--session",
+            &sid,
+        ],
+        10,
+    );
+    assert_failure(&out, "size mismatch");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], false);
+    assert_error_envelope(&v, "INVALID_ARGUMENT");
+}
+
+#[test]
+fn tab_batch_open_duplicate_tab_ids_json() {
+    if skip() {
+        return;
+    }
+    let (sid, _t1) = start_session(&url_a());
+    let _guard = SessionGuard::new(&sid);
+
+    let ub = url_b();
+    let uc = url_c();
+    let out = headless_json(
+        &[
+            "browser",
+            "batch-new-tab",
+            "--urls",
+            &ub,
+            &uc,
+            "--tabs",
+            "dup",
+            "dup",
+            "--session",
+            &sid,
+        ],
+        10,
+    );
+    assert_failure(&out, "duplicate tab IDs");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], false);
+    assert_error_envelope(&v, "INVALID_ARGUMENT");
+}
+
+#[test]
+fn tab_batch_open_nonexistent_session_json() {
+    if skip() {
+        return;
+    }
+    let ub = url_b();
+    let out = headless_json(
+        &[
+            "browser",
+            "batch-new-tab",
+            "--urls",
+            &ub,
+            "--session",
+            "nonexistent",
+        ],
+        10,
+    );
+    assert_failure(&out, "nonexistent session");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], false);
+    assert_error_envelope(&v, "SESSION_NOT_FOUND");
+    assert!(v["context"].is_null());
+}
+
+#[test]
+fn tab_batch_open_tab_conflict_json() {
+    if skip() {
+        return;
+    }
+    let (sid, t1) = start_session(&url_a());
+    let _guard = SessionGuard::new(&sid);
+
+    let ub = url_b();
+    let out = headless_json(
+        &[
+            "browser",
+            "batch-new-tab",
+            "--urls",
+            &ub,
+            "--tabs",
+            &t1,
+            "--session",
+            &sid,
+        ],
+        10,
+    );
+    assert_failure(&out, "tab ID conflict");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], false);
+    // Conflict hits BATCH_OPEN_ERROR wrapping TAB_ID_CONFLICT
+    assert_eq!(v["error"]["code"], "BATCH_OPEN_ERROR");
+}
+
 /// `browser new-tab --tab inbox` creates a tab with the given custom ID.
 #[test]
 fn tab_new_tab_with_tab_alias_creates() {
