@@ -38,6 +38,13 @@ function main() {
     return;
   }
 
+  // Single-package distribution: binary bundled alongside this script.
+  const localBinary = path.join(__dirname, process.platform === "win32" ? "actionbook-native.exe" : "actionbook-native");
+  if (existsSync(localBinary)) {
+    run(localBinary);
+    return;
+  }
+
   const platformKey = `${process.platform}-${process.arch}`;
   const binaryPath = getBinaryPath(platformKey);
   run(binaryPath);
