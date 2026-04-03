@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::action_result::ActionResult;
 use crate::browser::element::{ClickTarget, TabContext, parse_target};
@@ -19,7 +19,7 @@ fn default_count() -> u32 {
     1
 }
 
-/// Click an element or coordinates
+/// Click one or more elements or coordinates
 #[derive(Args, Debug, Clone, Serialize, Deserialize)]
 #[command(after_help = "\
 Examples:
@@ -28,13 +28,16 @@ Examples:
   actionbook browser click 420,310 --session s1 --tab t1
   actionbook browser click \"a.link\" --new-tab --session s1 --tab t1
   actionbook browser click \"#item\" --count 2 --session s1 --tab t1
+  actionbook browser click \"#close-banner\" \"#main-btn\" \"#confirm\" --session s1 --tab t1
 
 Accepts a CSS selector, XPath, snapshot ref (@eN), or x,y coordinates.
+When multiple selectors are provided, they are clicked sequentially in order.
 Refs come from snapshot output (e.g. [ref=e5]).
 Use --count 2 for double-click. Use --new-tab to open links in a new tab.")]
 pub struct Cmd {
-    /// CSS selector, XPath, @ref, or x,y coordinates
-    pub selector: String,
+    /// CSS selector, XPath, @ref, or x,y coordinates (one or more)
+    #[arg(num_args(1..))]
+    pub selectors: Vec<String>,
     /// Session ID
     #[arg(long)]
     #[serde(rename = "session_id")]
@@ -88,34 +91,15 @@ pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
     })
 }
 
-// ── Execute ────────────────────────────────────────────────────────
-
-pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
-    // Validate count
-    if cmd.count == 0 {
-        return ActionResult::fatal("INVALID_ARGUMENT", "count must be at least 1");
-    }
-
-    // Validate button
-    if !matches!(cmd.button.as_str(), "left" | "right" | "middle") {
-        return ActionResult::fatal(
-            "INVALID_ARGUMENT",
-            format!(
-                "invalid button: '{}', expected left|right|middle",
-                cmd.button
-            ),
-        );
-    }
-
+/// Click a single selector with the given context and command params.
+async fn execute_single_click(
+    selector: &str,
+    cmd: &Cmd,
+    ctx: &mut TabContext,
+) -> ActionResult {
     // Parse target
-    let target = match parse_target(&cmd.selector) {
+    let target = match parse_target(selector) {
         Ok(t) => t,
-        Err(e) => return e,
-    };
-
-    // Get CDP session and verify tab
-    let mut ctx = match TabContext::new(registry, &cmd.session, &cmd.tab).await {
-        Ok(v) => v,
         Err(e) => return e,
     };
 
@@ -130,14 +114,14 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
 
     // Handle --new-tab: if the target is a link, open href in a new tab
     if cmd.new_tab
-        && let Some(href) = get_element_href(&mut ctx, &target, x, y).await
+        && let Some(href) = get_element_href(ctx, &target, x, y).await
     {
         return match open_in_new_tab(&ctx.cdp, &href, ctx.session_id(), ctx.registry()).await {
             Ok(()) => {
                 let url = navigation::get_tab_url(&ctx.cdp, &ctx.target_id).await;
                 let title = navigation::get_tab_title(&ctx.cdp, &ctx.target_id).await;
                 ActionResult::ok(build_response(
-                    &cmd.selector,
+                    selector,
                     &target,
                     false,
                     false,
@@ -175,13 +159,97 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
     let focus_changed = pre_focus != post_focus;
 
     ActionResult::ok(build_response(
-        &cmd.selector,
+        selector,
         &target,
         url_changed,
         focus_changed,
         Some(post_url),
         Some(post_title),
     ))
+}
+
+// ── Execute ────────────────────────────────────────────────────────
+
+pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
+    // Validate selectors
+    if cmd.selectors.is_empty() {
+        return ActionResult::fatal("INVALID_ARGUMENT", "at least one selector required");
+    }
+
+    // Validate count
+    if cmd.count == 0 {
+        return ActionResult::fatal("INVALID_ARGUMENT", "count must be at least 1");
+    }
+
+    // Validate button
+    if !matches!(cmd.button.as_str(), "left" | "right" | "middle") {
+        return ActionResult::fatal(
+            "INVALID_ARGUMENT",
+            format!(
+                "invalid button: '{}', expected left|right|middle",
+                cmd.button
+            ),
+        );
+    }
+
+    // Get CDP session and verify tab
+    let mut ctx = match TabContext::new(registry, &cmd.session, &cmd.tab).await {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+
+    // Single selector: same response shape as before (backwards compat)
+    if cmd.selectors.len() == 1 {
+        return execute_single_click(&cmd.selectors[0], cmd, &mut ctx).await;
+    }
+
+    // Batch: sequential, fail-fast
+    let mut results = Vec::new();
+    for (i, selector) in cmd.selectors.iter().enumerate() {
+        match execute_single_click(selector, cmd, &mut ctx).await {
+            ActionResult::Ok { data } => {
+                results.push(json!({
+                    "index": i,
+                    "selector": selector,
+                    "url_changed": data["changed"]["url_changed"],
+                    "focus_changed": data["changed"]["focus_changed"],
+                    "post_url": data.get("post_url"),
+                    "post_title": data.get("post_title"),
+                }));
+            }
+            _err => {
+                return ActionResult::fatal_with_details(
+                    "BATCH_CLICK_ERROR",
+                    format!("click failed at index {i} (selector: {selector})"),
+                    format!(
+                        "completed {}/{}, retry from index {i}",
+                        results.len(),
+                        cmd.selectors.len()
+                    ),
+                    json!({
+                        "failed_index": i,
+                        "failed_selector": selector,
+                        "completed": results.len()
+                    }),
+                );
+            }
+        }
+    }
+
+    // Final state from last result
+    let last = results.last().cloned().unwrap_or(Value::Null);
+    let mut data = json!({
+        "action": "click",
+        "clicks": results.len(),
+        "results": results,
+    });
+    if let Some(url) = last.get("post_url").and_then(|v| v.as_str()) {
+        data["post_url"] = json!(url);
+    }
+    if let Some(title) = last.get("post_title").and_then(|v| v.as_str()) {
+        data["post_title"] = json!(title);
+    }
+    ActionResult::ok(data)
 }
 
 // ── Response builder ───────────────────────────────────────────────
@@ -404,32 +472,21 @@ async fn dispatch_click(
 
 /// Poll for a URL change after a click.
 ///
-/// Returns the final URL. If the URL changes within the polling window,
-/// returns immediately. Otherwise returns after the timeout with
-/// whatever URL the page currently has.
+/// Returns the final URL. Optimized for two scenarios:
+/// - No URL change (DOM expansion, local state updates): returns immediately (~50ms)
+/// - URL changed (navigation): returns immediately, no need to poll
 ///
-/// Intervals are short (50 ms) so fast navigations resolve quickly.
-/// Total timeout (2 s) covers SPA routers and JS redirects without
-/// the unconditional 500 ms penalty of a fixed sleep.
+/// This avoids wasting time waiting on DOM-only interactions.
 async fn wait_for_navigation(cdp: &CdpSession, target_id: &str, pre_url: &str) -> String {
-    const POLL_INTERVAL: Duration = Duration::from_millis(50);
-    const TIMEOUT: Duration = Duration::from_millis(2000);
+    // Give browser time to start processing the click event
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let deadline = tokio::time::Instant::now() + TIMEOUT;
-    // Brief initial pause: give the browser a moment to start navigation
-    // before the first poll so we don't immediately read stale state.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    let current = navigation::get_tab_url(cdp, target_id).await;
 
-    loop {
-        let current = navigation::get_tab_url(cdp, target_id).await;
-        if !pre_url.is_empty() && current != pre_url {
-            return current;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return current;
-        }
-        tokio::time::sleep(POLL_INTERVAL).await;
-    }
+    // Check for URL change. If URL changed, return immediately (navigation detected).
+    // If URL didn't change, return current (DOM change, no navigation).
+    // No need to poll further — either navigation happened or it didn't.
+    current
 }
 
 /// Snapshot of the active element for focus-change detection.

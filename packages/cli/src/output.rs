@@ -388,12 +388,25 @@ fn format_data_fields(command: &str, data: &Value, lines: &mut Vec<String>) {
             }
         }
         "browser click" => {
-            if let Some(sel) = data.pointer("/target/selector").and_then(|v| v.as_str()) {
-                lines.push(format!("target: {sel}"));
-            } else if let Some(coords) =
-                data.pointer("/target/coordinates").and_then(|v| v.as_str())
-            {
-                lines.push(format!("target: {coords}"));
+            // Batch response has "clicks" + "results" array
+            if let Some(clicks) = data.get("clicks").and_then(|v| v.as_u64()) {
+                lines.push(format!("clicks: {clicks}"));
+                if let Some(results) = data.get("results").and_then(|v| v.as_array()) {
+                    for r in results {
+                        if let Some(sel) = r.get("selector").and_then(|v| v.as_str()) {
+                            lines.push(format!("  target: {sel}"));
+                        }
+                    }
+                }
+            } else {
+                // Single click (existing behavior)
+                if let Some(sel) = data.pointer("/target/selector").and_then(|v| v.as_str()) {
+                    lines.push(format!("target: {sel}"));
+                } else if let Some(coords) =
+                    data.pointer("/target/coordinates").and_then(|v| v.as_str())
+                {
+                    lines.push(format!("target: {coords}"));
+                }
             }
         }
         "browser hover" | "browser focus" => {
