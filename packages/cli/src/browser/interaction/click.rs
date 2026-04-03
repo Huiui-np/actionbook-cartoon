@@ -133,9 +133,8 @@ async fn execute_single_click(
         };
     }
 
-    // Pre-click state
-    let pre_url = navigation::get_tab_url(&ctx.cdp, &ctx.target_id).await;
-    let pre_focus = get_active_element_id(&ctx.cdp, &ctx.target_id).await;
+    // Pre-click state: one evaluate for url + focus
+    let (pre_url, pre_focus) = get_tab_state(&ctx.cdp, &ctx.target_id).await;
 
     // Dispatch click events
     if let Err(e) = dispatch_click(&ctx.cdp, &ctx.target_id, x, y, &cmd.button, cmd.count).await {
@@ -148,12 +147,9 @@ async fn execute_single_click(
         reg.set_cursor_position(ctx.session_id(), ctx.tab_id(), x, y);
     }
 
-    // Wait for potential navigation: poll for URL change with early exit.
-    // Check at short intervals so fast navigations aren't delayed, but
-    // keep polling long enough for slow navigations (SPA routers, redirects).
-    let post_url = wait_for_navigation(&ctx.cdp, &ctx.target_id, &pre_url).await;
-    let post_title = navigation::get_tab_title(&ctx.cdp, &ctx.target_id).await;
-    let post_focus = get_active_element_id(&ctx.cdp, &ctx.target_id).await;
+    // Post-click state: wait for JS to settle, then one evaluate for url + title + focus
+    let (post_url, post_title, post_focus) =
+        wait_and_get_post_state(&ctx.cdp, &ctx.target_id, &pre_url).await;
 
     let url_changed = !pre_url.is_empty() && pre_url != post_url;
     let focus_changed = pre_focus != post_focus;
@@ -470,41 +466,93 @@ async fn dispatch_click(
     Ok(())
 }
 
-/// Poll for a URL change after a click.
+/// Wait for JS to settle after a click, then fetch url + title + focus in one evaluate.
 ///
-/// Returns the final URL. Optimized for two scenarios:
-/// - No URL change (DOM expansion, local state updates): returns immediately (~50ms)
-/// - URL changed (navigation): returns immediately, no need to poll
-///
-/// This avoids wasting time waiting on DOM-only interactions.
-async fn wait_for_navigation(cdp: &CdpSession, target_id: &str, pre_url: &str) -> String {
-    // Give browser time to start processing the click event
-    tokio::time::sleep(Duration::from_millis(50)).await;
+/// Polls at 50ms intervals until the URL stabilises or the timeout is reached,
+/// then reads all post-click state in a single Runtime.evaluate round-trip.
+/// This avoids separate get_tab_url / get_tab_title / get_active_element calls
+/// and ensures the evaluate runs after the JS main thread finishes its work.
+async fn wait_and_get_post_state(
+    cdp: &CdpSession,
+    target_id: &str,
+    pre_url: &str,
+) -> (String, String, String) {
+    const POLL_INTERVAL: Duration = Duration::from_millis(50);
+    const TIMEOUT: Duration = Duration::from_millis(2000);
 
-    let current = navigation::get_tab_url(cdp, target_id).await;
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    // Brief initial pause so the browser starts processing the click.
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Check for URL change. If URL changed, return immediately (navigation detected).
-    // If URL didn't change, return current (DOM change, no navigation).
-    // No need to poll further — either navigation happened or it didn't.
-    current
+    // Poll for URL change (early exit on navigation).
+    loop {
+        let state = get_full_tab_state(cdp, target_id).await;
+        // URL changed — navigation happened, return immediately.
+        if !pre_url.is_empty() && state.0 != pre_url {
+            return state;
+        }
+        // Timeout — JS has had enough time to settle, return current state.
+        if tokio::time::Instant::now() >= deadline {
+            return state;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
 }
 
-/// Snapshot of the active element for focus-change detection.
-async fn get_active_element_id(cdp: &CdpSession, target_id: &str) -> String {
-    cdp.execute_on_tab(
-        target_id,
-        "Runtime.evaluate",
-        json!({
-            "expression": "(() => { const a = document.activeElement; return a ? a.tagName + '#' + (a.id || '') : ''; })()",
-            "returnByValue": true,
-        }),
-    )
-    .await
-    .ok()
-    .and_then(|v| {
-        v.pointer("/result/result/value")
-            .and_then(|v| v.as_str())
-            .map(String::from)
-    })
-    .unwrap_or_default()
+/// Fetch url + title + active-element in one evaluate round-trip.
+async fn get_full_tab_state(cdp: &CdpSession, target_id: &str) -> (String, String, String) {
+    let result = cdp
+        .execute_on_tab(
+            target_id,
+            "Runtime.evaluate",
+            json!({
+                "expression": "(() => { const a = document.activeElement; return JSON.stringify({ url: document.URL, title: document.title, focus: a ? a.tagName + '#' + (a.id || '') : '' }); })()",
+                "returnByValue": true,
+            }),
+        )
+        .await
+        .ok()
+        .and_then(|v| {
+            v.pointer("/result/result/value")
+                .and_then(|v| v.as_str())
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        });
+
+    let url = result.as_ref().and_then(|v| v["url"].as_str()).unwrap_or_default().to_string();
+    let title = result.as_ref().and_then(|v| v["title"].as_str()).unwrap_or_default().to_string();
+    let focus = result.as_ref().and_then(|v| v["focus"].as_str()).unwrap_or_default().to_string();
+    (url, title, focus)
 }
+
+/// Fetch url + active-element in one evaluate, saving one JS-main-thread round-trip.
+async fn get_tab_state(cdp: &CdpSession, target_id: &str) -> (String, String) {
+    let result = cdp
+        .execute_on_tab(
+            target_id,
+            "Runtime.evaluate",
+            json!({
+                "expression": "(() => { const a = document.activeElement; return JSON.stringify({ url: document.URL, focus: a ? a.tagName + '#' + (a.id || '') : '' }); })()",
+                "returnByValue": true,
+            }),
+        )
+        .await
+        .ok()
+        .and_then(|v| {
+            v.pointer("/result/result/value")
+                .and_then(|v| v.as_str())
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        });
+
+    let url = result
+        .as_ref()
+        .and_then(|v| v["url"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    let focus = result
+        .as_ref()
+        .and_then(|v| v["focus"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    (url, focus)
+}
+
