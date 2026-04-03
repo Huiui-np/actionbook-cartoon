@@ -1,5 +1,11 @@
 # @actionbookdev/cli
 
+## 1.0.2
+
+### Patch Changes
+
+- Remove search and get commands from CLI help output and skill documentation
+
 ## 1.0.1
 
 See 1.0.0 release notes below.
