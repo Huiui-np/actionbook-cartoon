@@ -121,10 +121,8 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
                         {
                             let _ = dispatch_mouse_click(&ctx, cx, cy).await;
                         }
-                    } else {
-                        if let Err(e) = ctx.focus_element(node_id).await {
-                            return e;
-                        }
+                    } else if let Err(e) = ctx.focus_element(node_id).await {
+                        return e;
                     }
                 }
                 Err(e) => return e,
