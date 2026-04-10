@@ -48,10 +48,26 @@ pub async fn launch_chrome(
         "--no-default-browser-check".to_string(),
     ];
     if stealth {
+        // Stealth launch args — based on actionbook-rs + Camoufox patterns.
+        //
+        // NOTE: --disable-blink-features=AutomationControlled intentionally omitted.
+        // It triggers Chrome's "unsupported command line flag" warning bar which
+        // is itself a detection signal. navigator.webdriver is hidden via CDP
+        // injection (Page.addScriptToEvaluateOnNewDocument) instead.
+
+        // WebRTC IP leak prevention
+        args.push("--force-webrtc-ip-handling-policy=disable_non_proxied_udp".to_string());
+
+        // NOTE: --disable-site-isolation-trials and --disable-features=IsolateOrigins
+        // intentionally omitted — they trigger Chrome's "unsupported command line flag"
+        // warning bar, which is itself a bot detection signal.
+
+        // Stability & clean UI
         args.push("--disable-dev-shm-usage".to_string());
         args.push("--disable-save-password-bubble".to_string());
         args.push("--disable-translate".to_string());
-        args.push("--force-webrtc-ip-handling-policy=disable_non_proxied_udp".to_string());
+        args.push("--disable-background-timer-throttling".to_string());
+        args.push("--disable-backgrounding-occluded-windows".to_string());
     }
     if headless {
         args.push("--headless=new".to_string());

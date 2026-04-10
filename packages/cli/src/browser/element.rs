@@ -319,9 +319,64 @@ async fn get_element_center_for_frame(
             ActionResult::fatal("CDP_ERROR", format!("no box model for element: {selector}"))
         })?;
 
-    let cx = (content[0].as_f64().unwrap_or(0.0) + content[4].as_f64().unwrap_or(0.0)) / 2.0;
-    let cy = (content[1].as_f64().unwrap_or(0.0) + content[5].as_f64().unwrap_or(0.0)) / 2.0;
+    let mut cx = (content[0].as_f64().unwrap_or(0.0) + content[4].as_f64().unwrap_or(0.0)) / 2.0;
+    let mut cy = (content[1].as_f64().unwrap_or(0.0) + content[5].as_f64().unwrap_or(0.0)) / 2.0;
+
+    // For cross-origin iframes (OOPIF), DOM.getBoxModel returns iframe-internal
+    // coordinates.  Input.dispatchMouseEvent needs page-absolute coordinates,
+    // so we add the iframe's offset on the parent page.
+    if let Some(fid) = frame_id
+        && let Ok((off_x, off_y)) = get_iframe_offset(cdp, target_id, fid).await
+    {
+        cx += off_x;
+        cy += off_y;
+    }
+
     Ok((cx, cy))
+}
+
+/// Get the top-left offset of an iframe on the parent page.
+///
+/// Uses `DOM.getFrameOwner(frameId)` to find the iframe element's
+/// backendNodeId, then `DOM.getBoxModel(backendNodeId)` on the parent
+/// session to get the iframe's position in page coordinates.
+async fn get_iframe_offset(
+    cdp: &CdpSession,
+    target_id: &str,
+    frame_id: &str,
+) -> Result<(f64, f64), CliError> {
+    // Get the iframe element's backendNodeId via DOM.getFrameOwner
+    let owner = cdp
+        .execute_on_tab(
+            target_id,
+            "DOM.getFrameOwner",
+            json!({ "frameId": frame_id }),
+        )
+        .await?;
+
+    let backend_node_id = owner
+        .pointer("/result/backendNodeId")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| CliError::CdpError("DOM.getFrameOwner: no backendNodeId".to_string()))?;
+
+    // Get the iframe's box model on the parent page (main tab session)
+    let bm = cdp
+        .execute_on_tab(
+            target_id,
+            "DOM.getBoxModel",
+            json!({ "backendNodeId": backend_node_id }),
+        )
+        .await?;
+
+    let content = bm
+        .pointer("/result/model/content")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| CliError::CdpError("iframe box model: no content quad".to_string()))?;
+
+    // content quad: [x1,y1, x2,y2, x3,y3, x4,y4] — top-left is (x1, y1)
+    let x = content[0].as_f64().unwrap_or(0.0);
+    let y = content[1].as_f64().unwrap_or(0.0);
+    Ok((x, y))
 }
 
 // ── Legacy standalone helpers (main-frame only, kept for non-TabContext callers) ──

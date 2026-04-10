@@ -147,6 +147,102 @@ pub fn render_content(nodes: &[AXNode]) -> String {
     lines.join("\n")
 }
 
+/// Render a flat node list to a Playwright-style YAML DSL string.
+///
+/// Format rules:
+/// - Container nodes (have children or URL): `- role "name" [ref=eN]:`
+/// - Leaf with ref: `- role "name" [ref=eN]`
+/// - Leaf without ref, has name and value: `- role "name": value`
+/// - Leaf without ref, has name only: `- role: name`
+/// - URL renders as a child line: `- /url: <url>`
+/// - `[cursor=pointer]` added when cursor_info contains "cursor:pointer" hint
+/// - Quotes and newlines in names are escaped
+pub fn render_yaml(nodes: &[AXNode]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for (i, node) in nodes.iter().enumerate() {
+        let indent = "  ".repeat(node.depth);
+        let escaped_name: String = node
+            .name
+            .chars()
+            .flat_map(|c| match c {
+                '\\' => vec!['\\', '\\'],
+                '"' => vec!['\\', '"'],
+                '\n' => vec!['\\', 'n'],
+                '\r' => vec!['\\', 'r'],
+                c if c.is_control() => vec![],
+                c => vec![c],
+            })
+            .collect();
+
+        let has_tree_children = nodes.get(i + 1).is_some_and(|n| n.depth > node.depth);
+        let has_url = !node.url.is_empty();
+        let is_container = has_tree_children || has_url;
+
+        let escaped_value: String = node
+            .value
+            .chars()
+            .flat_map(|c| match c {
+                '\\' => vec!['\\', '\\'],
+                '"' => vec!['\\', '"'],
+                '\n' => vec!['\\', 'n'],
+                '\r' => vec!['\\', 'r'],
+                c if c.is_control() => vec![],
+                c => vec![c],
+            })
+            .collect();
+
+        let has_cursor_pointer = node
+            .cursor_info
+            .as_ref()
+            .is_some_and(|ci| ci.hints.iter().any(|h| h == "cursor:pointer"));
+
+        let line = if is_container {
+            let mut s = format!("{indent}- {}", node.role);
+            if !escaped_name.is_empty() {
+                s.push_str(&format!(" \"{}\"", escaped_name));
+            }
+            if !node.ref_id.is_empty() {
+                s.push_str(&format!(" [ref={}]", node.ref_id));
+            }
+            if has_cursor_pointer {
+                s.push_str(" [cursor=pointer]");
+            }
+            s.push(':');
+            s
+        } else if !node.ref_id.is_empty() {
+            let mut s = format!("{indent}- {}", node.role);
+            if !escaped_name.is_empty() {
+                s.push_str(&format!(" \"{}\"", escaped_name));
+            }
+            s.push_str(&format!(" [ref={}]", node.ref_id));
+            if has_cursor_pointer {
+                s.push_str(" [cursor=pointer]");
+            }
+            if !escaped_value.is_empty() {
+                s.push_str(&format!(": {}", escaped_value));
+            }
+            s
+        } else if !escaped_name.is_empty() && !escaped_value.is_empty() {
+            format!(
+                "{indent}- {} \"{}\": {}",
+                node.role, escaped_name, escaped_value
+            )
+        } else if !escaped_name.is_empty() {
+            format!("{indent}- {}: {}", node.role, escaped_name)
+        } else {
+            format!("{indent}- {}", node.role)
+        };
+
+        lines.push(line);
+
+        if has_url {
+            let child_indent = "  ".repeat(node.depth + 1);
+            lines.push(format!("{child_indent}- /url: {}", node.url));
+        }
+    }
+    lines.join("\n")
+}
+
 /// Extract a string from a CDP AXValue `{"type":"...","value":"..."}`.
 /// Handles string, integer, float, and boolean value types.
 fn extract_ax_string(ax_value: &Value) -> String {
@@ -417,7 +513,7 @@ pub fn parse_ax_tree(
 /// Build the full SnapshotOutput from a flat node list.
 /// `data.nodes` only contains nodes that have a ref (interactive + named content).
 pub fn build_output(nodes: Vec<AXNode>) -> SnapshotOutput {
-    let content = render_content(&nodes);
+    let content = render_yaml(&nodes);
     // Stats count all nodes with refs
     let ref_nodes: Vec<&AXNode> = nodes.iter().filter(|n| !n.ref_id.is_empty()).collect();
     let node_count = ref_nodes.len();
@@ -706,6 +802,47 @@ impl RefCache {
             .get(ref_id)
             .and_then(|key| self.id_to_ref.get(key))
     }
+
+    /// Remap refs that were parsed as main-frame (frame_id=None) to a
+    /// specific frame_id.  This happens when Chrome's AX tree includes
+    /// iframe content inline (e.g., closed shadow root iframes) but we
+    /// discover the actual frame_id later via expand_iframes.
+    pub fn remap_frame_id_for_backend_nodes(
+        &mut self,
+        backend_node_ids: &[i64],
+        new_frame_id: &str,
+    ) {
+        for &bid in backend_node_ids {
+            let old_key: RefKey = (None, bid);
+            let new_key: RefKey = (Some(new_frame_id.to_string()), bid);
+
+            // Skip if the new key already exists — preserve existing frame-keyed
+            // refs to maintain stable ref_ids across snapshots.
+            if self.id_to_ref.contains_key(&new_key) {
+                continue;
+            }
+
+            if let Some(mut entry) = self.id_to_ref.remove(&old_key) {
+                let ref_id = entry.ref_id.clone();
+                entry.frame_id = Some(new_frame_id.to_string());
+                self.id_to_ref.insert(new_key.clone(), entry);
+                // Update reverse lookup
+                self.ref_to_id.insert(ref_id, new_key);
+            }
+        }
+    }
+
+    /// Collect all unique frame_ids that have been assigned to refs.
+    /// Used to detect which frames have already been expanded.
+    pub fn all_frame_ids(&self) -> Vec<String> {
+        let mut ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for entry in self.id_to_ref.values() {
+            if let Some(ref fid) = entry.frame_id {
+                ids.insert(fid.clone());
+            }
+        }
+        ids.into_iter().collect()
+    }
 }
 
 // ── P0: Empty leaf removal ───────────────────────────────────────────
@@ -968,6 +1105,142 @@ mod tests {
             !content.contains("\"\""),
             "nameless nodes must not render empty quotes: {content}"
         );
+    }
+
+    // ── render_yaml ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_render_yaml_nested_tree_with_refs_urls_and_cursor_attrs() {
+        let mut home = make_node("e8", "link", "Home", true, 1);
+        home.url = "https://example.com/".to_string();
+
+        let search = make_node("e9", "combobox", "Search", true, 2);
+
+        let mut clear = make_node("e10", "image", "clear", true, 2);
+        clear.cursor_info = Some(CursorInfo {
+            kind: "clickable".to_string(),
+            hints: vec!["cursor:pointer".to_string(), "onclick".to_string()],
+        });
+
+        let list_item = make_node("", "listitem", "One", false, 2);
+
+        let nodes = vec![
+            make_node("", "generic", "", false, 0),
+            home,
+            make_node("", "generic", "", false, 1),
+            search,
+            clear,
+            make_node("", "list", "", false, 1),
+            list_item,
+        ];
+
+        let content = render_yaml(&nodes);
+        let expected = r#"- generic:
+  - link "Home" [ref=e8]:
+    - /url: https://example.com/
+  - generic:
+    - combobox "Search" [ref=e9]
+    - image "clear" [ref=e10] [cursor=pointer]
+  - list:
+    - listitem: One"#;
+
+        assert_eq!(content, expected);
+    }
+
+    #[test]
+    fn test_render_yaml_uses_two_space_indentation_per_level() {
+        let nodes = vec![
+            make_node("", "generic", "", false, 0),
+            make_node("e1", "button", "Top", true, 1),
+            make_node("", "generic", "", false, 1),
+            make_node("e2", "button", "Nested", true, 2),
+        ];
+
+        let content = render_yaml(&nodes);
+        let lines: Vec<&str> = content.lines().collect();
+
+        assert_eq!(lines[0], "- generic:");
+        assert!(lines[1].starts_with("  - "), "depth 1 should use 2 spaces");
+        assert!(lines[2].starts_with("  - "), "depth 1 should use 2 spaces");
+        assert!(
+            lines[3].starts_with("    - "),
+            "depth 2 should use 4 spaces"
+        );
+    }
+
+    #[test]
+    fn test_render_yaml_empty_tree_returns_empty_string() {
+        assert!(render_yaml(&[]).is_empty());
+    }
+
+    #[test]
+    fn test_render_yaml_named_container_with_children_uses_block_form() {
+        let nodes = vec![
+            make_node("", "generic", "Filters", false, 0),
+            make_node("e1", "button", "Apply", true, 1),
+        ];
+        let content = render_yaml(&nodes);
+        assert_eq!(
+            content,
+            "- generic \"Filters\":\n  - button \"Apply\" [ref=e1]"
+        );
+    }
+
+    #[test]
+    fn test_render_yaml_uses_inline_text_for_leaf_nodes() {
+        let nodes = vec![make_node("", "listitem", "Inline text", false, 0)];
+        let content = render_yaml(&nodes);
+        assert_eq!(content, "- listitem: Inline text");
+    }
+
+    #[test]
+    fn test_render_yaml_renders_textbox_value_inline() {
+        let nodes = vec![make_node_with_value(
+            "",
+            "textbox",
+            "Search",
+            "current value",
+            true,
+            0,
+        )];
+        let content = render_yaml(&nodes);
+        assert_eq!(content, "- textbox \"Search\": current value");
+    }
+
+    #[test]
+    fn test_render_yaml_ignores_non_pointer_cursor_hints() {
+        let mut node = make_node("e1", "image", "clear", true, 0);
+        node.cursor_info = Some(CursorInfo {
+            kind: "clickable".to_string(),
+            hints: vec![
+                "cursor:pointer".to_string(),
+                "onclick".to_string(),
+                "tabindex".to_string(),
+            ],
+        });
+        let content = render_yaml(&[node]);
+        assert_eq!(content, "- image \"clear\" [ref=e1] [cursor=pointer]");
+    }
+
+    #[test]
+    fn test_render_yaml_escapes_special_chars_in_names() {
+        let nodes = vec![make_node("e1", "button", "Say \"hi\"\nthen \\ go", true, 0)];
+        let content = render_yaml(&nodes);
+        assert_eq!(content, r#"- button "Say \"hi\"\nthen \\ go" [ref=e1]"#);
+    }
+
+    #[test]
+    fn test_render_yaml_renders_value_inline_when_ref_present() {
+        let nodes = vec![make_node_with_value(
+            "e5",
+            "textbox",
+            "Search",
+            "hello world",
+            true,
+            0,
+        )];
+        let content = render_yaml(&nodes);
+        assert_eq!(content, "- textbox \"Search\" [ref=e5]: hello world");
     }
 
     // NOTE: build_stats tests removed — stats are computed inline in build_output.
@@ -1592,10 +1865,13 @@ mod tests {
         let output = build_output(nodes);
 
         assert!(
-            output
-                .content
-                .contains("- link \"Docs\" [ref=e1] url=https://example.com/docs"),
-            "link elements should render their URL inline in snapshot output: {}",
+            output.content.contains("- link \"Docs\" [ref=e1]:"),
+            "link elements should render as YAML container with ref: {}",
+            output.content
+        );
+        assert!(
+            output.content.contains("- /url: https://example.com/docs"),
+            "link URL should render as YAML /url child property: {}",
             output.content
         );
     }

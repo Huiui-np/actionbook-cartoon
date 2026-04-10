@@ -140,8 +140,15 @@ impl CdpSession {
         target_id: &str,
         user_agent: Option<&str>,
     ) -> Result<String, CliError> {
-        // Check if already attached (idempotent)
+        // Check if already attached (idempotent).
+        // However, if stealth UA is provided, we still need to apply stealth
+        // to tabs that were auto-attached by Target.setAutoAttach.
         if let Some(existing) = self.tab_sessions.lock().await.get(target_id).cloned() {
+            if user_agent.is_some() {
+                // Tab already attached but stealth not yet applied.
+                // Apply stealth to this existing session.
+                self.apply_stealth(&existing, user_agent).await;
+            }
             return Ok(existing);
         }
 
@@ -205,35 +212,67 @@ impl CdpSession {
             .await;
 
         // Apply stealth when user_agent is provided (stealth mode enabled).
-        if let Some(ua) = user_agent {
-            // Enable Page domain (required before addScriptToEvaluateOnNewDocument).
-            let _ = self
-                .execute("Page.enable", json!({}), Some(&session_id))
-                .await;
-
-            // Inject stealth script so it runs at document start on every navigation.
-            let stealth_source = &*crate::browser::stealth::STEALTH_JS;
-            let _ = self
-                .execute(
-                    "Page.addScriptToEvaluateOnNewDocument",
-                    json!({ "source": stealth_source }),
-                    Some(&session_id),
-                )
-                .await;
-
-            // Override User-Agent to remove "HeadlessChrome" and other automation hints.
-            if !ua.is_empty() {
-                let _ = self
-                    .execute(
-                        "Emulation.setUserAgentOverride",
-                        json!({ "userAgent": ua }),
-                        Some(&session_id),
-                    )
-                    .await;
-            }
-        }
+        self.apply_stealth(&session_id, user_agent).await;
 
         Ok(session_id)
+    }
+
+    /// Apply stealth injection to a CDP session (if user_agent is Some).
+    ///
+    /// "Native-ish" strategy: inject minimal stealth JS (webdriver removal +
+    /// automation marker cleanup + canvas noise) and strip "HeadlessChrome"
+    /// from the User-Agent.  Does NOT override device metrics, plugins,
+    /// screen size, language, or chrome.runtime — those stay real.
+    async fn apply_stealth(&self, session_id: &str, user_agent: Option<&str>) {
+        let ua = match user_agent {
+            Some(ua) if !ua.is_empty() => ua,
+            _ => return,
+        };
+
+        // Enable Page domain (required before addScriptToEvaluateOnNewDocument).
+        let _ = self
+            .execute("Page.enable", json!({}), Some(session_id))
+            .await;
+
+        // Inject stealth script so it runs at document start on every navigation.
+        let stealth_source = &*crate::browser::stealth::STEALTH_JS;
+        let _ = self
+            .execute(
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({ "source": stealth_source }),
+                Some(session_id),
+            )
+            .await;
+
+        // Only override User-Agent to strip "HeadlessChrome" / "Headless".
+        // Do NOT set acceptLanguage, platform, or userAgentMetadata —
+        // let Chrome report real values to avoid fingerprint inconsistency.
+        let _ = self
+            .execute(
+                "Emulation.setUserAgentOverride",
+                json!({ "userAgent": ua }),
+                Some(session_id),
+            )
+            .await;
+
+        // Do NOT set Emulation.setDeviceMetricsOverride — let Chrome use
+        // real screen dimensions.  Fixed 1920x1080 is a strong bot signal
+        // (real users have 1366x768, 2560x1440, 3440x1440, etc.).
+    }
+
+    /// Register a tab for extension mode (no CDP flat-session handshake needed).
+    ///
+    /// The extension bridge relays CDP commands to a single attached tab and
+    /// ignores the `sessionId` field entirely.  We insert an empty-string
+    /// session ID so that `execute_on_tab` can look it up and the resulting
+    /// WS message simply omits `sessionId` (because `execute()` only adds it
+    /// when `Some`).  Actually we store `""` but `execute_on_tab` passes
+    /// `Some("")` which adds `"sessionId":""` — the bridge ignores it.
+    pub async fn register_extension_tab(&self, native_id: &str) {
+        self.tab_sessions
+            .lock()
+            .await
+            .insert(native_id.to_string(), String::new());
     }
 
     /// Detach from a CDP target (tab).

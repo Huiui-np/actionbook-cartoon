@@ -1,5 +1,30 @@
 # @actionbookdev/cli
 
+## 1.2.0
+
+### Minor Changes
+
+- [#486](https://github.com/actionbook/actionbook/pull/486) [`86905eb`](https://github.com/actionbook/actionbook/commit/86905ebe112bd3c58f2db315920213e98c6b458f) Thanks [@Senke0x](https://github.com/Senke0x)! - Restore extension browser mode with WebSocket bridge relay
+
+  - Add extension bridge server (ws://127.0.0.1:19222) for transparent CDP relay between Chrome extension and CLI daemon
+  - Use Extension API (listTabs, attachTab, createTab, detachTab) for tab lifecycle management
+  - Read default browser mode from config.toml instead of hardcoding Local
+  - Fix build.rs to track git ref files in worktrees for accurate BUILD_VERSION
+  - Add Local mode guard to prevent silent fallback from unsupported modes
+  - Reject concurrent CDP clients in bridge to prevent response channel hijacking
+
+## 1.1.0
+
+### Minor Changes
+
+- [#483](https://github.com/actionbook/actionbook/pull/483) [`4d46f8d`](https://github.com/actionbook/actionbook/commit/4d46f8d38f63a5ccc3f901db2733b3ec76e1c297) Thanks [@4bmis](https://github.com/4bmis)! - support create multi tabs in one shot
+
+## 1.0.2
+
+### Patch Changes
+
+- Remove search and get commands from CLI help output and skill documentation
+
 ## 1.0.1
 
 See 1.0.0 release notes below.
