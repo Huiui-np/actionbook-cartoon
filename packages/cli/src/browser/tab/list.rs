@@ -6,6 +6,7 @@ use crate::action_result::ActionResult;
 use crate::daemon::cdp_session::cdp_error_to_result;
 use crate::daemon::registry::SharedRegistry;
 use crate::output::ResponseContext;
+use crate::types::Mode;
 
 /// List tabs in a session
 #[derive(Args, Debug, Clone, Serialize, Deserialize)]
@@ -38,12 +39,12 @@ pub fn context(cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
 }
 
 pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
-    // Get CdpSession from registry
-    let cdp = {
+    // Get CdpSession and mode from registry
+    let (cdp, mode) = {
         let reg = registry.lock().await;
         match reg.get(&cmd.session) {
             Some(e) => match e.cdp.clone() {
-                Some(c) => c,
+                Some(c) => (c, e.mode),
                 None => {
                     return ActionResult::fatal_with_hint(
                         "INTERNAL_ERROR",
@@ -62,7 +63,40 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         }
     };
 
-    // Real-time fetch via CDP Target.getTargets (works for both local and cloud)
+    // Extension mode: Target.getTargets is not available — return tabs
+    // from the registry directly.
+    if mode == Mode::Extension {
+        let tabs: Vec<serde_json::Value> = {
+            let reg = registry.lock().await;
+            match reg.get(&cmd.session) {
+                Some(entry) => entry
+                    .tabs
+                    .iter()
+                    .map(|t| {
+                        json!({
+                            "tab_id": t.id.0,
+                            "native_tab_id": t.native_id,
+                            "url": t.url,
+                            "title": t.title,
+                        })
+                    })
+                    .collect(),
+                None => {
+                    return ActionResult::fatal_with_hint(
+                        "SESSION_NOT_FOUND",
+                        format!("session '{}' not found", cmd.session),
+                        "run `actionbook browser list-sessions` to see available sessions",
+                    );
+                }
+            }
+        };
+        return ActionResult::ok(json!({
+            "total_tabs": tabs.len(),
+            "tabs": tabs,
+        }));
+    }
+
+    // Local/Cloud: real-time fetch via CDP Target.getTargets
     let resp = match cdp.execute_browser("Target.getTargets", json!({})).await {
         Ok(r) => r,
         Err(e) => return cdp_error_to_result(e, "CDP_CONNECTION_FAILED"),
