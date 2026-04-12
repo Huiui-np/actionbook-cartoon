@@ -2014,7 +2014,10 @@ fn find_chrome_pids_for_dir(profiles_dir: &std::path::Path) -> Vec<u32> {
         // On Windows, use PowerShell Get-CimInstance to find Chrome processes by
         // command-line argument.  wmic is deprecated / removed on newer Windows
         // Server images used by GitHub Actions.
-        let escaped = pattern.replace('\\', "\\\\").replace('\'', "''");
+        // In PowerShell single-quoted strings, backslash is literal (not an
+        // escape char), and `-like` treats `\` as literal too.  Only single
+        // quotes need escaping (doubled: '').
+        let escaped = pattern.replace('\'', "''");
         let ps_cmd = format!(
             "Get-CimInstance Win32_Process | Where-Object {{ $_.CommandLine -like '*{}*' }} | Select-Object -ExpandProperty ProcessId",
             escaped

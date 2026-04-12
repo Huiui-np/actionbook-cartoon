@@ -27,6 +27,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "urlencoding",
+ "wait-timeout",
  "which",
 ]
 
