@@ -93,7 +93,7 @@ use windows_sys::Win32::{
         JobObjects::{
             AssignProcessToJobObject, CreateJobObjectW, OpenJobObjectW, TerminateJobObject,
         },
-        Threading::{OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_TERMINATE},
+        Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject},
     },
 };
 

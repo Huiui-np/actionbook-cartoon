@@ -566,8 +566,7 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
                 // Reopen the named Job Object left by the crashed daemon and
                 // terminate it — kills the orphan Chrome main process and all
                 // helpers (renderer, GPU, utility) atomically.
-                if let Some(job) =
-                    crate::daemon::chrome_reaper::ChromeJobObject::open(profile_name)
+                if let Some(job) = crate::daemon::chrome_reaper::ChromeJobObject::open(profile_name)
                 {
                     tracing::debug!(
                         profile_name,
