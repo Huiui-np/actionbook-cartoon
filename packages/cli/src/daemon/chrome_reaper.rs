@@ -40,6 +40,19 @@ pub fn kill_and_reap(child: &mut Child) {
     }
 
     // Force kill (fallback on Unix, primary on Windows).
+    #[cfg(windows)]
+    {
+        // On Windows, kill the entire process tree (/T) to ensure Chrome's
+        // helper processes (renderer, GPU, utility) are also terminated.
+        // child.kill() alone only terminates the main process, leaving helpers
+        // alive and keeping the user-data-dir lock held.
+        let pid = child.id();
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
     let _ = child.kill();
     let _ = child.wait();
 }

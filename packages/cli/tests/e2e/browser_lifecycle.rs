@@ -1415,16 +1415,22 @@ fn close_kills_chrome_process() {
     let out = env.headless_json(&["browser", "close", "--session", "leak-test"], 30);
     assert_success(&out, "close leak-test");
 
-    // Wait briefly for process to fully exit
-    std::thread::sleep(Duration::from_millis(500));
-
-    // Verify all Chrome processes for this profile dir are gone
-    let chrome_pids_after = find_chrome_pids_for_dir(&profiles_dir);
-    assert!(
-        chrome_pids_after.is_empty(),
-        "Chrome processes should not remain after close, but found PIDs: {:?}",
-        chrome_pids_after
-    );
+    // Poll until Chrome processes are gone — on Windows, helper processes
+    // (renderer, GPU, utility) may take a moment to fully exit after the
+    // main process is killed, and WMI can lag briefly in reflecting exits.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let chrome_pids_after = find_chrome_pids_for_dir(&profiles_dir);
+        if chrome_pids_after.is_empty() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Chrome processes should not remain after close, but found PIDs: {:?}",
+            chrome_pids_after
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }
 
 /// After daemon graceful shutdown, no Chrome processes should remain.

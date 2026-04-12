@@ -311,13 +311,16 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
             }
             #[cfg(windows)]
             {
-                // On Windows, use taskkill to terminate the orphan Chrome process.
+                // On Windows, kill the entire Chrome process tree (/T) so that
+                // helper processes (renderer, GPU, utility) are also terminated.
+                // Without /T, helpers survive and keep the user-data-dir locked,
+                // causing the next Chrome launch to hang.
                 let _ = std::process::Command::new("taskkill")
-                    .args(["/F", "/PID", &pid.to_string()])
+                    .args(["/F", "/T", "/PID", &pid.to_string()])
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
                     .status();
-                std::thread::sleep(std::time::Duration::from_millis(500));
+                std::thread::sleep(std::time::Duration::from_millis(1000));
             }
         }
         let _ = std::fs::remove_file(&chrome_pid_file);
