@@ -2011,32 +2011,24 @@ fn find_chrome_pids_for_dir(profiles_dir: &std::path::Path) -> Vec<u32> {
 
     #[cfg(windows)]
     {
-        // On Windows, use wmic to find Chrome processes by command-line argument.
-        // WQL LIKE patterns: backslashes must be doubled to avoid being treated as
-        // escape characters for the wildcard characters (% and _).
-        let escaped = pattern.replace('\\', "\\\\");
-        let wmic_filter = format!("commandline like '%{}%'", escaped);
-        let output = std::process::Command::new("wmic")
-            .args([
-                "process",
-                "where",
-                &wmic_filter,
-                "get",
-                "processid",
-                "/format:value",
-            ])
+        // On Windows, use PowerShell Get-CimInstance to find Chrome processes by
+        // command-line argument.  wmic is deprecated / removed on newer Windows
+        // Server images used by GitHub Actions.
+        let escaped = pattern.replace('\\', "\\\\").replace('\'', "''");
+        let ps_cmd = format!(
+            "Get-CimInstance Win32_Process | Where-Object {{ $_.CommandLine -like '*{}*' }} | Select-Object -ExpandProperty ProcessId",
+            escaped
+        );
+        let output = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps_cmd])
             .output();
         match output {
             Ok(o) => String::from_utf8_lossy(&o.stdout)
                 .lines()
-                .filter_map(|line| {
-                    line.trim()
-                        .strip_prefix("ProcessId=")
-                        .and_then(|s| s.trim().parse::<u32>().ok())
-                        .filter(|&pid| pid > 0)
-                })
+                .filter_map(|line| line.trim().parse::<u32>().ok())
+                .filter(|&pid| pid > 0)
                 .collect(),
-            Err(e) => panic!("failed to run wmic: {e}"),
+            Err(e) => panic!("failed to run powershell: {e}"),
         }
     }
 }
