@@ -84,7 +84,7 @@ pub fn kill_and_reap_option(child: &mut Option<Child>) {
 
 #[cfg(windows)]
 use windows_sys::Win32::{
-    Foundation::{BOOL, CloseHandle, FALSE, HANDLE, INVALID_HANDLE_VALUE, UNICODE_STRING},
+    Foundation::{CloseHandle, FALSE, HANDLE, INVALID_HANDLE_VALUE, UNICODE_STRING},
     System::{
         Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -102,13 +102,12 @@ use windows_sys::Win32::{
 #[cfg(windows)]
 const SYNCHRONIZE: u32 = 0x0010_0000;
 
-/// Declare `NtQueryInformationProcess` from `ntdll.dll`.
-///
-/// `ProcessCommandLineInformation` (class 60, available since Windows 8.1)
-/// only requires `PROCESS_QUERY_LIMITED_INFORMATION`, works from any process
-/// context (no COM/WMI initialization needed), and returns the process
-/// command-line string in our own output buffer — no cross-process memory
-/// reads required.
+// Declare NtQueryInformationProcess from ntdll.dll.
+// ProcessCommandLineInformation (class 60, available since Windows 8.1)
+// only requires PROCESS_QUERY_LIMITED_INFORMATION, works from any process
+// context (no COM/WMI initialization needed), and returns the process
+// command-line string in our own output buffer — no cross-process memory
+// reads required.
 #[cfg(windows)]
 #[link(name = "ntdll")]
 unsafe extern "system" {
@@ -136,7 +135,7 @@ fn read_process_cmdline(pid: u32) -> Option<String> {
 
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-        if handle == 0 {
+        if handle.is_null() {
             return None;
         }
 
@@ -257,7 +256,7 @@ fn terminate_pids_and_wait(pids: &[u32]) {
     for &pid in pids {
         unsafe {
             let handle = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
-            if handle == 0 {
+            if handle.is_null() {
                 continue; // Process already exited or no access
             }
             TerminateProcess(handle, 1);
