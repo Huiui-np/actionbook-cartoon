@@ -323,8 +323,13 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
                 // Chrome's sandboxed children may be re-parented by the OS,
                 // making them invisible to taskkill /T.  Kill stragglers by
                 // matching the --user-data-dir command-line argument.
+                // We call twice with a gap: the first call kills processes
+                // visible to WMI at that instant; any that appear in WMI only
+                // after a brief delay are caught by the second call.
                 crate::daemon::chrome_reaper::kill_chrome_by_user_data_dir(&user_data_dir);
-                std::thread::sleep(std::time::Duration::from_millis(1000));
+                std::thread::sleep(std::time::Duration::from_millis(800));
+                crate::daemon::chrome_reaper::kill_chrome_by_user_data_dir(&user_data_dir);
+                std::thread::sleep(std::time::Duration::from_millis(800));
             }
         }
         let _ = std::fs::remove_file(&chrome_pid_file);

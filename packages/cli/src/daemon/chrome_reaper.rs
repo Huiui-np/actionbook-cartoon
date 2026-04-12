@@ -84,8 +84,15 @@ pub fn kill_and_reap_option(child: &mut Option<Child>) {
 #[cfg(windows)]
 pub fn kill_chrome_by_user_data_dir(user_data_dir: &std::path::Path) {
     let dir_str = user_data_dir.display().to_string().replace('\'', "''");
+    // Use Where-Object (PowerShell-side) rather than -Filter (WMI-side) for the
+    // name check — WMI -Filter can silently return no results when the CIM
+    // infrastructure is momentarily busy, causing the ForEach-Object body to
+    // be skipped entirely.  Where-Object is evaluated by PowerShell itself and
+    // is fully reliable.  We also omit the name restriction so that non-.exe
+    // Chrome helper processes (e.g. re-parented sandbox children visible under
+    // a different image name) are also caught.
     let ps_cmd = format!(
-        "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | \
+        "Get-CimInstance Win32_Process | \
          Where-Object {{ $_.CommandLine -like '*{}*' }} | \
          ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}",
         dir_str
