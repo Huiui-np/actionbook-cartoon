@@ -77,22 +77,31 @@ pub fn kill_and_reap_option(child: &mut Option<Child>) {
 // ─── Windows Chrome cleanup helpers ───────────────────────────────────────
 
 /// Run a PowerShell command and parse the `COUNT:<n>` line from its stdout.
+/// Tries `pwsh` (PowerShell 7) first — CI runners ship with `pwsh.EXE` and
+/// `Get-CimInstance` works reliably from detached daemon processes under PS 7.
+/// Falls back to `powershell` (PS 5.1) if `pwsh` is unavailable.
 /// Returns 0 on any error or if no matching line is found.
 #[cfg(windows)]
 fn ps_run_and_get_count(ps_cmd: &str) -> u32 {
-    std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command", ps_cmd])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|s| {
-            s.lines().find_map(|l| {
+    for exe in &["pwsh", "powershell"] {
+        let result = std::process::Command::new(exe)
+            .args(["-NoProfile", "-Command", ps_cmd])
+            .output();
+        let Ok(output) = result else { continue };
+        let stdout = String::from_utf8(output.stdout).unwrap_or_default();
+        let count = stdout
+            .lines()
+            .find_map(|l| {
                 l.trim()
                     .strip_prefix("COUNT:")
                     .and_then(|n| n.parse::<u32>().ok())
             })
-        })
-        .unwrap_or(0)
+            .unwrap_or(0);
+        tracing::debug!(exe, count, "chrome_reaper: ps_run_and_get_count");
+        return count;
+    }
+    tracing::warn!("chrome_reaper: neither pwsh nor powershell is available");
+    0
 }
 
 /// Build a PowerShell snippet that:
@@ -144,11 +153,17 @@ pub fn kill_chrome_by_user_data_dir(user_data_dir: &std::path::Path) {
          ForEach-Object {{ & taskkill.exe /F /PID $_.ProcessId 2>&1 | Out-Null }}",
         dir_str
     );
-    let _ = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command", &ps_cmd])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    for exe in &["pwsh", "powershell"] {
+        if std::process::Command::new(exe)
+            .args(["-NoProfile", "-Command", &ps_cmd])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok()
+        {
+            break;
+        }
+    }
 }
 
 /// Kill all Chrome processes matching `user_data_dir` and block until they
