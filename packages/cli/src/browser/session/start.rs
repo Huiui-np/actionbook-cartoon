@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::action_result::ActionResult;
+use crate::browser::session::provider::{
+    ProviderEnv, ProviderSession, connect_provider, normalize_provider_name, supported_providers,
+};
 use crate::config;
 use crate::config::DEFAULT_PROFILE;
 use crate::daemon::browser;
@@ -23,6 +26,23 @@ Examples:
   actionbook browser start --session research --open-url https://google.com
   actionbook browser start --headless --profile scraper
   actionbook browser start --mode cloud --cdp-endpoint wss://browser.example.com/ws
+
+Cloud providers (-p / --provider):
+  driver          requires DRIVER_API_KEY          # driver.dev
+  hyperbrowser    requires HYPERBROWSER_API_KEY    # hyperbrowser.ai
+  browseruse      requires BROWSER_USE_API_KEY     # browser-use.com
+
+  -p <name> implies --mode cloud and is mutually exclusive with
+  --cdp-endpoint and --mode local/extension. The daemon reads each
+  provider's env vars from the CLI caller's shell, not its own
+  process env. Each provider also reads optional tuning vars
+  (profile, proxy, country, window size, ...) — see docs.
+
+Provider examples:
+  export HYPERBROWSER_API_KEY=...
+  actionbook browser start -p hyperbrowser --session s1
+  actionbook browser start -p driver --open-url https://example.com
+  actionbook browser restart --session s1    # provider sessions: mints a fresh remote
 
 --session: get-or-create — reuses an existing session with the given ID, or creates one if not found.
 --set-session-id: always creates — fails if the ID is already in use.
@@ -47,6 +67,16 @@ pub struct Cmd {
     /// Connect to existing CDP endpoint
     #[arg(long)]
     pub cdp_endpoint: Option<String>,
+    /// Cloud browser provider (implies --mode cloud).
+    ///
+    /// `-p <name>` is mutually exclusive with `--cdp-endpoint` and
+    /// `--mode local/extension`. Each provider reads its own
+    /// `<PROVIDER>_API_KEY` from the CLI caller's shell env — the
+    /// daemon's env was frozen at spawn time and is not consulted.
+    /// Sessions are stateful: `browser restart --session <id>` mints
+    /// a fresh remote session and preserves the session_id.
+    #[arg(short = 'p', long, value_parser = provider_value_parser())]
+    pub provider: Option<String>,
     /// Headers for CDP endpoint (KEY:VALUE), may be repeated
     #[arg(long)]
     pub header: Vec<String>,
@@ -61,10 +91,41 @@ pub struct Cmd {
     #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
     #[serde(default = "default_stealth")]
     pub stealth: bool,
+    /// Snapshot of provider env vars forwarded from the CLI client to the
+    /// daemon (DRIVER_*, HYPERBROWSER_*, BROWSER_USE_*).
+    /// The daemon must NOT read these from its own process env — its env was
+    /// frozen at daemon-spawn time and rarely matches the user's current shell.
+    /// This field is populated automatically in `main.rs` before the action is
+    /// sent over IPC, so callers do not need to set it.
+    #[arg(skip)]
+    #[serde(default)]
+    pub provider_env: ProviderEnv,
 }
 
 fn default_stealth() -> bool {
     true
+}
+
+/// clap value parser for `-p / --provider`.
+///
+/// Using `PossibleValuesParser` (rather than a `ValueEnum`) keeps the
+/// `Cmd.provider` field as `Option<String>`, so config/env merging in
+/// `resolve_start_command` can stay on untyped strings. The per-value
+/// `help` text is what gives agents a single-pass, self-contained
+/// `--help` output: they see the allowed names *and* the required
+/// auth env var in the same line. The alias on `browseruse` preserves
+/// the historical `browser-use` spelling; `normalize_provider_name`
+/// re-normalizes it at `execute()` time so the daemon-side IPC path
+/// keeps the same validation as the CLI-side one.
+fn provider_value_parser() -> clap::builder::PossibleValuesParser {
+    use clap::builder::PossibleValue;
+    clap::builder::PossibleValuesParser::new([
+        PossibleValue::new("driver").help("driver.dev — requires DRIVER_API_KEY"),
+        PossibleValue::new("hyperbrowser").help("hyperbrowser.ai — requires HYPERBROWSER_API_KEY"),
+        PossibleValue::new("browseruse")
+            .aliases(["browser-use"])
+            .help("browser-use.com — requires BROWSER_USE_API_KEY"),
+    ])
 }
 
 pub const COMMAND_NAME: &str = "browser start";
@@ -100,11 +161,35 @@ pub fn context(_cmd: &Cmd, result: &ActionResult) -> Option<ResponseContext> {
 }
 
 pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
-    let mode = cmd.mode.unwrap_or_else(|| {
-        config::load_config()
-            .map(|c| c.browser.mode)
-            .unwrap_or(Mode::Local)
-    });
+    let provider_name = match cmd.provider.as_deref() {
+        Some(provider_name) => match normalize_provider_name(provider_name) {
+            Some(provider) => Some(provider),
+            None => {
+                return ActionResult::fatal(
+                    "INVALID_ARGUMENT",
+                    format!(
+                        "unknown provider '{provider_name}'. Supported providers: {}",
+                        supported_providers()
+                    ),
+                );
+            }
+        },
+        None => None,
+    };
+    // Mode resolution precedence:
+    //   1. --provider implies cloud (validated against any explicit --mode below)
+    //   2. explicit --mode flag
+    //   3. config file's browser.mode
+    //   4. Local default
+    let mode = if provider_name.is_some() {
+        Mode::Cloud
+    } else {
+        cmd.mode.unwrap_or_else(|| {
+            config::load_config()
+                .map(|c| c.browser.mode)
+                .unwrap_or(Mode::Local)
+        })
+    };
     let headless = cmd.headless.unwrap_or(false);
     let profile_name = cmd.profile.as_deref().unwrap_or(DEFAULT_PROFILE);
     let cdp_endpoint = cmd.cdp_endpoint.as_deref();
@@ -116,8 +201,24 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         );
     }
 
-    // Cloud mode requires --cdp-endpoint
-    if mode == Mode::Cloud && cdp_endpoint.is_none() {
+    if provider_name.is_some() && cdp_endpoint.is_some() {
+        return ActionResult::fatal_with_hint(
+            "INVALID_ARGUMENT",
+            "--provider cannot be used together with --cdp-endpoint".to_string(),
+            "use --provider by itself, or use --mode cloud --cdp-endpoint to connect to an existing remote browser",
+        );
+    }
+
+    if provider_name.is_some() && matches!(cmd.mode, Some(Mode::Local) | Some(Mode::Extension)) {
+        return ActionResult::fatal_with_hint(
+            "INVALID_ARGUMENT",
+            "--provider requires cloud mode".to_string(),
+            "remove --mode local/extension, or use --mode cloud with --provider",
+        );
+    }
+
+    // Cloud mode requires --cdp-endpoint unless a provider is selected.
+    if mode == Mode::Cloud && cdp_endpoint.is_none() && provider_name.is_none() {
         return ActionResult::fatal_with_hint(
             "MISSING_CDP_ENDPOINT",
             "--mode cloud requires --cdp-endpoint",
@@ -163,6 +264,13 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
                         "retry after a few seconds or use browser status to check",
                     );
                 }
+                SessionState::Closing => {
+                    return ActionResult::fatal_with_hint(
+                        "SESSION_CLOSING",
+                        format!("session '{}' is being closed, please wait", sid),
+                        "retry after a few seconds or use browser status to check",
+                    );
+                }
                 SessionState::Closed => {
                     // Closed session — fall through to create a new one with this ID
                 }
@@ -176,6 +284,140 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
 
     // ── Cloud mode ──────────────────────────────────────────────────
     if mode == Mode::Cloud {
+        if let Some(provider_name) = provider_name {
+            // Explicit session IDs can be rejected locally before we create a
+            // provider-managed browser. This is only a fast-path preflight:
+            // `execute_cloud` still performs the authoritative reserve later
+            // so concurrent starts cannot slip through.
+            if effective_set_id.is_some() {
+                let mut reg = registry.lock().await;
+                if let Err(e) = reg.generate_session_id(effective_set_id) {
+                    let hint = e.hint();
+                    return ActionResult::fatal_with_hint(e.error_code(), e.to_string(), &hint);
+                }
+            }
+
+            // Provider session reuse: lookup is keyed on (provider, profile),
+            // but presence in the registry only proves the entry was once
+            // healthy. The remote browser may have been killed by the
+            // provider's idle reaper or torn down out-of-band, so we always
+            // probe with `Target.getTargets` before reusing — same pattern as
+            // `find_cloud_session_by_endpoint` further down.
+            let reuse_candidate = {
+                let reg = registry.lock().await;
+                if effective_set_id.is_none()
+                    && let Some(existing) =
+                        reg.find_cloud_session_by_provider(provider_name, profile_name)
+                {
+                    match existing.status {
+                        SessionState::Running => Some((
+                            ReuseTarget {
+                                session_id: existing.id.as_str().to_string(),
+                                first_tab_id: existing
+                                    .tabs
+                                    .first()
+                                    .map(|tab| tab.id.0.clone())
+                                    .unwrap_or_default(),
+                                first_native_id: existing
+                                    .tabs
+                                    .first()
+                                    .map(|tab| tab.native_id.clone())
+                                    .unwrap_or_default(),
+                                cdp: existing.cdp.clone(),
+                                cdp_port: existing.cdp_port,
+                            },
+                            existing.cdp.clone(),
+                        )),
+                        SessionState::Starting => {
+                            return ActionResult::fatal_with_hint(
+                                "SESSION_STARTING",
+                                format!(
+                                    "session for provider '{provider_name}' and profile '{profile_name}' is starting, please wait"
+                                ),
+                                "retry after a few seconds or use browser status to check",
+                            );
+                        }
+                        // `find_cloud_session_by_provider` filters on
+                        // `is_active()`, which excludes both Closing and
+                        // Closed — these arms exist only to keep the match
+                        // exhaustive.
+                        SessionState::Closing | SessionState::Closed => None,
+                    }
+                } else {
+                    None
+                }
+            };
+
+            if let Some((target, cdp)) = reuse_candidate {
+                let stale_session_id = target.session_id.clone();
+                let healthy = match cdp.as_ref() {
+                    Some(cdp) => cdp
+                        .execute_browser("Target.getTargets", json!({}))
+                        .await
+                        .is_ok(),
+                    None => false,
+                };
+                if healthy {
+                    return reuse_running_session(cmd, registry, target).await;
+                }
+                // Stale entry — drop it before falling through to a fresh
+                // provider connect, otherwise the next reuse attempt will
+                // race against the same dead session.
+                tracing::info!(
+                    "cloud provider session '{stale_session_id}' health check failed, reconnecting"
+                );
+                // Take the stale entry out of the registry *and* best-effort
+                // close its remote provider session. A failed `Target.getTargets`
+                // can mean the remote is dead, but it can also mean the WS is
+                // wedged while the paid remote browser is still alive — without
+                // the explicit close, that's a billed orphan session, which is
+                // the exact leak this PR is trying to prevent elsewhere.
+                let stale_entry = {
+                    let mut reg = registry.lock().await;
+                    reg.remove(&stale_session_id)
+                };
+                if let Some(entry) = stale_entry
+                    && let Some(ps) = entry.provider_session.as_ref()
+                    && let Err(err) =
+                        crate::browser::session::provider::close_provider_session(ps).await
+                {
+                    tracing::warn!(
+                        "failed to clean up stale provider session '{}' for provider '{}': {err}",
+                        ps.session_id,
+                        ps.provider
+                    );
+                }
+            }
+
+            let provider_connection = match connect_provider(
+                provider_name,
+                profile_name,
+                headless,
+                cmd.stealth,
+                &cmd.provider_env,
+            )
+            .await
+            {
+                Ok(connection) => connection,
+                Err(err) => return ActionResult::fatal(err.error_code(), err.to_string()),
+            };
+
+            let mut combined_headers = provider_connection.headers.clone();
+            combined_headers.extend(headers.clone());
+
+            return execute_cloud(
+                cmd,
+                registry,
+                &provider_connection.cdp_endpoint,
+                &combined_headers,
+                profile_name,
+                headless,
+                Some(provider_connection.provider.as_str()),
+                provider_connection.session.clone(),
+            )
+            .await;
+        }
+
         return execute_cloud(
             cmd,
             registry,
@@ -183,6 +425,8 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
             &headers,
             profile_name,
             headless,
+            None,
+            None,
         )
         .await;
     }
@@ -242,7 +486,9 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
                         "retry after a few seconds or use browser status to check",
                     );
                 }
-                SessionState::Closed => unreachable!("closed sessions are excluded from lookup"),
+                SessionState::Closing | SessionState::Closed => {
+                    unreachable!("inactive sessions are excluded from lookup via is_active()")
+                }
             }
         } else {
             match reg.reserve_session_start(
@@ -555,7 +801,11 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
             "mode": mode.to_string(),
             "status": "running",
             "headless": headless,
-            "cdp_endpoint": ws_url,
+            // Local loopback CDP URLs must be emitted verbatim so the caller
+            // can actually connect (e.g. `chrome --remote-debugging-port` or
+            // DevTools). `endpoint_for_mode` skips redaction for non-cloud
+            // modes and keeps it for cloud.
+            "cdp_endpoint": endpoint_for_mode(mode, &ws_url),
         },
         "tab": {
             "tab_id": first_short_id,
@@ -644,7 +894,10 @@ async fn reuse_running_session(
             "mode": entry.mode.to_string(),
             "status": entry.status.to_string(),
             "headless": entry.headless,
-            "cdp_endpoint": entry.ws_url,
+            // Cloud ws_urls embed tokens (e.g. Hyperbrowser JWT) as query
+            // params and must be redacted; local loopback ws_urls must be
+            // emitted verbatim so the caller can actually attach.
+            "cdp_endpoint": endpoint_for_mode(entry.mode, &entry.ws_url),
         },
         "tab": {
             "tab_id": target.first_tab_id,
@@ -663,6 +916,36 @@ async fn fail_reserved_start(
 ) -> ActionResult {
     registry.lock().await.remove(session_id.as_str());
     ActionResult::fatal(code, message)
+}
+
+/// Tear down a provider-side session as part of a failed cloud start.
+///
+/// `panic = "abort"` means we cannot rely on `Drop` for this — every error
+/// branch in `execute_cloud` must funnel through this helper, otherwise we
+/// leak paid provider sessions.
+async fn cleanup_provider_session_if_any(provider_session: &Option<ProviderSession>) {
+    if let Some(ps) = provider_session
+        && let Err(err) = crate::browser::session::provider::close_provider_session(ps).await
+    {
+        tracing::warn!(
+            "failed to clean up provider session '{}' for provider '{}': {err}",
+            ps.session_id,
+            ps.provider
+        );
+    }
+}
+
+/// Helper that pairs `cleanup_provider_session_if_any` with `fail_reserved_start`
+/// so all four error branches in `execute_cloud` reduce to a single call.
+async fn fail_reserved_cloud_start(
+    registry: &SharedRegistry,
+    session_id: &SessionId,
+    provider_session: &Option<ProviderSession>,
+    code: &str,
+    message: String,
+) -> ActionResult {
+    cleanup_provider_session_if_any(provider_session).await;
+    fail_reserved_start(registry, session_id, code, message).await
 }
 
 async fn fail_reserved_start_with_chrome(
@@ -687,6 +970,12 @@ fn cleanup_chrome_process(mut chrome_process: Option<Child>) {
 ///
 /// Cloud sessions connect directly to a remote CDP endpoint via WebSocket
 /// with optional auth headers. No local Chrome process is launched.
+///
+/// The argument list is wider than clippy's 7-arg heuristic because all of
+/// these inputs are resolved by the caller (either from the CLI `start`
+/// command or from a `restart` handoff) and have no natural grouping —
+/// folding them into a struct would just be a lint-placation rename.
+#[allow(clippy::too_many_arguments)]
 async fn execute_cloud(
     cmd: &Cmd,
     registry: &SharedRegistry,
@@ -694,14 +983,17 @@ async fn execute_cloud(
     headers: &[(String, String)],
     profile_name: &str,
     headless: bool,
+    provider_name: Option<&str>,
+    provider_session: Option<ProviderSession>,
 ) -> ActionResult {
     let ws_url = match ensure_scheme_or_fatal(cdp_endpoint) {
         Ok(u) => u,
         Err(e) => return e,
     };
+    let effective_set_id = cmd.session.as_deref().or(cmd.set_session_id.as_deref());
 
     // ── Cloud session reuse: match on cdp_endpoint ──
-    {
+    if effective_set_id.is_none() {
         let reg = registry.lock().await;
         if let Some(existing) = reg.find_cloud_session_by_endpoint(cdp_endpoint) {
             match existing.status {
@@ -737,13 +1029,14 @@ async fn execute_cloud(
                         "retry after a few seconds or use browser status to check",
                     );
                 }
-                SessionState::Closed => {}
+                // Closing / Closed are filtered by `find_cloud_session_by_endpoint`
+                // via `is_active()`; these arms only satisfy exhaustiveness.
+                SessionState::Closing | SessionState::Closed => {}
             }
         }
     }
 
     // ── Reserve placeholder ──
-    let effective_set_id = cmd.session.as_deref().or(cmd.set_session_id.as_deref());
     let session_id = {
         let mut reg = registry.lock().await;
         match reg.reserve_session_start(
@@ -755,7 +1048,10 @@ async fn execute_cloud(
             cmd.stealth,
         ) {
             Ok(sid) => sid,
-            Err(e) => return ActionResult::fatal(e.error_code(), e.to_string()),
+            Err(e) => {
+                cleanup_provider_session_if_any(&provider_session).await;
+                return ActionResult::fatal(e.error_code(), e.to_string());
+            }
         }
     };
 
@@ -763,7 +1059,14 @@ async fn execute_cloud(
     let cdp = match CdpSession::connect_with_headers(&ws_url, headers).await {
         Ok(c) => c,
         Err(e) => {
-            return fail_reserved_start(registry, &session_id, e.error_code(), e.to_string()).await;
+            return fail_reserved_cloud_start(
+                registry,
+                &session_id,
+                &provider_session,
+                e.error_code(),
+                e.to_string(),
+            )
+            .await;
         }
     };
 
@@ -771,7 +1074,14 @@ async fn execute_cloud(
     let tabs = match discover_tabs_via_cdp(&cdp).await {
         Ok(t) => t,
         Err(e) => {
-            return fail_reserved_start(registry, &session_id, "CDP_ERROR", e.to_string()).await;
+            return fail_reserved_cloud_start(
+                registry,
+                &session_id,
+                &provider_session,
+                "CDP_ERROR",
+                e.to_string(),
+            )
+            .await;
         }
     };
 
@@ -781,9 +1091,10 @@ async fn execute_cloud(
         match create_tab_via_cdp(&cdp, open_url).await {
             Ok(tab) => vec![tab],
             Err(e) => {
-                return fail_reserved_start(
+                return fail_reserved_cloud_start(
                     registry,
                     &session_id,
+                    &provider_session,
                     "CDP_ERROR",
                     format!("failed to create initial tab: {e}"),
                 )
@@ -809,6 +1120,7 @@ async fn execute_cloud(
         let final_url = match ensure_scheme_or_fatal(url) {
             Ok(u) => u,
             Err(e) => {
+                cleanup_provider_session_if_any(&provider_session).await;
                 registry.lock().await.remove(session_id.as_str());
                 return e;
             }
@@ -830,8 +1142,16 @@ async fn execute_cloud(
     let first_title = tabs.first().map(|t| t.2.clone()).unwrap_or_default();
 
     // ── Finalize registry entry ──
+    // Race window: the placeholder reserved at the top of this function can be
+    // removed by a concurrent `close`/`restart` while we were busy minting the
+    // remote session. In that case the local `provider_session` variable holds
+    // a handle the registry never got to see — no other caller will ever
+    // release it — so we must tear it down here before returning, otherwise
+    // the cloud browser leaks and keeps billing.
     let mut reg = registry.lock().await;
     let Some(entry) = reg.get_mut(session_id.as_str()) else {
+        drop(reg);
+        cleanup_provider_session_if_any(&provider_session).await;
         return ActionResult::fatal(
             "SESSION_NOT_FOUND",
             format!(
@@ -853,6 +1173,8 @@ async fn execute_cloud(
     entry.cdp = Some(cdp);
     entry.cdp_endpoint = Some(cdp_endpoint.to_string());
     entry.headers = headers.to_vec();
+    entry.provider = provider_name.map(|provider| provider.to_string());
+    entry.provider_session = provider_session;
 
     // Create per-session data directory for artifacts (snapshots, etc.)
     let session_data_dir = config::session_data_dir(session_id.as_str());
@@ -871,6 +1193,7 @@ async fn execute_cloud(
             "status": "running",
             "headless": headless,
             "cdp_endpoint": redact_endpoint(cdp_endpoint),
+            "provider": provider_name,
         },
         "tab": {
             "tab_id": first_short_id,
@@ -1144,6 +1467,7 @@ fn make_session_response(
             "status": entry.status.to_string(),
             "headless": entry.headless,
             "cdp_endpoint": redact_endpoint(cdp_endpoint),
+            "provider": entry.provider,
         },
         "tab": {
             "tab_id": first_tab.map(|t| t.id.0.as_str()).unwrap_or(""),
@@ -1179,25 +1503,409 @@ fn parse_headers(raw: &[String]) -> Result<Vec<(String, String)>, ActionResult> 
         .collect()
 }
 
-/// Redact a CDP endpoint for safe display (mask auth tokens in query/path).
-pub fn redact_endpoint(endpoint: &str) -> String {
-    // Simple redaction: if the endpoint contains a token-like path segment, mask it
-    if let Some(idx) = endpoint.find("://") {
-        let after_scheme = &endpoint[idx + 3..];
-        // Find host:port boundary
-        if let Some(slash_idx) = after_scheme.find('/') {
-            let host_port = &after_scheme[..slash_idx];
-            let path = &after_scheme[slash_idx..];
-            // Redact path if it looks like a token (long alphanumeric)
-            let redacted_path = if path.len() > 10 {
-                format!("/{}***", &path[1..5.min(path.len())])
+/// Query parameter names that are treated as secrets and fully redacted in
+/// `redact_endpoint`. Match is case-insensitive. Provider WSS endpoints carry
+/// the API key directly in the query string, so this list is what stops the
+/// daemon from echoing credentials back to logs/responses.
+const SECRET_QUERY_KEYS: &[&str] = &[
+    "apikey",
+    "api_key",
+    "api-key",
+    "token",
+    "access_token",
+    "accesstoken",
+    "auth",
+    "authorization",
+    "key",
+    "password",
+    "secret",
+    "x-api-key",
+];
+
+fn is_secret_query_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    SECRET_QUERY_KEYS.contains(&lower.as_str())
+}
+
+fn redact_query_string(query: &str) -> String {
+    query
+        .split('&')
+        .map(|pair| {
+            if let Some((key, _value)) = pair.split_once('=') {
+                if is_secret_query_key(key) {
+                    format!("{key}=***")
+                } else {
+                    pair.to_string()
+                }
             } else {
-                path.to_string()
-            };
-            return format!("{}{}{}", &endpoint[..idx + 3], host_port, redacted_path);
+                pair.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+/// Emit a CDP endpoint for the given mode.
+///
+/// Local endpoints (`ws://127.0.0.1:PORT/devtools/browser/<uuid>`) carry no
+/// secrets: the UUID segment is just Chrome's internal target ID, and
+/// connecting still requires local loopback access. Running these through
+/// `redact_endpoint` turns them into `ws://127.0.0.1:PORT/devt***`, which is
+/// not actionable — the user can't attach to the truncated URL. So local
+/// sessions emit the verbatim ws_url and cloud sessions always go through
+/// redaction (provider WSS URLs embed API keys as query params and tokens
+/// as path segments).
+pub fn endpoint_for_mode(mode: Mode, endpoint: &str) -> String {
+    if mode == Mode::Cloud {
+        redact_endpoint(endpoint)
+    } else {
+        endpoint.to_string()
+    }
+}
+
+/// Redact a CDP endpoint for safe display.
+///
+/// - Query parameters whose keys appear in `SECRET_QUERY_KEYS` are masked to
+///   `key=***` (this is where every cloud provider currently puts the API key).
+/// - Long path segments are replaced with a short prefix + `***` so that
+///   token-in-path schemes (e.g. `/connect/<token>`) are also redacted.
+/// - Scheme, host:port and the rest of the URL structure are preserved so
+///   the redacted form is still useful for debugging.
+pub fn redact_endpoint(endpoint: &str) -> String {
+    let Some(scheme_end) = endpoint.find("://") else {
+        return endpoint.to_string();
+    };
+    let scheme = &endpoint[..scheme_end + 3];
+    let after_scheme = &endpoint[scheme_end + 3..];
+
+    // Split off the query string first so we can redact it independently.
+    let (path_part, query_part) = match after_scheme.find('?') {
+        Some(q_idx) => (&after_scheme[..q_idx], Some(&after_scheme[q_idx + 1..])),
+        None => (after_scheme, None),
+    };
+
+    // Split host:port from path.
+    let (host_port, path) = match path_part.find('/') {
+        Some(slash_idx) => (&path_part[..slash_idx], &path_part[slash_idx..]),
+        None => (path_part, ""),
+    };
+
+    let redacted_path = if path.len() > 10 {
+        // Path looks like it carries an opaque token; keep the first few chars
+        // for context and mask the rest.
+        let prefix_end = 5.min(path.len());
+        format!("{}***", &path[..prefix_end])
+    } else {
+        path.to_string()
+    };
+
+    let mut out = format!("{scheme}{host_port}{redacted_path}");
+    if let Some(query) = query_part {
+        out.push('?');
+        out.push_str(&redact_query_string(query));
+    }
+    out
+}
+
+#[cfg(test)]
+mod redact_tests {
+    use super::redact_endpoint;
+
+    #[test]
+    fn redacts_apikey_query_param() {
+        let url = "wss://connect.browser-use.com?apiKey=super-secret-token&proxyCountryCode=us";
+        let red = redact_endpoint(url);
+        assert!(!red.contains("super-secret-token"), "leaked token: {red}");
+        assert!(red.contains("apiKey=***"), "expected mask: {red}");
+        assert!(
+            red.contains("proxyCountryCode=us"),
+            "kept non-secret: {red}"
+        );
+    }
+
+    #[test]
+    fn redacts_token_query_param_case_insensitive() {
+        let url = "wss://cdp.driver.dev?Token=abc123def456&profile=foo";
+        let red = redact_endpoint(url);
+        assert!(!red.contains("abc123def456"), "leaked token: {red}");
+        assert!(red.contains("Token=***"));
+        assert!(red.contains("profile=foo"));
+    }
+
+    #[test]
+    fn redacts_long_path_segment() {
+        let url = "wss://cloud.example.com/connect/very-long-opaque-token-segment";
+        let red = redact_endpoint(url);
+        assert!(
+            !red.contains("very-long-opaque-token-segment"),
+            "leaked: {red}"
+        );
+        assert!(red.starts_with("wss://cloud.example.com/"));
+        assert!(red.ends_with("***"));
+    }
+
+    #[test]
+    fn keeps_short_path_unchanged() {
+        let url = "wss://example.com/ws";
+        assert_eq!(redact_endpoint(url), "wss://example.com/ws");
+    }
+
+    #[test]
+    fn handles_endpoint_without_scheme() {
+        let url = "example.com/ws?token=secret";
+        // No scheme — pass through unchanged (best-effort).
+        assert_eq!(redact_endpoint(url), "example.com/ws?token=secret");
+    }
+
+    use super::endpoint_for_mode;
+    use crate::types::Mode;
+
+    #[test]
+    fn endpoint_for_mode_keeps_local_ws_verbatim() {
+        // A real local Chrome CDP URL has a long devtools/browser path that
+        // `redact_endpoint` would truncate to `/devt***`. The caller can't
+        // attach to that, so local mode must emit the URL untouched.
+        let url = "ws://127.0.0.1:9222/devtools/browser/abc-123-def-456-opaque-guid";
+        assert_eq!(endpoint_for_mode(Mode::Local, url), url);
+        assert_eq!(endpoint_for_mode(Mode::Extension, url), url);
+    }
+
+    #[test]
+    fn endpoint_for_mode_redacts_cloud_ws_with_apikey() {
+        // Cloud URLs must still be redacted so the daemon never echoes a
+        // provider API key back to stdout.
+        let url = "wss://connect.browser-use.com?apiKey=super-secret-token";
+        let emitted = endpoint_for_mode(Mode::Cloud, url);
+        assert!(
+            !emitted.contains("super-secret-token"),
+            "cloud endpoint must be redacted: {emitted}",
+        );
+        assert!(emitted.contains("apiKey=***"), "expected mask: {emitted}");
+    }
+}
+
+#[cfg(test)]
+mod provider_start_tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::browser::session::provider::{ProviderEnv, ProviderSession};
+    use crate::daemon::registry::{SessionEntry, SessionState, new_shared_registry};
+    use crate::types::SessionId;
+
+    fn spawn_single_response_server(
+        response: &'static str,
+    ) -> (String, thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
+        let addr = listener.local_addr().expect("mock server addr");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set read timeout");
+
+            let mut request = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        request.extend_from_slice(&buf[..n]);
+                        if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    Err(err)
+                        if matches!(
+                            err.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        break;
+                    }
+                    Err(err) => panic!("read request: {err}"),
+                }
+            }
+
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+            String::from_utf8(request).expect("utf8 request")
+        });
+        (format!("http://{}", addr), handle)
+    }
+
+    #[tokio::test]
+    async fn conflicting_set_session_id_cleans_up_provider_session() {
+        let (base_url, request_handle) =
+            spawn_single_response_server("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        let registry = new_shared_registry();
+
+        let mut existing = SessionEntry::starting(
+            SessionId::new("hyp3").expect("session id"),
+            Mode::Cloud,
+            false,
+            true,
+            crate::config::DEFAULT_PROFILE.to_string(),
+        );
+        existing.status = SessionState::Running;
+        registry.lock().await.insert(existing);
+
+        let result = execute_cloud(
+            &Cmd {
+                mode: Some(Mode::Cloud),
+                headless: Some(false),
+                profile: None,
+                executable_path: None,
+                open_url: None,
+                cdp_endpoint: None,
+                provider: Some("hyperbrowser".to_string()),
+                header: vec![],
+                session: None,
+                set_session_id: Some("hyp3".to_string()),
+                stealth: true,
+                provider_env: ProviderEnv::new(),
+            },
+            &registry,
+            "ws://example.test/devtools/browser/fake",
+            &[],
+            crate::config::DEFAULT_PROFILE,
+            false,
+            Some("hyperbrowser"),
+            Some(ProviderSession {
+                provider: "hyperbrowser".to_string(),
+                session_id: "hb-conflict-1".to_string(),
+                provider_env: ProviderEnv::from([
+                    ("HYPERBROWSER_API_KEY".to_string(), "hb-key".to_string()),
+                    ("HYPERBROWSER_API_URL".to_string(), base_url.clone()),
+                ]),
+            }),
+        )
+        .await;
+
+        match result {
+            ActionResult::Fatal { code, message, .. } => {
+                assert_eq!(code, "SESSION_ALREADY_EXISTS");
+                assert!(message.contains("session id 'hyp3' is already in use"));
+            }
+            other => panic!("expected fatal result, got {other:?}"),
+        }
+
+        let request = request_handle.join().expect("request join");
+        assert!(request.starts_with("PUT /api/session/hb-conflict-1/stop HTTP/1.1"));
+        assert!(request.to_ascii_lowercase().contains("content-length: 0"));
+    }
+
+    #[tokio::test]
+    async fn explicit_provider_session_conflict_fails_before_connect() {
+        let registry = new_shared_registry();
+
+        let mut existing = SessionEntry::starting(
+            SessionId::new("hyp3").expect("session id"),
+            Mode::Cloud,
+            false,
+            true,
+            crate::config::DEFAULT_PROFILE.to_string(),
+        );
+        existing.status = SessionState::Running;
+        registry.lock().await.insert(existing);
+
+        let result = execute(
+            &Cmd {
+                mode: Some(Mode::Cloud),
+                headless: Some(false),
+                profile: None,
+                executable_path: None,
+                open_url: None,
+                cdp_endpoint: None,
+                provider: Some("hyperbrowser".to_string()),
+                header: vec![],
+                session: None,
+                set_session_id: Some("hyp3".to_string()),
+                stealth: true,
+                provider_env: ProviderEnv::from([
+                    ("HYPERBROWSER_API_KEY".to_string(), "hb-key".to_string()),
+                    (
+                        "HYPERBROWSER_API_URL".to_string(),
+                        "http://127.0.0.1:9".to_string(),
+                    ),
+                ]),
+            },
+            &registry,
+        )
+        .await;
+
+        match result {
+            ActionResult::Fatal { code, message, .. } => {
+                assert_eq!(code, "SESSION_ALREADY_EXISTS");
+                assert!(message.contains("session id 'hyp3' is already in use"));
+            }
+            other => panic!("expected fatal result, got {other:?}"),
         }
     }
-    endpoint.to_string()
+
+    #[tokio::test]
+    async fn explicit_set_session_id_skips_endpoint_reuse_checks() {
+        let registry = new_shared_registry();
+        let endpoint = "ws://127.0.0.1:9/devtools/browser/fake";
+
+        let mut existing = SessionEntry::starting(
+            SessionId::new("dr3").expect("session id"),
+            Mode::Cloud,
+            false,
+            true,
+            crate::config::DEFAULT_PROFILE.to_string(),
+        );
+        existing.status = SessionState::Starting;
+        existing.cdp_endpoint = Some(endpoint.to_string());
+        existing.provider = Some("browseruse".to_string());
+        registry.lock().await.insert(existing);
+
+        let result = execute_cloud(
+            &Cmd {
+                mode: Some(Mode::Cloud),
+                headless: Some(false),
+                profile: None,
+                executable_path: None,
+                open_url: None,
+                cdp_endpoint: None,
+                provider: Some("browseruse".to_string()),
+                header: vec![],
+                session: None,
+                set_session_id: Some("bs1".to_string()),
+                stealth: true,
+                provider_env: ProviderEnv::new(),
+            },
+            &registry,
+            endpoint,
+            &[],
+            crate::config::DEFAULT_PROFILE,
+            false,
+            Some("browseruse"),
+            None,
+        )
+        .await;
+
+        match result {
+            ActionResult::Fatal { code, .. } => {
+                assert_eq!(code, "CDP_CONNECTION_FAILED");
+            }
+            other => panic!("expected fatal result, got {other:?}"),
+        }
+
+        let reg = registry.lock().await;
+        assert!(
+            reg.get("bs1").is_none(),
+            "failed start should clean placeholder"
+        );
+        assert_eq!(
+            reg.get("dr3").map(|entry| entry.status),
+            Some(SessionState::Starting)
+        );
+    }
 }
 
 /// Set the profile display name in Chrome's Local State and Preferences files
