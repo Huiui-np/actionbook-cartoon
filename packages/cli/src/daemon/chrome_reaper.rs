@@ -132,6 +132,8 @@ unsafe extern "system" {
 fn read_process_cmdline(pid: u32) -> Option<String> {
     const PROCESS_COMMAND_LINE_INFORMATION: i32 = 60;
     const STATUS_SUCCESS: i32 = 0;
+    // STATUS_INFO_LENGTH_MISMATCH: buffer too small but return_length was set.
+    const STATUS_INFO_LENGTH_MISMATCH: i32 = 0xC0000004u32 as i32;
 
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
@@ -139,29 +141,34 @@ fn read_process_cmdline(pid: u32) -> Option<String> {
             return None;
         }
 
-        // First call: obtain the required buffer size.
+        // Allocate a generous initial buffer. On Windows Server, calling
+        // NtQueryInformationProcess(class 60) with a NULL buffer does NOT
+        // reliably populate return_length, so we skip the probe call and
+        // use a fixed initial size, resizing only if explicitly told to.
+        let mut buf_size: u32 = 4096;
+        let mut buf = vec![0u8; buf_size as usize];
         let mut return_length: u32 = 0;
-        NtQueryInformationProcess(
-            handle,
-            PROCESS_COMMAND_LINE_INFORMATION,
-            std::ptr::null_mut(),
-            0,
-            &mut return_length,
-        );
 
-        if return_length == 0 {
-            CloseHandle(handle);
-            return None;
-        }
-
-        let mut buf = vec![0u8; return_length as usize];
-        let status = NtQueryInformationProcess(
+        let mut status = NtQueryInformationProcess(
             handle,
             PROCESS_COMMAND_LINE_INFORMATION,
             buf.as_mut_ptr().cast(),
-            return_length,
+            buf_size,
             &mut return_length,
         );
+
+        // Retry with the exact size if the initial buffer was too small.
+        if status == STATUS_INFO_LENGTH_MISMATCH && return_length > buf_size {
+            buf_size = return_length;
+            buf.resize(buf_size as usize, 0);
+            status = NtQueryInformationProcess(
+                handle,
+                PROCESS_COMMAND_LINE_INFORMATION,
+                buf.as_mut_ptr().cast(),
+                buf_size,
+                &mut return_length,
+            );
+        }
 
         CloseHandle(handle);
 
@@ -248,6 +255,20 @@ fn enumerate_chrome_pids_for_dir(dir_pattern: &str, exclude_pid: Option<u32>) ->
 
     unsafe { CloseHandle(snapshot) };
     result
+}
+
+/// Force-terminate a single known PID and wait up to 5 s for it to exit.
+/// Used for direct kills where the PID is already known (e.g., orphan main process).
+#[cfg(windows)]
+pub fn terminate_pid_and_wait(pid: u32) {
+    unsafe {
+        let handle = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
+        if !handle.is_null() {
+            TerminateProcess(handle, 1);
+            WaitForSingleObject(handle, 5000);
+            CloseHandle(handle);
+        }
+    }
 }
 
 /// Force-terminate each PID in `pids` and wait up to 2 s per process for exit.

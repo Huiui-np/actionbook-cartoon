@@ -311,10 +311,10 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
             }
             #[cfg(windows)]
             {
-                // Use Win32 CreateToolhelp32Snapshot to enumerate and kill all
-                // Chrome processes for this user-data-dir (main + helpers).
-                // Win32 kernel snapshots are unaffected by Chrome's re-parenting,
-                // so the two-phase helpers-then-main ordering is not needed.
+                // Directly terminate the known orphan main PID first — this is
+                // reliable even if command-line enumeration fails for any reason.
+                crate::daemon::chrome_reaper::terminate_pid_and_wait(_pid as u32);
+                // Then sweep by user-data-dir to catch any surviving helpers.
                 crate::daemon::chrome_reaper::kill_and_wait_for_chrome_by_user_data_dir_async(
                     user_data_dir.clone(),
                 )
