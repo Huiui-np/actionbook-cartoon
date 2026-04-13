@@ -31,3 +31,29 @@ pub async fn get_tab_title(cdp: &CdpSession, target_id: &str) -> String {
     .and_then(|v| v["result"]["result"]["value"].as_str().map(String::from))
     .unwrap_or_default()
 }
+
+/// Get the current readyState of a tab via Runtime.evaluate.
+pub async fn get_tab_ready_state(cdp: &CdpSession, target_id: &str) -> String {
+    cdp.execute_on_tab(
+        target_id,
+        "Runtime.evaluate",
+        json!({"expression": "document.readyState", "returnByValue": true}),
+    )
+    .await
+    .ok()
+    .and_then(|v| v["result"]["result"]["value"].as_str().map(String::from))
+    .unwrap_or_default()
+}
+
+/// Get the current origin of a tab via Runtime.evaluate.
+pub async fn get_tab_origin(cdp: &CdpSession, target_id: &str) -> String {
+    cdp.execute_on_tab(
+        target_id,
+        "Runtime.evaluate",
+        json!({"expression": "location.origin", "returnByValue": true}),
+    )
+    .await
+    .ok()
+    .and_then(|v| v["result"]["result"]["value"].as_str().map(String::from))
+    .unwrap_or_default()
+}
