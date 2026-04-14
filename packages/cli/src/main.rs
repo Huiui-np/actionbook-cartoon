@@ -5,7 +5,7 @@ use clap::Parser;
 use serde_json::json;
 
 use actionbook_cli::action_result::ActionResult;
-use actionbook_cli::cli::{BrowserCommands, Cli, Commands};
+use actionbook_cli::cli::{BrowserCommands, Cli, Commands, DaemonCommands};
 use actionbook_cli::config;
 use actionbook_cli::output::{self, JsonEnvelope};
 use actionbook_cli::utils::client::DaemonClient;
@@ -166,6 +166,9 @@ async fn run(mut cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Commands::Browser { command } => {
             handle_browser(command, json_mode, timeout_ms).await?;
         }
+        Commands::Daemon { command } => {
+            handle_daemon(command, json_mode, timeout_ms).await?;
+        }
         Commands::Setup(cmd) => {
             actionbook_cli::setup::execute(&cmd, json_mode).await?;
         }
@@ -315,6 +318,61 @@ async fn handle_browser(
     Ok(())
 }
 
+async fn handle_daemon(
+    command: DaemonCommands,
+    json_mode: bool,
+    timeout_ms: Option<u64>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let start = Instant::now();
+    match command {
+        DaemonCommands::Restart => {
+            // Honor --timeout: restart_daemon_now can block up to ~15s
+            // (5s SIGTERM wait + 10s readiness wait). Without an outer
+            // timeout, automation that sets --timeout to cap latency is
+            // ignored for this command.
+            let restart_call = actionbook_cli::utils::client::restart_daemon_now();
+            let outcome = if let Some(ms) = timeout_ms {
+                match tokio::time::timeout(Duration::from_millis(ms), restart_call).await {
+                    Ok(r) => r,
+                    Err(_) => Err(actionbook_cli::error::CliError::Internal(format!(
+                        "daemon restart timed out after {ms}ms"
+                    ))),
+                }
+            } else {
+                restart_call.await
+            };
+            let duration = start.elapsed();
+            match outcome {
+                Ok(()) => {
+                    if json_mode {
+                        let envelope = JsonEnvelope::success(
+                            "daemon restart",
+                            None,
+                            json!({ "status": "restarted" }),
+                            duration,
+                        );
+                        println!("{}", serde_json::to_string(&envelope)?);
+                    } else {
+                        println!("daemon restarted");
+                    }
+                }
+                Err(e) => {
+                    if json_mode {
+                        let result = ActionResult::fatal("DAEMON_RESTART_FAILED", e.to_string());
+                        let envelope =
+                            JsonEnvelope::from_result("daemon restart", None, &result, duration);
+                        println!("{}", serde_json::to_string(&envelope)?);
+                    } else {
+                        eprintln!("error DAEMON_RESTART_FAILED: {e}");
+                    }
+                    flush_and_exit(1);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn handle_version(json_mode: bool) {
     let version = env!("CARGO_PKG_VERSION");
     if json_mode {
@@ -336,8 +394,9 @@ No \"current tab\" — run commands on any session/tab in parallel.
 Usage: actionbook <command> [options]
 
 Commands:
-  browser    Control browser sessions, tabs, and page interactions
-  setup      Configure actionbook (or --target <agent> for quick skills install)
+  browser           Control browser sessions, tabs, and page interactions
+  daemon restart    Stop the running daemon (next CLI call auto-respawns one)
+  setup             Configure actionbook (or --target <agent> for quick skills install)
   help       Show this help
   --version  Show version
 

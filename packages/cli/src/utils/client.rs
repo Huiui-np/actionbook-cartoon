@@ -57,7 +57,7 @@ impl DaemonClient {
             }
             // Version mismatch confirmed — drop connection, restart daemon
             drop(stream);
-            restart_daemon().await?;
+            restart_daemon("daemon version mismatch", false).await?;
             return wait_for_daemon(&path, &ready_path, &version_path).await;
         }
 
@@ -81,7 +81,7 @@ impl DaemonClient {
                 needs_restart = true;
             }
             if needs_restart {
-                restart_daemon().await?;
+                restart_daemon("daemon version mismatch", false).await?;
             }
         }
 
@@ -136,7 +136,7 @@ impl DaemonClient {
                     return Ok(DaemonClient { reader, writer });
                 }
                 drop(stream);
-                restart_daemon_windows().await?;
+                restart_daemon_windows("daemon version mismatch", false).await?;
                 return wait_for_daemon_windows(&port_file, &ready_path, &version_path).await;
             }
         }
@@ -158,7 +158,7 @@ impl DaemonClient {
                 needs_restart = true;
             }
             if needs_restart {
-                restart_daemon_windows().await?;
+                restart_daemon_windows("daemon version mismatch", false).await?;
             }
         }
 
@@ -205,9 +205,51 @@ fn versions_match(version_path: &std::path::Path) -> bool {
     !daemon_version.is_empty() && daemon_version == crate::BUILD_VERSION
 }
 
+/// Public wrapper for `actionbook daemon restart`. Stops the running daemon
+/// (SIGTERM on Unix, taskkill on Windows), spawns a fresh one, and waits
+/// until it is ready to accept connections. The user-facing contract is
+/// "after this returns Ok, the next CLI call won't race against an unready
+/// daemon".
+pub async fn restart_daemon_now() -> Result<(), CliError> {
+    #[cfg(unix)]
+    {
+        restart_daemon("user-requested daemon restart", true).await?;
+        // Block until the new daemon writes its ready/version files and the
+        // socket is connectable. Without this, the user sees "daemon
+        // restarted" but the very next call may race and hit DaemonNotRunning.
+        let path = server::socket_path();
+        let ready = path.with_extension("ready");
+        let version = path.with_extension("version");
+        let _client = wait_for_daemon(&path, &ready, &version).await?;
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        restart_daemon_windows("user-requested daemon restart", true).await?;
+        // Mirror the Unix readiness wait via the existing Windows path.
+        let port_path = server::socket_path().with_extension("port");
+        let ready = server::socket_path().with_extension("ready");
+        let version = server::socket_path().with_extension("version");
+        let _client = wait_for_daemon_windows(&port_path, &ready, &version).await?;
+        Ok(())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err(CliError::Internal(
+            "daemon restart is not supported on this platform".to_string(),
+        ))
+    }
+}
+
 /// Stop the running daemon and start a fresh one with the current binary.
+/// `reason` controls the user-facing log line so "version mismatch" doesn't
+/// leak into a user-initiated `daemon restart`. When `force` is true the
+/// "another CLI already restarted with matching version" short-circuit is
+/// skipped — required for user-requested restarts because a crashed daemon
+/// can leave stale same-version marker files behind that would otherwise
+/// trick us into returning Ok without actually spawning a replacement.
 #[cfg(unix)]
-async fn restart_daemon() -> Result<(), CliError> {
+async fn restart_daemon(reason: &str, force: bool) -> Result<(), CliError> {
     let Some(pid) = server::read_daemon_pid().filter(|&p| p > 0) else {
         // No valid PID — cannot signal old daemon. If flock is still held,
         // don't blindly clean up files (would break the live daemon).
@@ -221,7 +263,7 @@ async fn restart_daemon() -> Result<(), CliError> {
         return auto_start_daemon();
     };
 
-    eprintln!("daemon version mismatch, restarting (pid={pid})...",);
+    eprintln!("{reason}, restarting daemon (pid={pid})...");
 
     // send_sigterm returns false if process is already dead (ESRCH)
     if server::send_sigterm(pid) {
@@ -241,15 +283,31 @@ async fn restart_daemon() -> Result<(), CliError> {
         }
     }
 
-    // Before cleaning up, check if a concurrent CLI already started a new
-    // daemon with the correct version — if so, skip cleanup and let the
-    // caller connect to it via wait_for_daemon.
-    let version_path = server::socket_path().with_extension("version");
-    if versions_match(&version_path) {
+    // Concurrent-restart guard: if another CLI has already brought up a
+    // fresh daemon (different pid, alive) while we were waiting, skip
+    // cleanup so we don't unlink THEIR live socket/ready/version files.
+    // This guard runs in BOTH force and non-force mode — it's about
+    // process liveness, which a crashed daemon (the failure mode `force`
+    // exists to escape) can't fake the way it can fake stale marker files.
+    if let Some(current_pid) = server::read_daemon_pid().filter(|&p| p > 0)
+        && current_pid != pid
+        && server::is_pid_alive(current_pid)
+    {
         return Ok(());
     }
 
-    // No matching daemon running — safe to clean up stale files and start
+    // Non-force path additionally short-circuits on matching version files
+    // alone — preserves the original auto-restart optimization where two
+    // CLIs racing on a version-mismatch restart don't double-spawn. force
+    // mode skips this because a crashed daemon may have left stale
+    // same-version markers behind, and `restart_daemon_now` callers need
+    // the spawn to actually happen.
+    let version_path = server::socket_path().with_extension("version");
+    if !force && versions_match(&version_path) {
+        return Ok(());
+    }
+
+    // No live successor daemon — safe to clean up stale files and start.
     cleanup_stale_files();
 
     auto_start_daemon()
@@ -323,8 +381,12 @@ fn read_daemon_port(port_path: &std::path::Path) -> Option<u16> {
 }
 
 /// Stop the running daemon and start a fresh one on Windows.
+///
+/// `force`: see [`restart_daemon`] — user-requested restarts must bypass the
+/// same-version short-circuit so a crashed-but-marker-left daemon is really
+/// respawned.
 #[cfg(windows)]
-async fn restart_daemon_windows() -> Result<(), CliError> {
+async fn restart_daemon_windows(reason: &str, force: bool) -> Result<(), CliError> {
     let Some(pid) = server::read_daemon_pid().filter(|&p| p > 0) else {
         if server::is_daemon_running() {
             return Err(CliError::Internal(
@@ -335,7 +397,7 @@ async fn restart_daemon_windows() -> Result<(), CliError> {
         return auto_start_daemon_windows();
     };
 
-    eprintln!("daemon version mismatch, restarting (pid={pid})...");
+    eprintln!("{reason}, restarting daemon (pid={pid})...");
 
     if server::send_sigterm(pid) {
         // On Windows, is_pid_alive() checks the TCP port via daemon.port
@@ -358,8 +420,15 @@ async fn restart_daemon_windows() -> Result<(), CliError> {
         }
     }
 
+    // See restart_daemon (Unix) for the rationale of both guards.
+    if let Some(current_pid) = server::read_daemon_pid().filter(|&p| p > 0)
+        && current_pid != pid
+        && server::is_pid_alive(current_pid)
+    {
+        return Ok(());
+    }
     let version_path = server::socket_path().with_extension("version");
-    if versions_match(&version_path) {
+    if !force && versions_match(&version_path) {
         return Ok(());
     }
 
