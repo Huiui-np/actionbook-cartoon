@@ -34,6 +34,7 @@ pub async fn execute(_cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
                 "status": s.status.to_string(),
                 "headless": s.headless,
                 "tabs_count": s.tabs_count(),
+                "max_tracked_requests": s.max_tracked_requests,
             });
             // Include cdp_endpoint for cloud sessions (redacted), never expose headers
             if let Some(ref ep) = s.cdp_endpoint {

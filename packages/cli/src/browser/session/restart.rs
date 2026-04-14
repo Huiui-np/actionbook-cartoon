@@ -65,6 +65,7 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         saved_provider_env,
         cdp,
         chrome_process,
+        max_tracked_requests,
     );
     {
         let mut reg = registry.lock().await;
@@ -114,6 +115,7 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         saved_provider_env = provider_session.as_ref().map(|s| s.provider_env.clone());
         cdp = entry.cdp.take();
         chrome_process = entry.chrome_process.take();
+        max_tracked_requests = entry.max_tracked_requests;
 
         reg.clear_session_ref_caches(&cmd.session);
     }
@@ -203,6 +205,7 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         session: None,
         set_session_id: Some(cmd.session.clone()),
         stealth,
+        max_tracked_requests,
         provider_env: effective_provider_env,
     };
 

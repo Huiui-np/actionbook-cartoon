@@ -72,7 +72,11 @@ fn normalize_headers(headers: Option<&Value>) -> HashMap<String, String> {
         .collect()
 }
 
-fn record_request_will_be_sent(requests: &mut VecDeque<TrackedRequest>, params: &Value) {
+fn record_request_will_be_sent(
+    requests: &mut VecDeque<TrackedRequest>,
+    params: &Value,
+    max_tracked_requests: usize,
+) {
     let request_id = params
         .get("requestId")
         .and_then(|v| v.as_str())
@@ -130,7 +134,7 @@ fn record_request_will_be_sent(requests: &mut VecDeque<TrackedRequest>, params: 
         return;
     }
 
-    if requests.len() >= MAX_TRACKED_REQUESTS {
+    if requests.len() >= max_tracked_requests {
         requests.pop_front();
     }
     requests.push_back(TrackedRequest {
@@ -294,13 +298,22 @@ pub struct CdpSession {
 impl CdpSession {
     /// Connect to a browser-level WebSocket endpoint and spawn background tasks.
     pub async fn connect(ws_url: &str) -> Result<Self, CliError> {
-        Self::connect_with_headers(ws_url, &[]).await
+        Self::connect_with_config(ws_url, &[], MAX_TRACKED_REQUESTS).await
     }
 
     /// Connect with custom headers (for cloud mode auth).
     pub async fn connect_with_headers(
         ws_url: &str,
         headers: &[(String, String)],
+    ) -> Result<Self, CliError> {
+        Self::connect_with_config(ws_url, headers, MAX_TRACKED_REQUESTS).await
+    }
+
+    /// Connect with custom headers and a configurable network request buffer size.
+    pub async fn connect_with_config(
+        ws_url: &str,
+        headers: &[(String, String)],
+        max_tracked_requests: usize,
     ) -> Result<Self, CliError> {
         let mut request = ws_url
             .into_client_request()
@@ -342,6 +355,7 @@ impl CdpSession {
             pending_iframe_enables.clone(),
             tab_sessions.clone(),
             tab_net_requests.clone(),
+            max_tracked_requests,
         ));
 
         Ok(CdpSession {
@@ -796,6 +810,7 @@ impl CdpSession {
         pending_iframe_enables: PendingIframeEnables,
         _tab_sessions: Arc<Mutex<HashMap<String, String>>>,
         tab_net_requests: TabNetRequests,
+        max_tracked_requests: usize,
     ) where
         S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
     {
@@ -898,7 +913,7 @@ impl CdpSession {
                             if let Some(params) = params {
                                 let mut tnr = tab_net_requests.lock().await;
                                 let requests = tnr.entry(session_id.to_string()).or_default();
-                                record_request_will_be_sent(requests, params);
+                                record_request_will_be_sent(requests, params, max_tracked_requests);
                             }
                         }
                         "Network.responseReceived" => {
@@ -2072,6 +2087,7 @@ mod tests {
                     "headers": { "accept": "application/json" }
                 }
             }),
+            MAX_TRACKED_REQUESTS,
         );
         record_response_received(
             &mut requests,
@@ -2119,6 +2135,7 @@ mod tests {
                         "headers": {}
                     }
                 }),
+                MAX_TRACKED_REQUESTS,
             );
         }
 

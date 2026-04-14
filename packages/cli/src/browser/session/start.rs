@@ -91,6 +91,11 @@ pub struct Cmd {
     #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
     #[serde(default = "default_stealth")]
     pub stealth: bool,
+    /// Maximum number of network requests to track per tab (ring buffer capacity).
+    /// Must be between 1 and 100000. Default: 500.
+    #[arg(long, default_value_t = 500)]
+    #[serde(default = "default_max_tracked_requests")]
+    pub max_tracked_requests: usize,
     /// Snapshot of provider env vars forwarded from the CLI client to the
     /// daemon (DRIVER_*, HYPERBROWSER_*, BROWSER_USE_*).
     /// The daemon must NOT read these from its own process env — its env was
@@ -100,6 +105,10 @@ pub struct Cmd {
     #[arg(skip)]
     #[serde(default)]
     pub provider_env: ProviderEnv,
+}
+
+fn default_max_tracked_requests() -> usize {
+    500
 }
 
 fn default_stealth() -> bool {
@@ -223,6 +232,16 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
             "MISSING_CDP_ENDPOINT",
             "--mode cloud requires --cdp-endpoint",
             "provide a cloud browser endpoint, e.g. --cdp-endpoint wss://...",
+        );
+    }
+
+    if cmd.max_tracked_requests == 0 || cmd.max_tracked_requests > 100_000 {
+        return ActionResult::fatal(
+            "INVALID_ARGUMENT",
+            format!(
+                "--max-tracked-requests must be between 1 and 100000, got {}",
+                cmd.max_tracked_requests
+            ),
         );
     }
 
@@ -414,6 +433,7 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
                 headless,
                 Some(provider_connection.provider.as_str()),
                 provider_connection.session.clone(),
+                cmd.max_tracked_requests,
             )
             .await;
         }
@@ -427,6 +447,7 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
             headless,
             None,
             None,
+            cmd.max_tracked_requests,
         )
         .await;
     }
@@ -749,7 +770,7 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
     }
 
     // Create persistent CDP connection and attach all initial tabs
-    let cdp = match CdpSession::connect(&ws_url).await {
+    let cdp = match CdpSession::connect_with_config(&ws_url, &[], cmd.max_tracked_requests).await {
         Ok(c) => c,
         Err(e) => {
             return fail_reserved_start_with_chrome(
@@ -836,6 +857,7 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
     entry.status = SessionState::Running;
     entry.cdp_port = port;
     entry.ws_url = ws_url.clone();
+    entry.max_tracked_requests = cmd.max_tracked_requests;
     for (native_id, url, title) in native_tabs {
         entry.push_tab(native_id, url, title);
     }
@@ -1089,6 +1111,7 @@ async fn execute_cloud(
     headless: bool,
     provider_name: Option<&str>,
     provider_session: Option<ProviderSession>,
+    max_tracked_requests: usize,
 ) -> ActionResult {
     let ws_url = match ensure_scheme_or_fatal(cdp_endpoint) {
         Ok(u) => u,
@@ -1159,8 +1182,8 @@ async fn execute_cloud(
         }
     };
 
-    // ── Connect with headers ──
-    let cdp = match CdpSession::connect_with_headers(&ws_url, headers).await {
+    // ── Connect with config ──
+    let cdp = match CdpSession::connect_with_config(&ws_url, headers, max_tracked_requests).await {
         Ok(c) => c,
         Err(e) => {
             return fail_reserved_cloud_start(
@@ -1270,6 +1293,7 @@ async fn execute_cloud(
     entry.status = SessionState::Running;
     entry.cdp_port = None;
     entry.ws_url = ws_url.clone();
+    entry.max_tracked_requests = max_tracked_requests;
     for (native_id, url, title) in tabs {
         entry.push_tab(native_id, url, title);
     }
@@ -1396,7 +1420,9 @@ async fn execute_extension(
     };
 
     // Connect CdpSession to bridge (transparent relay to extension).
-    let cdp = match CdpSession::connect(&bridge_ws_url).await {
+    let cdp = match CdpSession::connect_with_config(&bridge_ws_url, &[], cmd.max_tracked_requests)
+        .await
+    {
         Ok(c) => c,
         Err(e) => {
             return fail_reserved_start(
@@ -1533,6 +1559,7 @@ async fn execute_extension(
     entry.status = SessionState::Running;
     entry.cdp_port = None;
     entry.ws_url = bridge_ws_url.clone();
+    entry.max_tracked_requests = cmd.max_tracked_requests;
     for (native_id, url, title) in tabs {
         entry.push_tab(native_id, url, title);
     }
@@ -1999,6 +2026,7 @@ mod provider_start_tests {
                 session: None,
                 set_session_id: Some("hyp3".to_string()),
                 stealth: true,
+                max_tracked_requests: 500,
                 provider_env: ProviderEnv::new(),
             },
             &registry,
@@ -2015,6 +2043,7 @@ mod provider_start_tests {
                     ("HYPERBROWSER_API_URL".to_string(), base_url.clone()),
                 ]),
             }),
+            500,
         )
         .await;
 
@@ -2058,6 +2087,7 @@ mod provider_start_tests {
                 session: None,
                 set_session_id: Some("hyp3".to_string()),
                 stealth: true,
+                max_tracked_requests: 500,
                 provider_env: ProviderEnv::from([
                     ("HYPERBROWSER_API_KEY".to_string(), "hb-key".to_string()),
                     (
@@ -2109,6 +2139,7 @@ mod provider_start_tests {
                 session: None,
                 set_session_id: Some("bs1".to_string()),
                 stealth: true,
+                max_tracked_requests: 500,
                 provider_env: ProviderEnv::new(),
             },
             &registry,
@@ -2118,6 +2149,7 @@ mod provider_start_tests {
             false,
             Some("browseruse"),
             None,
+            500,
         )
         .await;
 

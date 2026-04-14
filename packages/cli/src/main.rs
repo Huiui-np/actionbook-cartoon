@@ -214,6 +214,7 @@ async fn handle_browser(
                         session: None,
                         set_session_id: None,
                         stealth: true,
+                        max_tracked_requests: 500,
                         provider_env: Default::default(),
                     });
                 let result = ActionResult::fatal(err.error_code(), err.to_string());

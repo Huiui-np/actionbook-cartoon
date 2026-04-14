@@ -84,6 +84,8 @@ pub struct SessionEntry {
     pub provider_session: Option<ProviderSession>,
     /// Counter for assigning short tab IDs (t1, t2, ...).
     pub next_tab_id: u32,
+    /// Maximum number of network requests tracked per tab (ring buffer cap).
+    pub max_tracked_requests: usize,
 }
 
 impl Drop for SessionEntry {
@@ -124,6 +126,7 @@ impl SessionEntry {
             provider: None,
             provider_session: None,
             next_tab_id: 1,
+            max_tracked_requests: crate::daemon::cdp_session::MAX_TRACKED_REQUESTS,
         }
     }
 
