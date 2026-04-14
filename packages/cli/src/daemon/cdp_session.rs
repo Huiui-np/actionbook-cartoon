@@ -350,6 +350,7 @@ impl CdpSession {
         let tab_sessions: Arc<Mutex<HashMap<String, String>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let tab_net_requests: TabNetRequests = Arc::new(Mutex::new(HashMap::new()));
+        let is_extension_bridge = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let writer_handle = tokio::spawn(Self::writer_loop(ws_writer, writer_rx));
         tokio::spawn(Self::reader_loop(
@@ -362,6 +363,7 @@ impl CdpSession {
             tab_sessions.clone(),
             tab_net_requests.clone(),
             max_tracked_requests,
+            is_extension_bridge.clone(),
         ));
 
         Ok(CdpSession {
@@ -375,7 +377,7 @@ impl CdpSession {
             iframe_sessions,
             pending_iframe_enables,
             tab_net_requests,
-            is_extension_bridge: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            is_extension_bridge,
         })
     }
 
@@ -526,7 +528,7 @@ impl CdpSession {
     /// Idempotent: calling again for the same `native_id` is a no-op.
     pub async fn register_extension_tab(&self, native_id: &str) {
         self.is_extension_bridge
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+            .store(true, std::sync::atomic::Ordering::Release);
         let key = format!("tab:{native_id}");
         self.tab_sessions
             .lock()
@@ -589,7 +591,7 @@ impl CdpSession {
     ) -> Result<Value, CliError> {
         if self
             .is_extension_bridge
-            .load(std::sync::atomic::Ordering::SeqCst)
+            .load(std::sync::atomic::Ordering::Acquire)
         {
             let tab_id: u64 = target_id.parse().map_err(|e| {
                 CliError::CdpError(format!("non-numeric extension tab id '{target_id}': {e}"))
@@ -601,6 +603,9 @@ impl CdpSession {
             {
                 Ok(v) => Ok(v),
                 Err(CliError::CdpError(ref msg))
+                    // keep in sync with error messages in background.js
+                    // handleCdpCommand ("Tab N not attached") and the
+                    // chrome.debugger catch block ("Debugger detached from tab")
                     if msg.contains(&format!("Tab {tab_id} not attached"))
                         || msg.contains("Debugger detached from tab") =>
                 {
@@ -911,6 +916,7 @@ impl CdpSession {
         _tab_sessions: Arc<Mutex<HashMap<String, String>>>,
         tab_net_requests: TabNetRequests,
         max_tracked_requests: usize,
+        is_extension_bridge: Arc<std::sync::atomic::AtomicBool>,
     ) where
         S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
     {
@@ -939,11 +945,18 @@ impl CdpSession {
                 //   `tab:{tabId}` so per-tab subscribers stay separated.
                 // - local/cloud: CDP flat session — key by `sessionId`
                 //   (empty string for browser-level events).
-                let ext_tab_key = resp
-                    .get("tabId")
-                    .and_then(|v| v.as_u64())
-                    .map(|n| format!("tab:{n}"));
+                // Guard on is_extension_bridge so local/cloud events that happen
+                // to carry a numeric `tabId` field (e.g. Target.* params) are
+                // never mis-routed by the extension key path.
                 let session_id_str = resp.get("sessionId").and_then(|v| v.as_str()).unwrap_or("");
+                let ext_tab_key: Option<String> =
+                    if is_extension_bridge.load(std::sync::atomic::Ordering::Acquire) {
+                        resp.get("tabId")
+                            .and_then(|v| v.as_u64())
+                            .map(|n| format!("tab:{n}"))
+                    } else {
+                        None
+                    };
                 let session_id = ext_tab_key.as_deref().unwrap_or(session_id_str);
 
                 // Track cross-origin iframe sessions from Target.setAutoAttach.
