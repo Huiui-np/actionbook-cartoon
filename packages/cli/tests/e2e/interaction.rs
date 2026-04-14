@@ -5529,6 +5529,32 @@ fn eval_error_details_has_context() {
     close_session(&sid);
 }
 
+#[test]
+fn eval_async_trailing_line_comment() {
+    // Regression: async-wrapped expressions ending with a single-line comment
+    // used to comment out the generated closing tokens `); }})()`, causing a
+    // SyntaxError.  The fix adds a newline before the closing tokens.
+    if skip() {
+        return;
+    }
+    let (sid, tid) = start_session(TEST_URL);
+    let _guard = SessionGuard::new(&sid);
+
+    let v = eval_json_with_flags(
+        &sid,
+        &tid,
+        "await Promise.resolve(1) // trailing comment",
+        &[],
+    );
+    assert_eq!(
+        v["data"]["value"],
+        serde_json::json!(1),
+        "async expression with trailing line comment should resolve to 1"
+    );
+
+    close_session(&sid);
+}
+
 // ========================================================================
 // Group 20: mouse-move — command wiring, success path, and error path
 // ========================================================================
