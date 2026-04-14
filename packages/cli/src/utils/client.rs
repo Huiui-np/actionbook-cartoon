@@ -57,7 +57,7 @@ impl DaemonClient {
             }
             // Version mismatch confirmed — drop connection, restart daemon
             drop(stream);
-            restart_daemon().await?;
+            restart_daemon("daemon version mismatch").await?;
             return wait_for_daemon(&path, &ready_path, &version_path).await;
         }
 
@@ -81,7 +81,7 @@ impl DaemonClient {
                 needs_restart = true;
             }
             if needs_restart {
-                restart_daemon().await?;
+                restart_daemon("daemon version mismatch").await?;
             }
         }
 
@@ -136,7 +136,7 @@ impl DaemonClient {
                     return Ok(DaemonClient { reader, writer });
                 }
                 drop(stream);
-                restart_daemon_windows().await?;
+                restart_daemon_windows("daemon version mismatch").await?;
                 return wait_for_daemon_windows(&port_file, &ready_path, &version_path).await;
             }
         }
@@ -158,7 +158,7 @@ impl DaemonClient {
                 needs_restart = true;
             }
             if needs_restart {
-                restart_daemon_windows().await?;
+                restart_daemon_windows("daemon version mismatch").await?;
             }
         }
 
@@ -213,7 +213,7 @@ fn versions_match(version_path: &std::path::Path) -> bool {
 pub async fn restart_daemon_now() -> Result<(), CliError> {
     #[cfg(unix)]
     {
-        restart_daemon().await?;
+        restart_daemon("user-requested daemon restart").await?;
         // Block until the new daemon writes its ready/version files and the
         // socket is connectable. Without this, the user sees "daemon
         // restarted" but the very next call may race and hit DaemonNotRunning.
@@ -225,7 +225,7 @@ pub async fn restart_daemon_now() -> Result<(), CliError> {
     }
     #[cfg(windows)]
     {
-        restart_daemon_windows().await?;
+        restart_daemon_windows("user-requested daemon restart").await?;
         // Mirror the Unix readiness wait via the existing Windows path.
         let port_path = server::socket_path().with_extension("port");
         let ready = server::socket_path().with_extension("ready");
@@ -242,8 +242,10 @@ pub async fn restart_daemon_now() -> Result<(), CliError> {
 }
 
 /// Stop the running daemon and start a fresh one with the current binary.
+/// `reason` controls the user-facing log line so "version mismatch" doesn't
+/// leak into a user-initiated `daemon restart`.
 #[cfg(unix)]
-async fn restart_daemon() -> Result<(), CliError> {
+async fn restart_daemon(reason: &str) -> Result<(), CliError> {
     let Some(pid) = server::read_daemon_pid().filter(|&p| p > 0) else {
         // No valid PID — cannot signal old daemon. If flock is still held,
         // don't blindly clean up files (would break the live daemon).
@@ -257,7 +259,7 @@ async fn restart_daemon() -> Result<(), CliError> {
         return auto_start_daemon();
     };
 
-    eprintln!("daemon version mismatch, restarting (pid={pid})...",);
+    eprintln!("{reason}, restarting daemon (pid={pid})...");
 
     // send_sigterm returns false if process is already dead (ESRCH)
     if server::send_sigterm(pid) {
@@ -360,7 +362,7 @@ fn read_daemon_port(port_path: &std::path::Path) -> Option<u16> {
 
 /// Stop the running daemon and start a fresh one on Windows.
 #[cfg(windows)]
-async fn restart_daemon_windows() -> Result<(), CliError> {
+async fn restart_daemon_windows(reason: &str) -> Result<(), CliError> {
     let Some(pid) = server::read_daemon_pid().filter(|&p| p > 0) else {
         if server::is_daemon_running() {
             return Err(CliError::Internal(
@@ -371,7 +373,7 @@ async fn restart_daemon_windows() -> Result<(), CliError> {
         return auto_start_daemon_windows();
     };
 
-    eprintln!("daemon version mismatch, restarting (pid={pid})...");
+    eprintln!("{reason}, restarting daemon (pid={pid})...");
 
     if server::send_sigterm(pid) {
         // On Windows, is_pid_alive() checks the TCP port via daemon.port
