@@ -117,7 +117,7 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         // Sync expressions work fine inside async functions too (awaitPromise unwraps).
         let has_await = cmd.expression.contains("await ") || cmd.expression.contains("await(");
         if has_await {
-            format!("(async function(){{ return ({}); }})()", cmd.expression)
+            format!("(async function(){{ return (\n{}\n); }})()", cmd.expression)
         } else {
             let escaped = serde_json::to_string(&cmd.expression).unwrap_or_default();
             format!("(function(){{ return eval({}); }})()", escaped)
