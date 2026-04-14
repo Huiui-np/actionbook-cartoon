@@ -9,6 +9,7 @@ pub mod commands;
 pub mod config;
 pub mod daemon;
 pub mod error;
+pub mod extension;
 pub mod output;
 pub mod setup;
 pub mod types;

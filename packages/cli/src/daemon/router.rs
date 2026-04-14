@@ -1,6 +1,7 @@
 use crate::action::Action;
 use crate::action_result::ActionResult;
 use crate::browser;
+use crate::extension;
 
 use super::registry::SharedRegistry;
 
@@ -82,5 +83,6 @@ pub async fn route(action: &Action, registry: &SharedRegistry) -> ActionResult {
             browser::interaction::cursor_position::execute(cmd, registry).await
         }
         Action::Scroll(cmd) => browser::interaction::scroll::execute(cmd, registry).await,
+        Action::ExtensionStatus(cmd) => extension::status::execute_daemon(cmd, registry).await,
     }
 }

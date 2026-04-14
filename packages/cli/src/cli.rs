@@ -79,6 +79,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: DaemonCommands,
     },
+    /// Manage the Actionbook browser extension
+    Extension {
+        #[command(subcommand)]
+        command: ExtensionCommands,
+    },
     /// Interactive configuration wizard
     Setup(setup::Cmd),
     /// Show help
@@ -98,6 +103,28 @@ pub enum DaemonCommands {
     /// after the holding process has been freed) without manually finding
     /// the daemon pid.
     Restart,
+}
+
+#[derive(Subcommand, Debug)]
+#[command(disable_help_subcommand = true)]
+pub enum ExtensionCommands {
+    /// Show extension status (bridge + connection)
+    Status,
+    /// Ping the extension bridge and measure RTT
+    Ping,
+    /// Show extension install path and installed status
+    Path,
+    /// Install the Actionbook extension
+    Install(ExtensionInstallArgs),
+    /// Uninstall the Actionbook extension
+    Uninstall,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ExtensionInstallArgs {
+    /// Force overwrite of an existing installation
+    #[arg(long)]
+    pub force: bool,
 }
 
 /// Unimplemented tab-level command args.

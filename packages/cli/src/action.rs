@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::browser::{cookies, interaction, navigation, observation, session, storage, tab, wait};
+use crate::extension;
 
 /// CLI → Daemon action protocol. Each variant wraps the command's Cmd type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +70,9 @@ pub enum Action {
     WaitNetworkIdle(wait::network_idle::Cmd),
     WaitCondition(wait::condition::Cmd),
 
+    // ── Extension ──────────────────────────────────────────────
+    ExtensionStatus(extension::status::Cmd),
+
     // ── Interaction ────────────────────────────────────────────
     Eval(interaction::eval::Cmd),
     Click(interaction::click::Cmd),
@@ -104,6 +108,9 @@ impl Action {
         }
 
         match self {
+            // Extension (no session/tab)
+            Action::ExtensionStatus(_) => "-".into(),
+
             // Session-level (no tab)
             Action::StartSession(_) | Action::ListSessions(_) => "-".into(),
             Action::SessionStatus(c) => s_only!(c),
@@ -187,6 +194,7 @@ impl Action {
     /// Normalized command name for the JSON envelope.
     pub fn command_name(&self) -> &str {
         match self {
+            Action::ExtensionStatus(_) => extension::status::COMMAND_NAME,
             Action::StartSession(_) => session::start::COMMAND_NAME,
             Action::ListSessions(_) => session::list::COMMAND_NAME,
             Action::SessionStatus(_) => session::status::COMMAND_NAME,

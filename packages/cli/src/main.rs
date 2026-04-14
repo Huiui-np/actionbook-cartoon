@@ -4,8 +4,9 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use serde_json::json;
 
+use actionbook_cli::action::Action;
 use actionbook_cli::action_result::ActionResult;
-use actionbook_cli::cli::{BrowserCommands, Cli, Commands, DaemonCommands};
+use actionbook_cli::cli::{BrowserCommands, Cli, Commands, DaemonCommands, ExtensionCommands};
 use actionbook_cli::config;
 use actionbook_cli::output::{self, JsonEnvelope};
 use actionbook_cli::utils::client::DaemonClient;
@@ -168,6 +169,9 @@ async fn run(mut cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Daemon { command } => {
             handle_daemon(command, json_mode, timeout_ms).await?;
+        }
+        Commands::Extension { command } => {
+            handle_extension(command, json_mode).await?;
         }
         Commands::Setup(cmd) => {
             actionbook_cli::setup::execute(&cmd, json_mode).await?;
@@ -370,6 +374,63 @@ async fn handle_daemon(
             }
         }
     }
+    Ok(())
+}
+
+async fn handle_extension(
+    command: ExtensionCommands,
+    json_mode: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let start = Instant::now();
+
+    let (command_name, result) = match command {
+        ExtensionCommands::Status => {
+            let action = Action::ExtensionStatus(actionbook_cli::extension::status::Cmd::default());
+            let mut client = DaemonClient::connect().await?;
+            let result = client.send_action(&action).await?;
+            (actionbook_cli::extension::status::COMMAND_NAME, result)
+        }
+        ExtensionCommands::Ping => {
+            let result = actionbook_cli::extension::ping::execute().await;
+            (actionbook_cli::extension::ping::COMMAND_NAME, result)
+        }
+        ExtensionCommands::Path => {
+            let result = actionbook_cli::extension::installer::execute_path();
+            (
+                actionbook_cli::extension::installer::COMMAND_NAME_PATH,
+                result,
+            )
+        }
+        ExtensionCommands::Install(args) => {
+            let result = actionbook_cli::extension::installer::execute_install(args.force);
+            (
+                actionbook_cli::extension::installer::COMMAND_NAME_INSTALL,
+                result,
+            )
+        }
+        ExtensionCommands::Uninstall => {
+            let result = actionbook_cli::extension::installer::execute_uninstall();
+            (
+                actionbook_cli::extension::installer::COMMAND_NAME_UNINSTALL,
+                result,
+            )
+        }
+    };
+
+    let duration = start.elapsed();
+
+    if json_mode {
+        let envelope = JsonEnvelope::from_result(command_name, None, &result, duration);
+        println!("{}", serde_json::to_string(&envelope)?);
+    } else {
+        let text = output::format_text(command_name, &None, &result);
+        println!("{text}");
+    }
+
+    if !result.is_ok() {
+        flush_and_exit(1);
+    }
+
     Ok(())
 }
 
