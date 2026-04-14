@@ -10,7 +10,7 @@ The Actionbook CLI and Skills/Workflows are the most powerful way to use Actionb
 
 ## Using the CLI
 
-The CLI allows you (and your agents) to search for actions, inspect them, and perform browser automation.
+The CLI allows you (and your agents) to automate any Chromium-based browser with stateless, session-addressed commands.
 
 ### Installation
 
@@ -46,17 +46,20 @@ actionbook get "site/airbnb.com/page/home/element/search-button"
 
 #### Browser Automation
 
-The CLI includes a built-in browser automation tool that uses the action manuals.
+Every browser command is stateless — pass `--session` and `--tab` explicitly. The core workflow is: start a session, snapshot the page, then use element refs to interact.
 
 ```bash
-# Open a website
-actionbook browser open airbnb.com
+# Start a session and navigate
+actionbook browser start --set-session-id s1
+actionbook browser goto "https://airbnb.com" --session s1 --tab t1
 
-# Click an element using its verified selector
-actionbook browser click '[data-testid="search-button"]'
+# Snapshot to get element refs (@eN)
+actionbook browser snapshot --session s1 --tab t1
 
-# Fill a form field
-actionbook browser fill 'input[name="location"]' 'Tokyo'
+# Interact using refs from snapshot
+actionbook browser fill @e3 "Tokyo" --session s1 --tab t1
+actionbook browser click @e7 --session s1 --tab t1
+actionbook browser wait navigation --session s1 --tab t1
 ```
 
 <Tip>
@@ -95,7 +98,7 @@ The agent will:
 1.  **Read Skill**: Understands it should use `actionbook` CLI.
 2.  **Search**: Runs `actionbook search "airbnb search"`.
 3.  **Get**: Runs `actionbook get ...` to find the search input and button selectors.
-4.  **Operate**: Runs `actionbook browser ...` commands to perform the search safely.
+4.  **Operate**: Runs `actionbook browser start` + `goto` + snapshot refs to perform the search.
 
 ### Extracting Data
 

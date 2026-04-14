@@ -45,9 +45,9 @@ Actionbook places up-to-date action manuals with the relevant DOM selectors dire
     instructions (`actionbook get "google.com:/:default"`).
   </Step>
   <Step title="Launch & Execute" icon="bullseye">
-    Open a browser session and let your agent execute actions with confidence —
-    no guessing, no hallucinations (`actionbook browser open
-    "https://www.google.com"`).
+    Start a browser session and let your agent execute actions with confidence —
+    no guessing, no hallucinations (`actionbook browser start --set-session-id s1`,
+    then `actionbook browser goto "https://www.google.com" --session s1 --tab t1`).
   </Step>
 </Steps>
 
