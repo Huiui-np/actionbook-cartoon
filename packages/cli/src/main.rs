@@ -402,7 +402,7 @@ async fn handle_extension(
             )
         }
         ExtensionCommands::Install(args) => {
-            let result = actionbook_cli::extension::installer::execute_install(args.force);
+            let result = actionbook_cli::extension::installer::execute_install(args.force).await;
             (
                 actionbook_cli::extension::installer::COMMAND_NAME_INSTALL,
                 result,
