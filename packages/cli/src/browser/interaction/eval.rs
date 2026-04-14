@@ -18,7 +18,16 @@ Examples:
   actionbook browser eval \"document.querySelectorAll('a').length\" --session s1 --tab t1
 
 Evaluates a JavaScript expression in the page context and returns the result.
-The expression is evaluated via Runtime.evaluate with returnByValue.")]
+The expression is evaluated via Runtime.evaluate with returnByValue.
+
+By default each eval runs in an isolated scope so that let/const declarations do
+not leak across calls on the same tab.  Single-expression await works transparently
+(e.g. 'await fetch(url).then(r => r.json())').
+
+Note: Multi-statement expressions that contain 'await' (e.g.
+'let x = await Promise.resolve(42); x + 1') are not supported under the default
+isolated mode — use --no-isolate or wrap the body in an explicit async arrow:
+  actionbook browser eval \"(async () => { let x = await f(); return x + 1; })()\" ...")]
 pub struct Cmd {
     /// JavaScript expression
     pub expression: String,
