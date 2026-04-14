@@ -103,12 +103,11 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
     let expression = if cmd.no_isolate {
         cmd.expression.clone()
     } else {
-        let t = cmd.expression.trim_start();
-        let has_top_level_await = t.starts_with("await ")
-            || t.starts_with("await\t")
-            || t.starts_with("await\n")
-            || t.starts_with("await(");
-        if has_top_level_await {
+        // Detect top-level `await` anywhere in the expression (not just at start).
+        // e.g. `(await Promise.resolve(42)) + 1` has await after `(`.
+        // Sync expressions work fine inside async functions too (awaitPromise unwraps).
+        let has_await = cmd.expression.contains("await ") || cmd.expression.contains("await(");
+        if has_await {
             format!("(async function(){{ return ({}); }})()", cmd.expression)
         } else {
             let escaped = serde_json::to_string(&cmd.expression).unwrap_or_default();
@@ -125,7 +124,16 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
         .await
     {
         Ok(v) => v,
-        Err(e) => return crate::daemon::cdp_session::cdp_error_to_result(e, "EVAL_FAILED"),
+        Err(e) => {
+            let details = json!({
+                "stage": "eval",
+                "pre_url": pre_url,
+                "pre_origin": pre_origin,
+                "pre_readyState": pre_ready_state,
+                "error_type": "CdpError",
+            });
+            return ActionResult::fatal_with_details("EVAL_FAILED", e.to_string(), "", details);
+        }
     };
 
     // Extract value from CDP response
@@ -190,6 +198,13 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
             "post_title": post_title,
         }))
     } else {
-        ActionResult::fatal("EVAL_FAILED", "no result in CDP response")
+        let details = json!({
+            "stage": "eval",
+            "pre_url": pre_url,
+            "pre_origin": pre_origin,
+            "pre_readyState": pre_ready_state,
+            "error_type": "CdpError",
+        });
+        ActionResult::fatal_with_details("EVAL_FAILED", "no result in CDP response", "", details)
     }
 }
