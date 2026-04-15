@@ -117,6 +117,19 @@ Explore real-world examples in the [Examples Documentation](https://actionbook.d
 
 Actionbook provides tools for searching and retrieving action manuals. See the [CLI Reference](https://actionbook.dev/docs/api-reference/cli) for the full command list. If you're using the MCP integration, see the [MCP Tools Reference](https://actionbook.dev/docs/api-reference/mcp-tools).
 
+### Extension & Daemon
+
+The recommended way to install the Chrome extension is via the [Chrome Web Store](https://chromewebstore.google.com/detail/actionbook/bebchpafpemheedhcdabookaifcijmfo) (current version: 0.3.0). `actionbook extension install` is a local fallback — after running it, you must manually load the unpacked extension in Chrome (`chrome://extensions` > Developer mode > Load unpacked).
+
+```bash
+actionbook extension status          # Bridge status + extension connection state
+actionbook extension ping            # Measure bridge RTT
+actionbook extension install         # Fallback: install to ~/Actionbook/extension/ (requires manual Chrome load)
+actionbook extension uninstall       # Remove extension
+actionbook extension path            # Print install path, status, and version
+actionbook daemon restart            # Stop the running daemon (next CLI call respawns)
+```
+
 
 ## Documentation
 
