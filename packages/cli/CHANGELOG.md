@@ -1,5 +1,19 @@
 # @actionbookdev/cli
 
+## 1.4.3
+
+### Patch Changes
+
+- Restore and harden extension mode commands.
+
+  - Restore `extension install`, `extension uninstall`, `extension path`, `extension status`, and `extension ping` commands. Extension files are now bundled directly in the CLI binary at compile time — no network dependency, version always matches the CLI build.
+  - Protocol 0.3.0: concurrent multi-tab debug. Each CDP request carries a root-level `tabId`; bridge and extension route by it. Removes implicit "active tab" default — `browser start --mode extension` now requires `--open-url` or `--tab-id`. Older extension (0.2.x) is hard-rejected with a reload prompt.
+  - Expand CDP allowlist by 14 methods (DOM.resolveNode, DOM.describeNode, Runtime.callFunctionOn, Accessibility.queryAXTree, etc.) that were silently rejected, fixing every ref-based `click`/`inspect` call.
+  - `browser open` in extension mode now uses `Extension.createTab` instead of the blocked `Target.createTarget`.
+  - Add bridge health check on `browser start --mode extension` so the command waits up to 5s for the extension to reconnect after a daemon restart.
+  - Fix `browser close-tab` in extension mode to detach only the target tab, not all attached tabs.
+  - Fix `browser restart` in extension mode to avoid `MISSING_TAB_TARGET` when the previous session URL was filtered out.
+
 ## 1.4.2
 
 ### Patch Changes
