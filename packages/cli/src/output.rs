@@ -384,6 +384,12 @@ fn format_data_fields(command: &str, data: &Value, lines: &mut Vec<String>) {
             if let Some(version) = data.get("version").and_then(|v| v.as_str()) {
                 lines.push(format!("version: {version}"));
             }
+            lines.push(String::new());
+            lines.push("To load the extension in Chrome:".to_string());
+            lines.push("  1. Open chrome://extensions/".to_string());
+            lines.push("  2. Enable Developer mode".to_string());
+            lines.push("  3. If a previous version is loaded, click Remove first".to_string());
+            lines.push("  4. Click \"Load unpacked\" and select the path above".to_string());
         }
         "extension uninstall" => {
             if let Some(uninstalled) = data.get("uninstalled").and_then(|v| v.as_bool()) {
@@ -1187,7 +1193,7 @@ mod tests {
 
         assert_eq!(
             text,
-            "ok extension install\npath: /Users/test/.actionbook/extension\nversion: 1.4.3-alpha"
+            "ok extension install\npath: /Users/test/.actionbook/extension\nversion: 1.4.3-alpha\n\nTo load the extension in Chrome:\n  1. Open chrome://extensions/\n  2. Enable Developer mode\n  3. If a previous version is loaded, click Remove first\n  4. Click \"Load unpacked\" and select the path above"
         );
     }
 
