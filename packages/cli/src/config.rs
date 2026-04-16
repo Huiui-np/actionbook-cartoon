@@ -72,7 +72,11 @@ fn default_profile_name() -> String {
 /// Precedence: ACTIONBOOK_API_URL env var > config file api.base_url > production endpoint.
 pub fn api_base() -> String {
     read_trimmed_env("ACTIONBOOK_API_URL")
-        .or_else(|| load_config().ok().and_then(|config| configured_api_base(&config)))
+        .or_else(|| {
+            load_config()
+                .ok()
+                .and_then(|config| configured_api_base(&config))
+        })
         .unwrap_or_else(|| DEFAULT_API_BASE.to_string())
 }
 

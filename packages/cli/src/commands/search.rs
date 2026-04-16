@@ -242,8 +242,16 @@ pub(crate) fn urlencoding(s: &str) -> String {
                 let encoded = c.encode_utf8(&mut buf);
                 for byte in encoded.bytes() {
                     out.push('%');
-                    out.push(char::from_digit((byte >> 4) as u32, 16).unwrap().to_ascii_uppercase());
-                    out.push(char::from_digit((byte & 0xf) as u32, 16).unwrap().to_ascii_uppercase());
+                    out.push(
+                        char::from_digit((byte >> 4) as u32, 16)
+                            .unwrap()
+                            .to_ascii_uppercase(),
+                    );
+                    out.push(
+                        char::from_digit((byte & 0xf) as u32, 16)
+                            .unwrap()
+                            .to_ascii_uppercase(),
+                    );
                 }
             }
         }

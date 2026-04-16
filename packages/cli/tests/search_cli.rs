@@ -8,7 +8,7 @@
 //! `clap → reqwest → response parsing → formatter → stdout/stderr` pipeline.
 
 use assert_cmd::Command;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -81,10 +81,7 @@ async fn search_prints_results_against_mock_server() {
 async fn search_json_mode_outputs_raw_data() {
     let mock = MockServer::start().await;
     let fixture = single_site_fixture();
-    let expected_data = fixture
-        .get("data")
-        .expect("fixture has data field")
-        .clone();
+    let expected_data = fixture.get("data").expect("fixture has data field").clone();
     Mock::given(method("GET"))
         .and(path("/api/search"))
         .and(query_param("q", "github"))

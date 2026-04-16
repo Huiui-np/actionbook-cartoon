@@ -7,7 +7,7 @@
 //! `assert_cmd` with `ACTIONBOOK_API_URL` pointing at the mock.
 
 use assert_cmd::Command;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -239,10 +239,7 @@ async fn manual_level3_action_detail() {
 async fn manual_level3_json_mode() {
     let mock = MockServer::start().await;
     let fixture = level3_fixture();
-    let expected_data = fixture
-        .get("data")
-        .expect("fixture has data field")
-        .clone();
+    let expected_data = fixture.get("data").expect("fixture has data field").clone();
     Mock::given(method("GET"))
         .and(path("/api/manual"))
         .and(query_param("site", "github"))
