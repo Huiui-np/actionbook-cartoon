@@ -10,6 +10,7 @@ use crate::types::Mode;
 
 pub(crate) const DEFAULT_PROFILE: &str = "actionbook";
 pub(crate) const CURRENT_CONFIG_VERSION: u32 = 1;
+pub(crate) const DEFAULT_API_BASE: &str = "https://api.actionbook.dev";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -68,9 +69,27 @@ fn default_profile_name() -> String {
 }
 
 /// Return the base URL for the Actionbook API.
-/// Reads `ACTIONBOOK_API_URL` from the environment; falls back to the production endpoint.
+/// Precedence: ACTIONBOOK_API_URL env var > config file api.base_url > production endpoint.
 pub fn api_base() -> String {
-    std::env::var("ACTIONBOOK_API_URL").unwrap_or_else(|_| "https://api.actionbook.dev".to_string())
+    read_trimmed_env("ACTIONBOOK_API_URL")
+        .or_else(|| load_config().ok().and_then(|config| configured_api_base(&config)))
+        .unwrap_or_else(|| DEFAULT_API_BASE.to_string())
+}
+
+pub(crate) fn api_base_from_config(config: &ConfigFile) -> String {
+    read_trimmed_env("ACTIONBOOK_API_URL")
+        .or_else(|| configured_api_base(config))
+        .unwrap_or_else(|| DEFAULT_API_BASE.to_string())
+}
+
+fn configured_api_base(config: &ConfigFile) -> Option<String> {
+    config
+        .api
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 pub fn actionbook_home() -> PathBuf {
@@ -608,6 +627,43 @@ profile_name = "actionbook"
             !backup.exists(),
             "no backup should be created for current config"
         );
+    }
+
+    #[test]
+    fn api_base_uses_config_when_env_missing() {
+        let _lock = test_lock();
+        let (_tmp, _guard) = make_home();
+        fs::create_dir_all(actionbook_home()).expect("home");
+        fs::write(
+            config_path(),
+            r#"[api]
+base_url = "  https://config-api.example.com  "
+"#,
+        )
+        .expect("write config");
+
+        let _env = EnvGuard::set(&[("ACTIONBOOK_API_URL", None)]);
+
+        assert_eq!(api_base(), "https://config-api.example.com");
+    }
+
+    #[test]
+    fn api_base_from_config_prefers_env_over_config() {
+        let _lock = test_lock();
+        let (_tmp, _guard) = make_home();
+        let _env = EnvGuard::set(&[(
+            "ACTIONBOOK_API_URL",
+            Some("  https://env-api.example.com  "),
+        )]);
+        let config = ConfigFile {
+            api: ApiConfig {
+                base_url: Some("https://config-api.example.com".to_string()),
+                api_key: None,
+            },
+            ..ConfigFile::default()
+        };
+
+        assert_eq!(api_base_from_config(&config), "https://env-api.example.com");
     }
 
     /// Verify that `actionbook_home()` falls back to USERPROFILE when HOME is not set.

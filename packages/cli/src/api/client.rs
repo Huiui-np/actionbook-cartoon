@@ -3,10 +3,8 @@ use std::time::Duration;
 use reqwest::{Client, StatusCode};
 
 use super::types::*;
-use crate::config::ConfigFile;
+use crate::config::{self, ConfigFile};
 use crate::error::CliError;
-
-const DEFAULT_API_URL: &str = "https://api.actionbook.dev";
 
 /// Actionbook API client
 pub struct ApiClient {
@@ -25,11 +23,7 @@ impl ApiClient {
 
         Ok(Self {
             client,
-            base_url: config
-                .api
-                .base_url
-                .clone()
-                .unwrap_or_else(|| DEFAULT_API_URL.to_string()),
+            base_url: config::api_base_from_config(config),
             api_key: config.api.api_key.clone(),
         })
     }
