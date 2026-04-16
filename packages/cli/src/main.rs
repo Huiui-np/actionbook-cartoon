@@ -144,20 +144,19 @@ async fn run(mut cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     let command = cli.command.take().unwrap();
     match command {
-        Commands::Search {
-            query,
-            domain,
-            url,
-            page,
-            page_size,
+        Commands::Search { keyword } => {
+            actionbook_cli::commands::search::run(&keyword, json_mode).await?;
+        }
+        Commands::Manual {
+            site,
+            group,
+            action,
         } => {
-            actionbook_cli::commands::search::run(
-                &cli,
-                &query,
-                domain.as_deref(),
-                url.as_deref(),
-                page,
-                page_size,
+            actionbook_cli::commands::manual::run(
+                site.as_deref(),
+                group.as_deref(),
+                action.as_deref(),
+                json_mode,
             )
             .await?;
         }
@@ -456,6 +455,8 @@ No \"current tab\" — run commands on any session/tab in parallel.
 Usage: actionbook <command> [options]
 
 Commands:
+  search            Search for action manuals by keyword
+  manual            Get detailed manual for a site, group, or action (alias: man)
   browser           Control browser sessions, tabs, and page interactions
   extension         Manage the Chrome extension (status, ping, install, uninstall, path)
   daemon restart    Stop the running daemon (next CLI call auto-respawns one)

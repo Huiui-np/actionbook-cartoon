@@ -43,24 +43,19 @@ pub struct Cli {
 pub enum Commands {
     /// Search for action manuals by keyword
     Search {
-        /// Search keyword (e.g., "airbnb search", "google login")
-        query: String,
+        /// Search keyword
+        keyword: String,
+    },
 
-        /// Filter by domain (e.g., "airbnb.com")
-        #[arg(short, long)]
-        domain: Option<String>,
-
-        /// Filter by URL
-        #[arg(short, long)]
-        url: Option<String>,
-
-        /// Page number
-        #[arg(short, long, default_value = "1")]
-        page: u32,
-
-        /// Results per page (1-100)
-        #[arg(short = 's', long, default_value = "10")]
-        page_size: u32,
+    /// Get detailed manual information for a site, group, or action
+    #[command(alias = "man")]
+    Manual {
+        /// Site name
+        site: Option<String>,
+        /// Group name
+        group: Option<String>,
+        /// Action name
+        action: Option<String>,
     },
 
     /// Get complete action details by area ID
@@ -890,6 +885,139 @@ mod tests {
     fn try_parse_from_rejects_setup_target_with_reset() {
         let result = Cli::try_parse_from(["actionbook", "setup", "--target", "codex", "--reset"]);
         assert!(result.is_err(), "expected clap to reject conflicting flags");
+    }
+
+    #[test]
+    fn try_parse_from_parses_search_query() {
+        let cli =
+            Cli::try_parse_from(["actionbook", "search", "query text"]).expect("parse search");
+
+        assert!(!cli.json);
+        match cli.command {
+            Some(Commands::Search { keyword }) => {
+                assert_eq!(keyword, "query text");
+            }
+            other => panic!("expected search command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_parse_from_parses_search_query_with_json_flag() {
+        let cli = Cli::try_parse_from(["actionbook", "search", "query", "--json"])
+            .expect("parse search --json");
+
+        assert!(cli.json);
+        match cli.command {
+            Some(Commands::Search { keyword }) => {
+                assert_eq!(keyword, "query");
+            }
+            other => panic!("expected search command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_parse_from_parses_manual_site_only() {
+        let cli = Cli::try_parse_from(["actionbook", "manual", "notion"]).expect("parse manual");
+
+        assert!(!cli.json);
+        match cli.command {
+            Some(Commands::Manual {
+                site,
+                group,
+                action,
+            }) => {
+                assert_eq!(site.as_deref(), Some("notion"));
+                assert!(group.is_none());
+                assert!(action.is_none());
+            }
+            other => panic!("expected manual command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_parse_from_parses_manual_alias_with_full_path_and_json_flag() {
+        let cli = Cli::try_parse_from([
+            "actionbook",
+            "man",
+            "notion",
+            "pages",
+            "create_page",
+            "--json",
+        ])
+        .expect("parse manual alias --json");
+
+        assert!(cli.json);
+        match cli.command {
+            Some(Commands::Manual {
+                site,
+                group,
+                action,
+            }) => {
+                assert_eq!(site.as_deref(), Some("notion"));
+                assert_eq!(group.as_deref(), Some("pages"));
+                assert_eq!(action.as_deref(), Some("create_page"));
+            }
+            other => panic!("expected manual command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_manual_with_all_args() {
+        let cli = Cli::try_parse_from(["actionbook", "manual", "notion", "pages", "create_page"])
+            .expect("parse manual with all args");
+
+        assert!(!cli.json);
+        match cli.command {
+            Some(Commands::Manual {
+                site,
+                group,
+                action,
+            }) => {
+                assert_eq!(site.as_deref(), Some("notion"));
+                assert_eq!(group.as_deref(), Some("pages"));
+                assert_eq!(action.as_deref(), Some("create_page"));
+            }
+            other => panic!("expected manual command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_manual_site_only() {
+        let cli =
+            Cli::try_parse_from(["actionbook", "manual", "notion"]).expect("parse manual site");
+
+        assert!(!cli.json);
+        match cli.command {
+            Some(Commands::Manual {
+                site,
+                group,
+                action,
+            }) => {
+                assert_eq!(site.as_deref(), Some("notion"));
+                assert!(group.is_none());
+                assert!(action.is_none());
+            }
+            other => panic!("expected manual command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_manual_alias() {
+        let cli = Cli::try_parse_from(["actionbook", "man", "notion"]).expect("parse manual alias");
+
+        assert!(!cli.json);
+        match cli.command {
+            Some(Commands::Manual {
+                site,
+                group,
+                action,
+            }) => {
+                assert_eq!(site.as_deref(), Some("notion"));
+                assert!(group.is_none());
+                assert!(action.is_none());
+            }
+            other => panic!("expected manual command, got {other:?}"),
+        }
     }
 
     #[test]
