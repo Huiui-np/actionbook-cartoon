@@ -6,15 +6,13 @@
 
 ![GitHub last commit](https://img.shields.io/github/last-commit/actionbook/actionbook) [![NPM Downloads](https://img.shields.io/npm/d18m/%40actionbookdev%2Fcli)](https://www.npmjs.com/package/@actionbookdev/cli) [![npm version](https://img.shields.io/npm/v/%40actionbookdev%2Fcli)](https://www.npmjs.com/package/@actionbookdev/cli) [![skills](https://img.shields.io/badge/skills-ready-blue)](https://skills.sh/actionbook/actionbook/actionbook)
 
-Actionbook provides up-to-date action manuals to AI agents, so they can operate any website instantly.
-<br />
 10x Faster &nbsp; | &nbsp; 90% Token Saving &nbsp; | &nbsp; 30 Actions at Once
 
 [Website](https://actionbook.dev) · [GitHub](https://github.com/actionbook/actionbook) · [X](https://x.com/ActionbookHQ) · [Discord](https://actionbook.dev/discord)
 
 </div>
 
-<br />
+Actionbook turns the websites you work in every day into something your AI agent can actually operate. Login handled, UI fallback when needed, fast and resilient.
 
 ## Table of Contents
 
@@ -38,7 +36,7 @@ Actionbook provides up-to-date action manuals to AI agents, so they can operate 
 ### ✅ With Actionbook
 
 - **10x faster.** Action manuals tell agents exactly what to do. No parsing, no guessing.
-- **Accurate.** Actions map to first-party API endpoints. No brittle UI manipulation — just direct API calls.
+- **Accurate.** Actions map to the website's API endpoints. No brittle UI manipulation — just direct API calls.
 - **Concurrent.** Stateless architecture. Operate dozens of tabs in parallel.
 
 See an agent visits **192** First Round portfolio company websites and collects their taglines in 2 minutes. (**Video is not sped up**)
