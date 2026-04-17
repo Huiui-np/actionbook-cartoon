@@ -30,13 +30,13 @@ Actionbook turns the websites you work in every day into something your AI agent
 ### ❌ Without Actionbook
 
 - **Slow.** Agents take a snapshot after every single step, parse the page, then decide what to do next. Searching one room on Airbnb takes 5 minutes.
-- **Brittle.** Modern websites use virtual DOMs, streaming components, and SPAs. Agents don't understand these rendering mechanisms, so they fail to interact with dropdowns, date pickers, and dynamic content.
+- **Brittle.** Modern websites use virtual DOMs, streaming components, and SPAs. Agents don't understand these rendering mechanisms, so they fail on dropdowns, date pickers, and login walls.
 - **One at a time.** Your agent finishes one page before it can start the next. Need to check 30 company websites? That's 30 rounds, one after another.
 
 ### ✅ With Actionbook
 
 - **10x faster.** Action manuals tell agents exactly what to do. No parsing, no guessing.
-- **Accurate.** Actions map to the website's API endpoints. No brittle UI manipulation — just direct API calls.
+- **Accurate.** Direct API calls when possible, UI fallback when not. Login handled either way.
 - **Concurrent.** Stateless architecture. Operate dozens of tabs in parallel.
 
 See an agent visits **192** First Round portfolio company websites and collects their taglines in 2 minutes. (**Video is not sped up**)
