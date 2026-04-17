@@ -218,12 +218,13 @@ async function connect() {
   ws.onopen = () => {
     wsOpened = true;
     // Send hello handshake (tokenless - server validates via origin + extension ID).
-    // Protocol 0.3.0 adds root-level `tabId` in every CDP request/event and
-    // supports concurrent multi-tab attach.
+    // Protocol 0.4.0 narrows `Extension.listTabs` to Actionbook-managed tabs
+    // (debugger-attached OR in the "Actionbook" tab group), making session
+    // ownership first-class instead of returning every open Chrome tab.
     wsSend({
       type: "hello",
       role: "extension",
-      version: "0.3.0",
+      version: "0.4.0",
     });
 
     // Start handshake timeout - if no hello_ack within this window, treat as auth failure
@@ -534,8 +535,31 @@ async function handleExtensionCommand(id, method, params) {
       return { id, result: { status: "pong", timestamp: Date.now() } };
 
     case "Extension.listTabs": {
-      const tabs = await chrome.tabs.query({});
-      const tabList = tabs.map((t) => ({
+      // Only return tabs that Actionbook is actually managing:
+      //   * tabs currently in the "Actionbook" tab group (any window), OR
+      //   * tabs the extension has debugger-attached (`attachedTabs`).
+      // Union, not intersection: user may have disabled grouping
+      // (groupingEnabled=false) so attached tabs won't be in any group, and
+      // ACTIONBOOK_GROUP_ATTACH=false means user-attached existing tabs are
+      // not moved into the group. Either signal is enough to claim the tab.
+      let actionbookGroupIds = new Set();
+      if (chrome.tabGroups && chrome.tabGroups.query) {
+        try {
+          const groups = await chrome.tabGroups.query({
+            title: ACTIONBOOK_GROUP_TITLE,
+          });
+          actionbookGroupIds = new Set(groups.map((g) => g.id));
+        } catch (_) {
+          // tabGroups unavailable — fall back to attachedTabs only.
+        }
+      }
+      const all = await chrome.tabs.query({});
+      const managed = all.filter(
+        (t) =>
+          attachedTabs.has(t.id) ||
+          (typeof t.groupId === "number" && actionbookGroupIds.has(t.groupId))
+      );
+      const tabList = managed.map((t) => ({
         id: t.id,
         title: t.title,
         url: t.url,
@@ -683,7 +707,7 @@ async function handleExtensionCommand(id, method, params) {
         result: {
           connected: connectionState === "connected",
           attachedTabIds: Array.from(attachedTabs),
-          version: "0.3.0",
+          version: "0.4.0",
         },
       };
     }

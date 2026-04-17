@@ -42,6 +42,12 @@ const BIND_RETRY_DELAYS_MS: &[u64] = &[100, 500, 1_000, 2_000, 5_000];
 
 /// Protocol version for the hello handshake.
 ///
+/// Bumped to `0.4.0` when `Extension.listTabs` was narrowed from "every
+/// Chrome tab" to "Actionbook-managed tabs only" (debugger-attached or in
+/// the per-window "Actionbook" tab group). CLI `browser list-tabs` now
+/// relies on this narrowed set — older extensions (0.3.x) would flood the
+/// session registry with unrelated tabs, so they're rejected at handshake.
+///
 /// Bumped to `0.3.0` when multi-tab concurrent debug landed:
 /// - every CDP request now carries a root-level `tabId`
 /// - extension uses `attachedTabs: Set<number>` instead of a single attach
@@ -719,14 +725,14 @@ fn is_origin_allowed(origin: Option<&str>) -> bool {
     false
 }
 
-/// Check protocol version >= 0.3.0 (simple major.minor comparison).
+/// Check protocol version >= 0.4.0 (simple major.minor comparison).
 fn is_version_ok(version: &str) -> bool {
     let parts: Vec<u32> = version.split('.').filter_map(|p| p.parse().ok()).collect();
     if parts.len() < 2 {
         return false;
     }
-    // 0.3.0 minimum: major > 0, or major == 0 && minor >= 3
-    parts[0] > 0 || (parts[0] == 0 && parts[1] >= 3)
+    // 0.4.0 minimum: major > 0, or major == 0 && minor >= 4
+    parts[0] > 0 || (parts[0] == 0 && parts[1] >= 4)
 }
 
 // ─── Unit Tests ─────────────────────────────────────────────────────────
@@ -754,11 +760,12 @@ mod tests {
 
     #[test]
     fn test_is_version_ok() {
-        assert!(is_version_ok("0.3.0"));
-        assert!(is_version_ok("0.3.5"));
+        assert!(is_version_ok("0.4.0"));
+        assert!(is_version_ok("0.4.5"));
         assert!(is_version_ok("1.0.0"));
+        assert!(!is_version_ok("0.3.0"));
+        assert!(!is_version_ok("0.3.9"));
         assert!(!is_version_ok("0.2.0"));
-        assert!(!is_version_ok("0.2.9"));
         assert!(!is_version_ok("0.1.0"));
         assert!(!is_version_ok("0.0.1"));
         assert!(!is_version_ok("invalid"));
@@ -1030,7 +1037,7 @@ mod tests {
             json!({
                 "type": "hello",
                 "role": "extension",
-                "version": "0.3.0"
+                "version": "0.4.0"
             })
             .to_string()
             .into(),

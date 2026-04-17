@@ -2,7 +2,7 @@ pub const BUILD_VERSION: &str = env!("BUILD_VERSION");
 
 /// Minimum extension protocol version required to connect to the daemon.
 /// Extensions reporting a lower version will be rejected with version_mismatch.
-pub const EXTENSION_PROTOCOL_MIN_VERSION: &str = "0.3.0";
+pub const EXTENSION_PROTOCOL_MIN_VERSION: &str = "0.4.0";
 
 pub mod action;
 pub mod action_result;

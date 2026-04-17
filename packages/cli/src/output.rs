@@ -1256,7 +1256,7 @@ mod tests {
 
         assert_eq!(
             text,
-            "bridge: listening\nextension_connected: true\nrequired_version: >= 0.3.0\n  (check version at chrome://extensions/)"
+            "bridge: listening\nextension_connected: true\nrequired_version: >= 0.4.0\n  (check version at chrome://extensions/)"
         );
     }
 
