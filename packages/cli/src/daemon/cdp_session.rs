@@ -4,9 +4,9 @@
 //! tabs via CDP flat sessions (Target.attachToTarget + sessionId). Concurrent
 //! requests are multiplexed using incrementing message IDs.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -78,19 +78,73 @@ pub struct HarEntry {
     pub response_body_size: i64,
     pub cdp_timing: Option<Value>,
     pub loading_finished_timestamp: Option<f64>,
+    /// Response body text. For binary resources this is base64-encoded and
+    /// `response_body_base64` is true. Only populated after `loadingFinished`
+    /// + an async `Network.getResponseBody` call succeeds.
+    pub response_body: Option<String>,
+    /// True when `response_body` is base64 (CDP's `base64Encoded` flag).
+    pub response_body_base64: bool,
+    /// If the body was larger than the configured max_body_size, this holds
+    /// the original byte count and `response_body` is left None.
+    pub body_dropped_size_bytes: Option<i64>,
+    /// Non-fatal error encountered while fetching the body
+    /// (e.g. "No data found for resource with given identifier" for 3xx).
+    pub body_error: Option<String>,
 }
 
 /// Per-tab HAR recording state, keyed by CDP flat-session ID.
 /// Present in the map only while recording is active.
 pub struct HarRecorder {
-    pub entries: Vec<HarEntry>,
+    /// Ring buffer of captured entries. Oldest are evicted when `max_entries`
+    /// is reached.
+    pub entries: VecDeque<HarEntry>,
+    /// CDP `targetId` for the tab being recorded. Needed so background body
+    /// fetches can call `Network.getResponseBody` via `execute_on_tab`.
+    pub target_id: String,
+    /// Allowed CDP resource types (canonical casing: "XHR", "Fetch", …).
+    /// Empty set = record everything.
+    pub resource_types: HashSet<String>,
+    /// Hard cap on entry count. Once reached, oldest entries are dropped.
+    pub max_entries: usize,
+    /// Skip `Network.getResponseBody` calls entirely.
+    pub no_bodies: bool,
+    /// Max bytes per response body. Larger bodies are dropped (metadata kept).
+    pub max_body_size: usize,
+    /// Number of entries evicted due to `max_entries` cap. Surfaced in HAR
+    /// output as `log._droppedEntries` so the caller knows data was missed.
+    pub dropped_count: usize,
+    /// Counter for in-flight `Network.getResponseBody` spawn tasks.
+    /// Incremented when a fetch is dispatched from reader_loop, decremented
+    /// when the task finishes (success or error). `har_stop` polls this to
+    /// drain outstanding fetches before reading entries, so users who call
+    /// `har stop` right after `wait network-idle` still get populated bodies.
+    pub pending_body_fetches: Arc<AtomicUsize>,
 }
 
 impl HarRecorder {
-    fn new() -> Self {
+    pub fn new(
+        target_id: String,
+        resource_types: HashSet<String>,
+        max_entries: usize,
+        no_bodies: bool,
+        max_body_size: usize,
+    ) -> Self {
         Self {
-            entries: Vec::new(),
+            entries: VecDeque::new(),
+            target_id,
+            resource_types,
+            max_entries,
+            no_bodies,
+            max_body_size,
+            dropped_count: 0,
+            pending_body_fetches: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Returns true if this resource type should be recorded.
+    /// Empty filter set = record everything.
+    fn allows(&self, resource_type: &str) -> bool {
+        self.resource_types.is_empty() || self.resource_types.contains(resource_type)
     }
 
     fn on_request_will_be_sent(&mut self, params: &Value) {
@@ -102,6 +156,8 @@ impl HarRecorder {
         // Handle redirect: the redirectResponse field carries the HTTP response
         // for the *previous* request that issued the redirect (e.g. status 302).
         // Finalize the existing entry for this requestId with the redirect data.
+        // (If the original request was filtered out, there's no entry to find —
+        //  find() returns None and this is a no-op.)
         if let Some(rr) = params.get("redirectResponse")
             && let Some(entry) = self
                 .entries
@@ -132,6 +188,14 @@ impl HarRecorder {
             .and_then(|v| v.as_str())
             .unwrap_or("Other")
             .to_string();
+
+        // Resource-type filter: drop non-matching requests before building the
+        // entry. Subsequent events (responseReceived, loadingFinished) will
+        // find nothing and skip naturally.
+        if !self.allows(&resource_type) {
+            return;
+        }
+
         let request_headers = har_extract_headers(req.and_then(|r| r.get("headers")));
         let post_data = req
             .and_then(|r| r.get("postData"))
@@ -139,7 +203,13 @@ impl HarRecorder {
             .map(|s| s.to_string());
         let request_body_size = post_data.as_ref().map(|s| s.len() as i64).unwrap_or(0);
 
-        self.entries.push(HarEntry {
+        // Enforce ring-buffer cap.
+        if self.max_entries > 0 && self.entries.len() >= self.max_entries {
+            self.entries.pop_front();
+            self.dropped_count += 1;
+        }
+
+        self.entries.push_back(HarEntry {
             request_id: request_id.to_string(),
             wall_time,
             method,
@@ -157,6 +227,10 @@ impl HarRecorder {
             response_body_size: -1,
             cdp_timing: None,
             loading_finished_timestamp: None,
+            response_body: None,
+            response_body_base64: false,
+            body_dropped_size_bytes: None,
+            body_error: None,
         });
     }
 
@@ -269,6 +343,79 @@ fn har_extract_headers(headers_val: Option<&Value>) -> Vec<(String, String)> {
 }
 
 type TabHarRecorders = Arc<Mutex<HashMap<String, HarRecorder>>>;
+
+/// CDP routing discriminant for HAR body fetches spawned from reader_loop.
+#[derive(Clone)]
+enum HarFetchRoute {
+    /// Local/cloud flat session — routes via `sessionId` in the CDP frame.
+    FlatSession(String),
+    /// Extension bridge (protocol 0.3.0+) — routes via root-level `tabId`.
+    ExtensionTab(u64),
+}
+
+/// Send a raw CDP command on an already-open connection and await its response.
+/// This is a minimal analogue of `CdpSession::execute` that can be invoked from
+/// `reader_loop` without requiring a `CdpSession` handle. It is only used for
+/// background HAR body fetches; everything else goes through `execute`.
+///
+/// Never hold any recorder/event lock across this await.
+async fn send_cdp_raw(
+    pending: &PendingRequests,
+    writer_tx: &mpsc::Sender<String>,
+    next_id: &AtomicU64,
+    method: &str,
+    params: Value,
+    route: &HarFetchRoute,
+) -> Result<Value, CliError> {
+    let id = next_id.fetch_add(1, Ordering::Relaxed);
+    let mut msg = json!({
+        "id": id,
+        "method": method,
+        "params": params,
+    });
+    match route {
+        HarFetchRoute::FlatSession(sid) if !sid.is_empty() => {
+            msg["sessionId"] = json!(sid);
+        }
+        HarFetchRoute::ExtensionTab(tid) => {
+            msg["tabId"] = json!(*tid);
+        }
+        _ => {}
+    }
+
+    let (tx, rx) = oneshot::channel();
+    pending.lock().await.insert(id, tx);
+    if writer_tx.send(msg.to_string()).await.is_err() {
+        pending.lock().await.remove(&id);
+        return Err(CliError::SessionClosed(
+            "session was closed while HAR body fetch was pending".to_string(),
+        ));
+    }
+
+    // 15s is plenty for getResponseBody; use a tighter bound than execute()'s 60s
+    // so a stuck body fetch doesn't linger in memory forever.
+    let resp = tokio::time::timeout(std::time::Duration::from_secs(15), rx)
+        .await
+        .map_err(|_| {
+            let pending = pending.clone();
+            tokio::spawn(async move {
+                pending.lock().await.remove(&id);
+            });
+            CliError::Timeout
+        })?
+        .map_err(|_| CliError::CdpError("response channel dropped".to_string()))??;
+
+    if let Some(err) = resp.get("error") {
+        let code = err.get("code").and_then(|v| v.as_i64()).unwrap_or(0);
+        let message = err
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown CDP error");
+        return Err(CliError::CdpError(format!("CDP error {code}: {message}")));
+    }
+
+    Ok(resp)
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct NetworkRequestsFilter {
@@ -561,6 +708,9 @@ impl CdpSession {
         let pending: PendingRequests = Arc::new(Mutex::new(HashMap::new()));
         let next_id = Arc::new(AtomicU64::new(1));
         let (writer_tx, writer_rx) = mpsc::channel::<String>(64);
+        // Clone for reader_loop — it needs to dispatch async HAR body fetches
+        // (Network.getResponseBody) without blocking itself.
+        let writer_tx_for_reader = writer_tx.clone();
         let event_subs: EventSubs = Arc::new(Mutex::new(HashMap::new()));
         let tab_net_pending: TabNetPending = Arc::new(Mutex::new(HashMap::new()));
         let iframe_sessions: IframeSessions = Arc::new(Mutex::new(HashMap::new()));
@@ -584,6 +734,8 @@ impl CdpSession {
             max_tracked_requests,
             is_extension_bridge.clone(),
             tab_har_recorders.clone(),
+            writer_tx_for_reader,
+            next_id.clone(),
         ));
 
         Ok(CdpSession {
@@ -1133,27 +1285,89 @@ impl CdpSession {
     /// Returns `Err("HAR_ALREADY_RECORDING")` if recording is already active
     /// for this session. The caller is responsible for enabling `Network.*`
     /// events on the target before calling this.
-    pub async fn har_start(&self, cdp_session_id: &str) -> Result<(), &'static str> {
+    ///
+    /// Config:
+    /// - `target_id`: CDP targetId for the tab; needed so background body
+    ///   fetches can route the CDP command back to the correct tab.
+    /// - `resource_types`: canonical CDP resource-type names to record.
+    ///   Empty set = record everything.
+    /// - `max_entries`: ring-buffer cap; 0 disables the cap.
+    /// - `no_bodies`: skip `Network.getResponseBody` calls when true.
+    /// - `max_body_size`: bytes; bodies larger than this are dropped
+    ///   (metadata is still recorded).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn har_start(
+        &self,
+        cdp_session_id: &str,
+        target_id: &str,
+        resource_types: HashSet<String>,
+        max_entries: usize,
+        no_bodies: bool,
+        max_body_size: usize,
+    ) -> Result<(), &'static str> {
         let mut recorders = self.tab_har_recorders.lock().await;
         if recorders.contains_key(cdp_session_id) {
             return Err("HAR_ALREADY_RECORDING");
         }
-        recorders.insert(cdp_session_id.to_string(), HarRecorder::new());
+        recorders.insert(
+            cdp_session_id.to_string(),
+            HarRecorder::new(
+                target_id.to_string(),
+                resource_types,
+                max_entries,
+                no_bodies,
+                max_body_size,
+            ),
+        );
         Ok(())
     }
 
-    /// Stop HAR recording and return all captured entries.
+    /// Stop HAR recording and return captured entries plus dropped count.
     ///
     /// The recorder is **not** removed yet — call `har_commit` after successfully
     /// writing the file to release it.  This ensures that an I/O failure in the
     /// caller does not silently destroy the captured data.
     ///
+    /// Before reading entries, waits up to 3 seconds for any in-flight
+    /// `Network.getResponseBody` fetches to complete, so users calling `har_stop`
+    /// immediately after `wait network-idle` still get populated response bodies.
+    ///
+    /// `dropped_count` is the number of entries evicted due to the `max_entries`
+    /// ring-buffer cap; surface this so callers can warn the user.
+    ///
     /// Returns `Err("HAR_NOT_RECORDING")` if no recording was active.
-    pub async fn har_stop(&self, cdp_session_id: &str) -> Result<Vec<HarEntry>, &'static str> {
+    pub async fn har_stop(
+        &self,
+        cdp_session_id: &str,
+    ) -> Result<(Vec<HarEntry>, usize), &'static str> {
+        // Snapshot the pending-fetch counter handle, then release the lock
+        // while polling so body-fetch spawn tasks can acquire it to write back.
+        let pending_counter = {
+            let recorders = self.tab_har_recorders.lock().await;
+            match recorders.get(cdp_session_id) {
+                None => return Err("HAR_NOT_RECORDING"),
+                Some(recorder) => recorder.pending_body_fetches.clone(),
+            }
+        };
+
+        // Drain outstanding body fetches. 3s is generous: individual fetches
+        // have a 15s ceiling in send_cdp_raw but typically resolve in
+        // milliseconds. Exiting after the deadline is safe — entries simply
+        // ship without bodies and keep their `body_error`/None state.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while pending_counter.load(Ordering::Acquire) > 0
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+
         let recorders = self.tab_har_recorders.lock().await;
         match recorders.get(cdp_session_id) {
             None => Err("HAR_NOT_RECORDING"),
-            Some(recorder) => Ok(recorder.entries.clone()),
+            Some(recorder) => Ok((
+                recorder.entries.iter().cloned().collect(),
+                recorder.dropped_count,
+            )),
         }
     }
 
@@ -1177,6 +1391,8 @@ impl CdpSession {
         max_tracked_requests: usize,
         is_extension_bridge: Arc<std::sync::atomic::AtomicBool>,
         tab_har_recorders: TabHarRecorders,
+        writer_tx: mpsc::Sender<String>,
+        next_id: Arc<AtomicU64>,
     ) where
         S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
     {
@@ -1324,6 +1540,20 @@ impl CdpSession {
 
                     // HAR recording: feed network events into any active recorder
                     // for this CDP session. Independent of the ring-buffer path above.
+                    //
+                    // For `Network.loadingFinished`, also trigger an async body
+                    // fetch via `Network.getResponseBody`. We MUST NOT await that
+                    // from inside reader_loop (it would deadlock on itself), so
+                    // we collect the info we need, drop the recorder lock, and
+                    // spawn a detached task.
+                    type BodyFetchDispatch = (
+                        String,
+                        String,
+                        HarFetchRoute,
+                        usize,
+                        Arc<AtomicUsize>,
+                    );
+                    let mut body_fetch: Option<BodyFetchDispatch> = None;
                     if let Some(params) = resp.get("params") {
                         let mut recorders = tab_har_recorders.lock().await;
                         if let Some(recorder) = recorders.get_mut(session_id) {
@@ -1336,6 +1566,47 @@ impl CdpSession {
                                 }
                                 "Network.loadingFinished" => {
                                     recorder.on_loading_finished(params);
+                                    if !recorder.no_bodies {
+                                        let req_id = params
+                                            .get("requestId")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        if !req_id.is_empty()
+                                            && recorder
+                                                .entries
+                                                .iter()
+                                                .any(|e| e.request_id == req_id)
+                                        {
+                                            let route = if is_extension_bridge
+                                                .load(std::sync::atomic::Ordering::Acquire)
+                                            {
+                                                // session_id is "tab:{N}" here; parse the numeric tail.
+                                                ext_tab_key
+                                                    .as_deref()
+                                                    .and_then(|k| k.strip_prefix("tab:"))
+                                                    .and_then(|n| n.parse::<u64>().ok())
+                                                    .map(HarFetchRoute::ExtensionTab)
+                                            } else {
+                                                Some(HarFetchRoute::FlatSession(
+                                                    session_id.to_string(),
+                                                ))
+                                            };
+                                            if let Some(route) = route {
+                                                // Reserve a pending slot BEFORE we drop the lock
+                                                // so har_stop's drain can see the in-flight fetch.
+                                                recorder
+                                                    .pending_body_fetches
+                                                    .fetch_add(1, Ordering::Release);
+                                                body_fetch = Some((
+                                                    session_id.to_string(),
+                                                    req_id.to_string(),
+                                                    route,
+                                                    recorder.max_body_size,
+                                                    recorder.pending_body_fetches.clone(),
+                                                ));
+                                            }
+                                        }
+                                    }
                                 }
                                 "Network.loadingFailed" => {
                                     recorder.on_loading_failed(params);
@@ -1343,6 +1614,75 @@ impl CdpSession {
                                 _ => {}
                             }
                         }
+                    }
+
+                    if let Some((sess_key, req_id, route, max_body_size, pending_counter)) =
+                        body_fetch
+                    {
+                        let pending_clone = pending.clone();
+                        let writer_tx_clone = writer_tx.clone();
+                        let next_id_clone = next_id.clone();
+                        let recorders_clone = tab_har_recorders.clone();
+                        tokio::spawn(async move {
+                            let result = send_cdp_raw(
+                                &pending_clone,
+                                &writer_tx_clone,
+                                &next_id_clone,
+                                "Network.getResponseBody",
+                                json!({ "requestId": req_id }),
+                                &route,
+                            )
+                            .await;
+                            {
+                                let mut recorders = recorders_clone.lock().await;
+                                if let Some(recorder) = recorders.get_mut(&sess_key)
+                                    && let Some(entry) = recorder
+                                        .entries
+                                        .iter_mut()
+                                        .find(|e| e.request_id == req_id)
+                                {
+                                    match result {
+                                        Ok(resp) => {
+                                            let body = resp
+                                                .pointer("/result/body")
+                                                .and_then(|v| v.as_str())
+                                                .map(|s| s.to_string());
+                                            let base64 = resp
+                                                .pointer("/result/base64Encoded")
+                                                .and_then(|v| v.as_bool())
+                                                .unwrap_or(false);
+                                            match body {
+                                                Some(b) if b.len() > max_body_size => {
+                                                    entry.body_dropped_size_bytes =
+                                                        Some(b.len() as i64);
+                                                    entry.body_error = Some(
+                                                        "body_exceeds_max_body_size"
+                                                            .to_string(),
+                                                    );
+                                                }
+                                                Some(b) => {
+                                                    entry.response_body = Some(b);
+                                                    entry.response_body_base64 = base64;
+                                                }
+                                                None => {
+                                                    entry.body_error = Some(
+                                                        "empty_body_field_in_response"
+                                                            .to_string(),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            entry.body_error = Some(e.to_string());
+                                        }
+                                    }
+                                }
+                            }
+                            // Always decrement, even if the recorder was already
+                            // removed (har_commit raced us) or the entry was
+                            // evicted by the ring buffer.
+                            pending_counter.fetch_sub(1, Ordering::Release);
+                        });
                     }
                 }
 

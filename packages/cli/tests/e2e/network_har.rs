@@ -27,6 +27,27 @@ fn har_start(session_id: &str, tab_id: &str) -> std::process::Output {
     )
 }
 
+/// Start HAR recording capturing **all** resource types, not just the default
+/// xhr,fetch. Used by tests that navigate to static fixtures (network-load,
+/// redirect) where Document/Script/Stylesheet entries are the whole point.
+fn har_start_all(session_id: &str, tab_id: &str) -> std::process::Output {
+    headless_json(
+        &[
+            "browser",
+            "network",
+            "har",
+            "start",
+            "--session",
+            session_id,
+            "--tab",
+            tab_id,
+            "--resource-types",
+            "all",
+        ],
+        15,
+    )
+}
+
 fn har_stop(session_id: &str, tab_id: &str) -> std::process::Output {
     headless_json(
         &[
@@ -119,7 +140,9 @@ fn har_start_stop_creates_file() {
     let (sid, tid) = start_session("about:blank");
     let _guard = SessionGuard::new(&sid);
 
-    let start_out = har_start(&sid, &tid);
+    // network-load is a static page (no XHR), so we need `--resource-types all`
+    // to end up with non-empty entries.
+    let start_out = har_start_all(&sid, &tid);
     assert_success(&start_out, "har start");
 
     let goto_out = headless_json(
@@ -259,6 +282,111 @@ fn har_valid_json_structure() {
 }
 
 #[test]
+fn har_entry_captures_response_body() {
+    // Core new behavior: response.content.text is populated for XHR/fetch.
+    if skip() {
+        return;
+    }
+
+    let (sid, tid) = start_session("about:blank");
+    let _guard = SessionGuard::new(&sid);
+
+    assert_success(&har_start(&sid, &tid), "har start");
+    assert_success(
+        &headless_json(
+            &[
+                "browser",
+                "goto",
+                &url_network_xhr(),
+                "--session",
+                &sid,
+                "--tab",
+                &tid,
+            ],
+            20,
+        ),
+        "goto network xhr",
+    );
+    wait_requests_done(&sid, &tid);
+
+    let stop_v = parse_json(&har_stop(&sid, &tid));
+    let path = PathBuf::from(stop_v["data"]["path"].as_str().expect("har path"));
+    let har = har_json_from_file(&path);
+
+    // At least one XHR/fetch entry should have response.content.text set to a
+    // non-empty string. If this fails, the body-capture spawn is broken.
+    let populated = har_entries(&har)
+        .iter()
+        .filter(|e| {
+            e["response"]["content"]["text"]
+                .as_str()
+                .is_some_and(|t| !t.is_empty())
+        })
+        .count();
+    assert!(
+        populated > 0,
+        "expected at least one XHR/fetch entry with response.content.text populated, got 0"
+    );
+}
+
+#[test]
+fn har_no_bodies_flag_skips_body_capture() {
+    if skip() {
+        return;
+    }
+
+    let (sid, tid) = start_session("about:blank");
+    let _guard = SessionGuard::new(&sid);
+
+    let start_out = headless_json(
+        &[
+            "browser",
+            "network",
+            "har",
+            "start",
+            "--session",
+            &sid,
+            "--tab",
+            &tid,
+            "--no-bodies",
+        ],
+        15,
+    );
+    assert_success(&start_out, "har start --no-bodies");
+
+    assert_success(
+        &headless_json(
+            &[
+                "browser",
+                "goto",
+                &url_network_xhr(),
+                "--session",
+                &sid,
+                "--tab",
+                &tid,
+            ],
+            20,
+        ),
+        "goto network xhr",
+    );
+    wait_requests_done(&sid, &tid);
+
+    let stop_v = parse_json(&har_stop(&sid, &tid));
+    let path = PathBuf::from(stop_v["data"]["path"].as_str().expect("har path"));
+    let har = har_json_from_file(&path);
+
+    // With --no-bodies, no entry should have response.content.text.
+    let populated = har_entries(&har)
+        .iter()
+        .filter(|e| e["response"]["content"].get("text").is_some())
+        .count();
+    assert_eq!(
+        populated, 0,
+        "--no-bodies should prevent any text field from being written"
+    );
+}
+
+#[test]
 fn har_entry_has_request_response() {
     if skip() {
         return;
@@ -315,7 +443,8 @@ fn har_entry_has_timings() {
     let (sid, tid) = start_session(&url_network_load());
     let _guard = SessionGuard::new(&sid);
 
-    assert_success(&har_start(&sid, &tid), "har start");
+    // Document / static assets aren't in the default xhr,fetch filter.
+    assert_success(&har_start_all(&sid, &tid), "har start");
     let goto_out = headless_json(
         &[
             "browser",
@@ -354,7 +483,8 @@ fn har_redirect_chain_multiple_entries() {
     let (sid, tid) = start_session("about:blank");
     let _guard = SessionGuard::new(&sid);
 
-    assert_success(&har_start(&sid, &tid), "har start");
+    // Top-level redirects are Document-typed, not XHR/Fetch.
+    assert_success(&har_start_all(&sid, &tid), "har start");
     let goto_out = headless_json(
         &[
             "browser",
@@ -560,7 +690,9 @@ fn har_cross_session_independent_recording() {
     let (sid2, tid2) = start_session("about:blank");
     let _guard2 = SessionGuard::new(&sid2);
 
-    assert_success(&har_start(&sid1, &tid1), "har start session 1");
+    // Session 1 loads a static page (Document/CSS/JS), so needs all types.
+    // Session 2 issues XHR/fetch, which is the default.
+    assert_success(&har_start_all(&sid1, &tid1), "har start session 1");
     assert_success(&har_start(&sid2, &tid2), "har start session 2");
 
     // Session 1: navigate to the network-load fixture (static assets, no XHR).
