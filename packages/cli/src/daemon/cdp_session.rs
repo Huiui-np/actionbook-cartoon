@@ -425,6 +425,20 @@ pub struct NetworkRequestsFilter {
     pub status: Option<String>,
 }
 
+/// Compute how many bytes a standard-base64 string would decode to, without
+/// allocating the decoded buffer. CDP's `Network.getResponseBody` returns
+/// unpadded-free standard base64 whose text length is always a multiple of 4;
+/// if we encounter malformed input (not a multiple of 4), fall back to the raw
+/// text length so the caller over-estimates and errs on the side of caution.
+fn base64_decoded_len(s: &str) -> usize {
+    let len = s.len();
+    if !len.is_multiple_of(4) {
+        return len;
+    }
+    let padding = s.bytes().rev().take_while(|&b| b == b'=').count().min(2);
+    (len / 4) * 3 - padding
+}
+
 fn normalize_headers(headers: Option<&Value>) -> HashMap<String, String> {
     let Some(obj) = headers.and_then(|v| v.as_object()) else {
         return HashMap::new();
@@ -1217,6 +1231,13 @@ impl CdpSession {
             }
         }
 
+        // Clear event subscribers so their recv() returns None instead of
+        // hanging. Normally `reader_loop`'s exit path does this, but the
+        // abort above short-circuits that cleanup — waiters such as
+        // `browser/navigation/goto.rs` and `browser/wait/navigation.rs` rely
+        // on the channel closing to unblock on session close/restart.
+        self.event_subs.lock().await.clear();
+
         // Bounded wait for the writer to flush its Close frame.
         if let Some(handle) = self.writer_handle.lock().await.take() {
             let aborter = handle.abort_handle();
@@ -1670,13 +1691,14 @@ impl CdpSession {
                                                     // string is ~4/3 larger than the
                                                     // decoded bytes; compare against
                                                     // decoded length so the byte cap
-                                                    // means what it says.
+                                                    // means what it says. Derive the
+                                                    // decoded length from the text
+                                                    // without allocating — decoding
+                                                    // multi-MB bodies just to get a
+                                                    // size would double peak memory
+                                                    // and risk OOM in the daemon.
                                                     let decoded_len = if base64 {
-                                                        use base64::Engine as _;
-                                                        base64::engine::general_purpose::STANDARD
-                                                            .decode(&b)
-                                                            .map(|v| v.len())
-                                                            .unwrap_or(b.len())
+                                                        base64_decoded_len(&b)
                                                     } else {
                                                         b.len()
                                                     };
@@ -1830,6 +1852,28 @@ mod tests {
     use std::net::SocketAddr;
     use tokio::net::TcpListener;
     use tokio_tungstenite::tungstenite::Message;
+
+    #[test]
+    fn base64_decoded_len_matches_reference_for_sampled_inputs() {
+        use base64::Engine as _;
+        let enc = base64::engine::general_purpose::STANDARD;
+        // Cover all three padding cases (0, 1, 2 `=` chars) plus empty input.
+        for sample in ["", "a", "ab", "abc", "abcd", "abcdef", "Hello, world!!"] {
+            let encoded = enc.encode(sample.as_bytes());
+            assert_eq!(
+                base64_decoded_len(&encoded),
+                sample.len(),
+                "formula disagreed with reference decoder for sample {sample:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn base64_decoded_len_malformed_falls_back_to_text_len() {
+        // Not a multiple of 4 → caller should treat as "at least this big"
+        // and err toward rejecting; returning the raw length is safe.
+        assert_eq!(base64_decoded_len("abc"), 3);
+    }
 
     /// Start a mock WebSocket server. Returns the URL and a channel that
     /// yields each accepted connection's (reader, writer) pair.
