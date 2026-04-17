@@ -487,7 +487,7 @@ async fn handle_extension(
         .and_then(|v| v.as_str())
         .unwrap_or("0.0.0");
 
-    // Validate protocol version (>= 0.2.0).
+    // Validate protocol version against `EXTENSION_PROTOCOL_MIN_VERSION`.
     if !is_version_ok(client_version) {
         let err = json!({
             "type": "hello_error",

@@ -1234,14 +1234,14 @@ mod tests {
         let result = ActionResult::ok(json!({
             "path": "/Users/test/.actionbook/extension",
             "version": "1.4.3-alpha",
-            "required_version": "0.3.0",
+            "required_version": "0.4.0",
         }));
 
         let text = format_text("extension install", &None, &result);
 
         assert_eq!(
             text,
-            "ok extension install\npath: /Users/test/.actionbook/extension\nversion: 1.4.3-alpha\nrequired_version: >= 0.3.0\n  (check version at chrome://extensions/)\n\nTo load the extension in Chrome:\n  1. Open chrome://extensions/\n  2. Enable Developer mode\n  3. If a previous version is loaded, click Remove first\n  4. Click \"Load unpacked\" and select the path above"
+            "ok extension install\npath: /Users/test/.actionbook/extension\nversion: 1.4.3-alpha\nrequired_version: >= 0.4.0\n  (check version at chrome://extensions/)\n\nTo load the extension in Chrome:\n  1. Open chrome://extensions/\n  2. Enable Developer mode\n  3. If a previous version is loaded, click Remove first\n  4. Click \"Load unpacked\" and select the path above"
         );
     }
 
@@ -1266,14 +1266,14 @@ mod tests {
             "path": "/Users/test/.actionbook/extension",
             "installed": false,
             "version": null,
-            "required_version": "0.3.0",
+            "required_version": "0.4.0",
         }));
 
         let text = format_text("extension path", &None, &result);
 
         assert_eq!(
             text,
-            "path: /Users/test/.actionbook/extension\ninstalled: false\nrequired_version: >= 0.3.0\n  (check version at chrome://extensions/)"
+            "path: /Users/test/.actionbook/extension\ninstalled: false\nrequired_version: >= 0.4.0\n  (check version at chrome://extensions/)"
         );
     }
 }
