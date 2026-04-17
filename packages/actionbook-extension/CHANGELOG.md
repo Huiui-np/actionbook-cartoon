@@ -1,5 +1,16 @@
 # @actionbookdev/extension
 
+## 0.4.0
+
+### Minor Changes
+
+- Group Actionbook-opened tabs into a dedicated Chrome tab group.
+
+  - Tabs opened via `Extension.createTab` (including the reuse-empty-tab path) are automatically moved into a per-window tab group titled "Actionbook" (blue). Makes it easy to tell agent-driven tabs apart from your own and bulk-collapse/close them.
+  - Adds the `tabGroups` permission to the extension manifest.
+  - New popup toggle "Group Actionbook tabs" (default on); preference persists in `chrome.storage.local` under `groupTabs`.
+  - User-attached existing tabs (`Extension.attachTab`) are **not** moved by default — controlled by the internal `ACTIONBOOK_GROUP_ATTACH` flag to preserve user intent.
+
 ## 0.3.0
 
 ### Minor Changes
