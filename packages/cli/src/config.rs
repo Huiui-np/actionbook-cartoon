@@ -70,14 +70,25 @@ fn default_profile_name() -> String {
 
 /// Return the base URL for the Actionbook API.
 /// Precedence: ACTIONBOOK_API_URL env var > config file api.base_url > production endpoint.
+///
+/// If the config file exists but fails to parse (e.g. a TOML syntax error like
+/// unquoted strings), emits a warning on stderr before falling back. Without
+/// this breadcrumb, a broken `base_url = http://...` silently routes every API
+/// call to production, which is a very confusing failure mode.
 pub fn api_base() -> String {
-    read_trimmed_env("ACTIONBOOK_API_URL")
-        .or_else(|| {
-            load_config()
-                .ok()
-                .and_then(|config| configured_api_base(&config))
-        })
-        .unwrap_or_else(|| DEFAULT_API_BASE.to_string())
+    if let Some(v) = read_trimmed_env("ACTIONBOOK_API_URL") {
+        return v;
+    }
+    match load_config() {
+        Ok(config) => configured_api_base(&config).unwrap_or_else(|| DEFAULT_API_BASE.to_string()),
+        Err(e) => {
+            eprintln!(
+                "warning: failed to load {}: {e}. Falling back to {DEFAULT_API_BASE}.",
+                config_path().display()
+            );
+            DEFAULT_API_BASE.to_string()
+        }
+    }
 }
 
 pub(crate) fn api_base_from_config(config: &ConfigFile) -> String {

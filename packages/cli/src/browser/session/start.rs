@@ -65,7 +65,11 @@ pub struct Cmd {
     #[arg(long)]
     pub open_url: Option<String>,
     /// Extension mode only: attach to a pre-existing Chrome tab by its native
-    /// numeric tab id (e.g. from `browser list-tabs --json`'s `native_tab_id`).
+    /// numeric tab id. `browser list-tabs --json` surfaces `native_tab_id` for
+    /// Actionbook-managed tabs (those already attached or in the "Actionbook"
+    /// tab group). For tabs outside that set, read the id from Chrome's
+    /// built-in DevTools (`chrome://inspect/#pages`) or from `chrome.tabs`
+    /// extension APIs before invoking --tab-id.
     /// Mutually exclusive with --open-url. Required when `--mode extension`
     /// is used without `--open-url`; the legacy "attach active tab" default
     /// has been removed in protocol 0.3.0 — every tab must be explicit.
@@ -1615,7 +1619,7 @@ async fn execute_extension(
             &session_id,
             "MISSING_TAB_TARGET",
             "extension mode requires either --open-url or --tab-id".to_string(),
-            "pass --open-url <url> to create a new tab, or --tab-id <N> (find ids via `actionbook browser list-tabs --json`)",
+            "pass --open-url <url> to create a new tab, or --tab-id <N>. list-tabs only shows Actionbook-managed tabs; for unmanaged tabs read the id from chrome://inspect/#pages",
         )
         .await;
     };

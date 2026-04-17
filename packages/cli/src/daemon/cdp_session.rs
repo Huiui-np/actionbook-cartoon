@@ -932,15 +932,52 @@ impl CdpSession {
     ///   - `reader_loop` to bucket incoming events carrying the bridge's
     ///     root-level `tabId` field
     ///
-    /// Idempotent: calling again for the same `native_id` is a no-op.
+    /// Idempotent: calling again for the same `native_id` is a no-op for the
+    /// routing map; `Network.enable` is still sent only once per tab.
+    ///
+    /// Also fires `Network.enable` on first registration so the extension
+    /// forwards `Network.requestWillBeSent` / `responseReceived` /
+    /// `loadingFinished` events — required by HAR recording and network
+    /// request tracking. Local/cloud mode does this from `attach()`, but
+    /// extension mode skips that path, so without this call the Network
+    /// domain stays dormant and HAR captures nothing.
     pub async fn register_extension_tab(&self, native_id: &str) {
         self.is_extension_bridge
             .store(true, std::sync::atomic::Ordering::Release);
         let key = format!("tab:{native_id}");
-        self.tab_sessions
+        let was_new = self
+            .tab_sessions
             .lock()
             .await
-            .insert(native_id.to_string(), key);
+            .insert(native_id.to_string(), key)
+            .is_none();
+
+        if !was_new {
+            return;
+        }
+
+        // Best-effort: enable the Network domain in the extension-attached tab.
+        // Failure here shouldn't block tab registration — the tab may not have
+        // debugger attached yet (discovered via listTabs but never attached),
+        // or the extension may have been reloaded. Commands that strictly need
+        // Network events will surface the gap themselves.
+        let tab_id: u64 = match native_id.parse() {
+            Ok(v) => v,
+            Err(_) => {
+                tracing::warn!(
+                    "register_extension_tab: non-numeric native_id '{native_id}', skipping Network.enable"
+                );
+                return;
+            }
+        };
+        if let Err(e) = self
+            .execute_extension_tab(tab_id, "Network.enable", json!({}))
+            .await
+        {
+            tracing::warn!(
+                "register_extension_tab: Network.enable failed for tab {native_id}: {e}"
+            );
+        }
     }
 
     /// Detach from a CDP target (tab).
@@ -987,12 +1024,14 @@ impl CdpSession {
     ///
     /// * **Local / cloud (CDP flat sessions)**: looks up the CDP `sessionId`
     ///   for the target and includes it in the message.
-    /// * **Extension bridge (protocol 0.3.0+)**: parses `target_id` as the
+    /// * **Extension bridge (protocol 0.4.0+)**: parses `target_id` as the
     ///   Chrome numeric tab id and injects a root-level `tabId`. The
     ///   extension routes to `chrome.debugger.sendCommand({tabId}, …)`.
     ///   On the extension's "Tab N not attached" error (can happen after
-    ///   extension reload or when the user cancels the debug banner),
-    ///   attempts exactly one lazy `Extension.attachTab` + retry.
+    ///   extension reload, when the user cancels the debug banner, or when
+    ///   a tab was registered via `listTabs` group-discovery without an
+    ///   active debugger), attempts exactly one lazy `Extension.attachTab`
+    ///   + re-enable Network + retry of the original command.
     pub async fn execute_on_tab(
         &self,
         target_id: &str,
@@ -1019,10 +1058,24 @@ impl CdpSession {
                     if msg.contains(&format!("Tab {tab_id} not attached"))
                         || msg.contains("Debugger detached from tab") =>
                 {
-                    // Self-heal: extension reload / user-dismissed banner.
-                    // Re-attach, retry once. If that fails too, bubble up.
+                    // Self-heal: extension reload / user-dismissed banner /
+                    // group-discovered tab that was never debugger-attached.
+                    // Re-attach, then re-enable Network domain — without this
+                    // re-enable, HAR/network tracking stays empty for tabs
+                    // whose initial `Network.enable` in register_extension_tab
+                    // failed (tab wasn't attached yet), since no later code
+                    // path would have retried it. Best-effort on the enable:
+                    // log but continue into the user command retry.
                     self.execute("Extension.attachTab", json!({ "tabId": tab_id }), None)
                         .await?;
+                    if let Err(e) = self
+                        .execute_extension_tab(tab_id, "Network.enable", json!({}))
+                        .await
+                    {
+                        tracing::warn!(
+                            "execute_on_tab self-heal: Network.enable failed for tab {tab_id}: {e}"
+                        );
+                    }
                     self.execute_extension_tab(tab_id, method, params).await
                 }
                 Err(e) => Err(e),

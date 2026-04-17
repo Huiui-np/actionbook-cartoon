@@ -495,7 +495,21 @@ impl BrowserCommands {
                 NetworkCommands::Request(cmd) => Action::NetworkRequestDetail(cmd.clone()),
                 NetworkCommands::Har { command } => match command {
                     HarCommands::Start(cmd) => Action::NetworkHarStart(cmd.clone()),
-                    HarCommands::Stop(cmd) => Action::NetworkHarStop(cmd.clone()),
+                    HarCommands::Stop(cmd) => {
+                        // Resolve --out against the CLI's CWD before handing
+                        // the command to the daemon. The daemon may have been
+                        // spawned from a different directory, so relying on
+                        // the daemon's CWD would produce a surprising location
+                        // for a user typing `--out test.har` from their shell.
+                        let mut cmd = cmd.clone();
+                        if let Some(ref p) = cmd.out {
+                            let path = std::path::Path::new(p);
+                            if let Ok(abs) = std::path::absolute(path) {
+                                cmd.out = Some(abs.to_string_lossy().into_owned());
+                            }
+                        }
+                        Action::NetworkHarStop(cmd)
+                    }
                 },
             },
             Self::Wait { command } => match command {

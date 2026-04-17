@@ -209,9 +209,15 @@ pub async fn execute_start(cmd: &StartCmd, registry: &SharedRegistry) -> ActionR
 Examples:
   actionbook browser network har stop --session s1 --tab t1
   actionbook browser network har stop --session s1 --tab t1 --out /tmp/my.har
+  actionbook browser network har stop --session s1 --tab t1 --out out.har
 
-Stops recording and writes a HAR 1.2 JSON file. Returns { path, count }.
-If --out is omitted, a timestamped file is created in ~/.actionbook/har/.")]
+Stops recording and writes a HAR 1.2 JSON file. Returns { path, count,
+dropped }. If --out is omitted, a timestamped file is created in
+~/.actionbook/har/.
+
+Relative --out paths are resolved against the CLI's current working
+directory and the returned `path` is always absolute, so callers can
+locate the file regardless of where the daemon was launched.")]
 pub struct StopCmd {
     /// Session ID
     #[arg(long)]
@@ -288,6 +294,11 @@ pub async fn execute_stop(cmd: &StopCmd, registry: &SharedRegistry) -> ActionRes
         Some(p) => PathBuf::from(p),
         None => default_har_path(),
     };
+    // Resolve to an absolute path so the response is unambiguous regardless of
+    // the daemon's CWD (daemon may have been spawned from a different dir than
+    // the CLI invocation). std::path::absolute doesn't require the file to
+    // exist yet, so run it before the write.
+    let out_path = std::path::absolute(&out_path).unwrap_or(out_path);
 
     if let Some(parent) = out_path.parent()
         && let Err(e) = std::fs::create_dir_all(parent)

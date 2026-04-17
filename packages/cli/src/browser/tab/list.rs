@@ -15,7 +15,12 @@ Examples:
   actionbook browser list-tabs --session my-session
   actionbook browser list-tabs --session my-session --json
 
-Returns each tab's ID (t1, t2, ...), URL, and title.")]
+Returns each tab's ID (t1, t2, ...), URL, and title.
+
+Extension mode: only Actionbook-managed tabs are listed — tabs the extension
+has attached, plus any tab in the Chrome \"Actionbook\" tab group. Other
+tabs the user has open in Chrome are intentionally hidden. Local/cloud
+modes always list every tab in the controlled browser.")]
 pub struct Cmd {
     /// Session ID
     #[arg(long)]
@@ -316,6 +321,34 @@ mod tests {
             .await
             .unwrap();
 
+        // register_extension_tab now fires one `Network.enable` per newly-
+        // registered tab (so the extension forwards Network.* events for
+        // HAR / request tracking). Drain those two WS messages and reply so
+        // execute() can complete. Order isn't guaranteed across tabs, so we
+        // collect both tabIds without asserting sequence.
+        let mut seen_tab_ids = Vec::new();
+        for _ in 0..2 {
+            let raw = reader.next().await.unwrap().unwrap();
+            let Message::Text(t) = raw else {
+                panic!("expected text frame for Network.enable, got {raw:?}");
+            };
+            let v: serde_json::Value = serde_json::from_str(t.as_ref()).unwrap();
+            assert_eq!(
+                v["method"], "Network.enable",
+                "register_extension_tab must send Network.enable per tab"
+            );
+            let enable_id = v["id"].as_u64().unwrap();
+            seen_tab_ids.push(v["tabId"].as_u64().unwrap());
+            writer
+                .send(Message::Text(
+                    json!({ "id": enable_id, "result": {} }).to_string().into(),
+                ))
+                .await
+                .unwrap();
+        }
+        seen_tab_ids.sort();
+        assert_eq!(seen_tab_ids, vec![100, 200]);
+
         let result = handle.await.unwrap();
         let data = match &result {
             ActionResult::Ok { data, .. } => data.clone(),
@@ -329,14 +362,13 @@ mod tests {
         assert_eq!(tabs[1]["url"], "https://b.com");
         assert_eq!(tabs[1]["title"], "Tab B");
 
-        // Verify no Target.attachToTarget was sent — extension mode must use
-        // register_extension_tab (in-memory only, no WS message).
-        // Give a brief window for any stray messages to arrive.
+        // No Target.attachToTarget — extension mode must not use the local/cloud
+        // flat-session handshake.
         let stray =
             tokio::time::timeout(std::time::Duration::from_millis(100), reader.next()).await;
         assert!(
             stray.is_err(),
-            "extension mode must not send Target.attachToTarget; got unexpected WS message"
+            "extension mode must not send additional CDP messages; got unexpected WS frame"
         );
 
         // Verify tabs were registered in the registry with short IDs
