@@ -1,5 +1,27 @@
 # @actionbookdev/cli
 
+## 1.5.0
+
+### Minor Changes
+
+- Release 1.5.0: network HAR recording, auto-connect, search/manual commands, and extension-mode hardening.
+
+  - **Network HAR recording (ACT-936)**: new `browser network har start` / `har stop` commands capture HTTP traffic to a HAR file. Works in both local and extension bridge modes; isolated per session.
+  - **`browser start --auto-connect`**: attach to an already-running Chrome instead of spawning a new one, so users can reuse their signed-in profile and open tabs.
+  - **Relaxed network-idle mode**: new `wait --relaxed-idle` for pages with persistent background traffic (websockets, long-poll); considers the page idle while at most N requests are in flight.
+  - **`search` / `manual` top-level commands**: search Actionbook actions and fetch action manuals directly from the CLI; both now listed in top-level help.
+  - **`browser send` removed**: deprecated in favor of explicit per-tab addressing.
+  - **Session IDs may contain underscores (ACT-845)**.
+  - **Extension-mode fixes**:
+    - Enable CDP `Network` domain on attach (and re-enable after self-heal reattach) so HAR captures traffic in extension bridge mode.
+    - `list-tabs` / filter honors Actionbook-managed tab scoping (protocol 0.4.0).
+  - **Config + reliability fixes**:
+    - Surface config-load errors instead of silently falling back to prod.
+    - Fix `CdpSession::close` leaving event subscribers hanging and HAR base64 size check OOM risk.
+    - Guard `wait --relaxed-idle` with a pending-request count.
+    - Windows: replace `wait_timeout` with a `try_wait` loop for cross-platform test reliability.
+  - **Refactor**: extract `api_base` helpers; build script uses debug profile.
+
 ## 1.4.3
 
 ### Patch Changes
