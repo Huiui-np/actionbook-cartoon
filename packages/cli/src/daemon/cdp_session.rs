@@ -427,15 +427,30 @@ pub struct NetworkRequestsFilter {
 
 /// Compute how many bytes a standard-base64 string would decode to, without
 /// allocating the decoded buffer. CDP's `Network.getResponseBody` returns
-/// unpadded-free standard base64 whose text length is always a multiple of 4;
-/// if we encounter malformed input (not a multiple of 4), fall back to the raw
-/// text length so the caller over-estimates and errs on the side of caution.
+/// standard base64 whose text length is always a multiple of 4 and whose
+/// non-padding bytes are all in `[A-Za-z0-9+/]`. If either invariant breaks
+/// (bad length, or illegal chars inside the body — e.g. whitespace, `=` in
+/// the middle), fall back to the raw text length so the caller over-estimates
+/// decoded size and errs on the side of rejecting oversized bodies.
 fn base64_decoded_len(s: &str) -> usize {
     let len = s.len();
     if !len.is_multiple_of(4) {
         return len;
     }
-    let padding = s.bytes().rev().take_while(|&b| b == b'=').count().min(2);
+    let bytes = s.as_bytes();
+    let padding = bytes
+        .iter()
+        .rev()
+        .take_while(|&&b| b == b'=')
+        .count()
+        .min(2);
+    let body_end = len - padding;
+    for &b in &bytes[..body_end] {
+        let ok = b.is_ascii_alphanumeric() || b == b'+' || b == b'/';
+        if !ok {
+            return len;
+        }
+    }
     (len / 4) * 3 - padding
 }
 
@@ -1873,6 +1888,11 @@ mod tests {
         // Not a multiple of 4 → caller should treat as "at least this big"
         // and err toward rejecting; returning the raw length is safe.
         assert_eq!(base64_decoded_len("abc"), 3);
+        // Multiple of 4 but contains non-base64 chars — formula would
+        // under-estimate and let bodies slip past the size cap. Fall back.
+        assert_eq!(base64_decoded_len("ab!d"), 4);
+        assert_eq!(base64_decoded_len("ab\n\n"), 4); // whitespace/newline
+        assert_eq!(base64_decoded_len("a=bc"), 4); // `=` mid-string
     }
 
     /// Start a mock WebSocket server. Returns the URL and a channel that
