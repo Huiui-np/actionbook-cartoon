@@ -144,6 +144,21 @@ chrome.storage.local.get("bridgeToken", (result) => {
   }
 });
 
+// Tab-grouping toggle — reflects and writes background's in-memory
+// groupingEnabled flag; background persists to chrome.storage.local.
+const groupTabsToggle = document.getElementById("groupTabsToggle");
+chrome.runtime.sendMessage({ type: "getGrouping" }, (response) => {
+  if (response && typeof response.enabled === "boolean") {
+    groupTabsToggle.checked = response.enabled;
+  }
+});
+groupTabsToggle.addEventListener("change", () => {
+  chrome.runtime.sendMessage({
+    type: "setGrouping",
+    enabled: groupTabsToggle.checked,
+  });
+});
+
 // Set version from manifest
 document.getElementById("versionLabel").textContent =
   "v" + chrome.runtime.getManifest().version;

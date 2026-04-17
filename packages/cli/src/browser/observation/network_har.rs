@@ -3,6 +3,7 @@
 //! Records all network requests for a tab in HAR 1.2 format. Recording is
 //! per-tab: multiple tabs can record independently at the same time.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use clap::Args;
@@ -14,6 +15,13 @@ use crate::daemon::cdp_session::{HarEntry, get_cdp_and_target};
 use crate::daemon::registry::SharedRegistry;
 use crate::output::ResponseContext;
 
+/// Default cap on per-response body size (bytes). Bodies larger than this are
+/// dropped; metadata is still recorded. Keeps HAR output bounded even on long
+/// recordings.
+const DEFAULT_MAX_BODY_SIZE: usize = 5 * 1024 * 1024;
+/// Default ring-buffer cap on number of entries. Oldest evicted when full.
+const DEFAULT_MAX_ENTRIES: usize = 2000;
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 
 /// Start HAR recording for a tab.
@@ -21,9 +29,14 @@ use crate::output::ResponseContext;
 #[command(after_help = "\
 Examples:
   actionbook browser network har start --session s1 --tab t1
+  actionbook browser network har start --session s1 --tab t1 \\
+      --resource-types xhr,fetch,document --max-body-size 10485760
 
-Starts capturing all HTTP requests/responses for the tab. Stop with
-`browser network har stop` to export a HAR 1.2 file.")]
+Captures HTTP requests/responses for the tab into a ring buffer. By default
+only XHR and fetch requests are recorded, with response bodies fetched via
+Network.getResponseBody (text bodies stored as-is, binary as base64).
+
+Stop with `browser network har stop` to export a HAR 1.2 file.")]
 pub struct StartCmd {
     /// Session ID
     #[arg(long)]
@@ -33,6 +46,64 @@ pub struct StartCmd {
     #[arg(long)]
     #[serde(rename = "tab_id")]
     pub tab: String,
+    /// Comma-separated CDP resource types to record. Case-insensitive.
+    /// Valid values: document, stylesheet, image, media, font, script, texttrack,
+    /// xhr, fetch, prefetch, eventsource, websocket, manifest, signedexchange,
+    /// ping, cspviolationreport, preflight, other. Use "all" to record everything.
+    #[arg(long, default_value = "xhr,fetch")]
+    pub resource_types: String,
+    /// Maximum number of entries to keep. Oldest are dropped when full.
+    /// Set to 0 to disable the cap (unbounded memory use).
+    #[arg(long, default_value_t = DEFAULT_MAX_ENTRIES)]
+    pub max_entries: usize,
+    /// Maximum bytes per response body; larger bodies drop the body text
+    /// (metadata still recorded).
+    #[arg(long, default_value_t = DEFAULT_MAX_BODY_SIZE)]
+    pub max_body_size: usize,
+    /// Skip fetching response bodies; only record request/response metadata.
+    #[arg(long)]
+    pub no_bodies: bool,
+}
+
+/// Parse a comma-separated resource-type list into the canonical CDP casing.
+/// Returns empty set for "all" / "*" (= no filter). Any unknown token is a
+/// hard error — silently dropping typos would turn "xrh" into "record
+/// everything" from the caller's perspective.
+fn parse_resource_types(s: &str) -> Result<HashSet<String>, Vec<String>> {
+    let mut out = HashSet::new();
+    let mut invalid = Vec::new();
+    for tok in s.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()) {
+        let canonical = match tok.to_ascii_lowercase().as_str() {
+            "all" | "*" => return Ok(HashSet::new()),
+            "document" => "Document",
+            "stylesheet" => "Stylesheet",
+            "image" => "Image",
+            "media" => "Media",
+            "font" => "Font",
+            "script" => "Script",
+            "texttrack" => "TextTrack",
+            "xhr" => "XHR",
+            "fetch" => "Fetch",
+            "prefetch" => "Prefetch",
+            "eventsource" => "EventSource",
+            "websocket" => "WebSocket",
+            "manifest" => "Manifest",
+            "signedexchange" => "SignedExchange",
+            "ping" => "Ping",
+            "cspviolationreport" => "CSPViolationReport",
+            "preflight" => "Preflight",
+            "other" => "Other",
+            _ => {
+                invalid.push(tok.to_string());
+                continue;
+            }
+        };
+        out.insert(canonical.to_string());
+    }
+    if !invalid.is_empty() {
+        return Err(invalid);
+    }
+    Ok(out)
 }
 
 pub const START_COMMAND_NAME: &str = "browser network har start";
@@ -78,8 +149,50 @@ pub async fn execute_start(cmd: &StartCmd, registry: &SharedRegistry) -> ActionR
         }
     };
 
-    match cdp.har_start(&cdp_session_id).await {
-        Ok(()) => ActionResult::ok(json!({ "recording": true })),
+    let resource_types = match parse_resource_types(&cmd.resource_types) {
+        Ok(set) => set,
+        Err(invalid) => {
+            return ActionResult::fatal(
+                "INVALID_RESOURCE_TYPES",
+                format!(
+                    "unknown resource type(s): {}. Valid values: all, document, stylesheet, image, media, font, script, texttrack, xhr, fetch, prefetch, eventsource, websocket, manifest, signedexchange, ping, cspviolationreport, preflight, other",
+                    invalid.join(", ")
+                ),
+            );
+        }
+    };
+    // Echo the canonical filter list back to the agent so it can tell at a
+    // glance whether the alias ("all", "xhr,fetch") was expanded correctly.
+    let resource_types_echo = if resource_types.is_empty() {
+        "all".to_string()
+    } else {
+        let mut v: Vec<&str> = resource_types.iter().map(String::as_str).collect();
+        v.sort_unstable();
+        v.join(",")
+    };
+
+    match cdp
+        .har_start(
+            &cdp_session_id,
+            &target_id,
+            resource_types,
+            cmd.max_entries,
+            cmd.no_bodies,
+            cmd.max_body_size,
+        )
+        .await
+    {
+        Ok(()) => ActionResult::ok(json!({
+            "recording": true,
+            "resource_types": resource_types_echo,
+            "max_entries": cmd.max_entries,
+            "max_body_size": cmd.max_body_size,
+            "capture_bodies": !cmd.no_bodies,
+            // Agents need to know where stop will write by default. The actual
+            // filename is only decided at stop time (timestamped), so we
+            // surface the directory — the stop response returns the full path.
+            "output_dir": default_har_dir().to_string_lossy().as_ref(),
+        })),
         Err("HAR_ALREADY_RECORDING") => ActionResult::fatal(
             "HAR_ALREADY_RECORDING",
             format!("HAR recording is already active for tab '{}'", cmd.tab),
@@ -159,8 +272,8 @@ pub async fn execute_stop(cmd: &StopCmd, registry: &SharedRegistry) -> ActionRes
     // Peek at entries without removing the recorder yet.  The recorder is
     // only committed (removed) after the file has been written successfully,
     // so an I/O failure leaves the data intact and the user can retry.
-    let entries = match cdp.har_stop(&cdp_session_id).await {
-        Ok(entries) => entries,
+    let (entries, dropped_count) = match cdp.har_stop(&cdp_session_id).await {
+        Ok(v) => v,
         Err("HAR_NOT_RECORDING") => {
             return ActionResult::fatal(
                 "HAR_NOT_RECORDING",
@@ -185,7 +298,7 @@ pub async fn execute_stop(cmd: &StopCmd, registry: &SharedRegistry) -> ActionRes
         );
     }
 
-    let har = serialize_har(entries);
+    let har = serialize_har(entries, dropped_count);
     let har_str = match serde_json::to_string_pretty(&har) {
         Ok(s) => s,
         Err(e) => return ActionResult::fatal("IO_ERROR", format!("HAR serialization failed: {e}")),
@@ -201,23 +314,30 @@ pub async fn execute_stop(cmd: &StopCmd, registry: &SharedRegistry) -> ActionRes
     ActionResult::ok(json!({
         "path": out_path.to_string_lossy().as_ref(),
         "count": count,
+        "dropped": dropped_count,
     }))
 }
 
 // ── HAR 1.2 serialization ─────────────────────────────────────────────────────
 
-fn serialize_har(entries: Vec<HarEntry>) -> serde_json::Value {
+fn serialize_har(entries: Vec<HarEntry>, dropped_count: usize) -> serde_json::Value {
     let entries_json: Vec<serde_json::Value> = entries.into_iter().map(har_entry_to_json).collect();
-    json!({
-        "log": {
-            "version": "1.2",
-            "creator": {
-                "name": "actionbook",
-                "version": env!("CARGO_PKG_VERSION"),
-            },
-            "entries": entries_json,
-        }
-    })
+    let mut log = json!({
+        "version": "1.2",
+        "creator": {
+            "name": "actionbook",
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+        "entries": entries_json,
+    });
+    if dropped_count > 0 {
+        // HAR 1.2 permits `_`-prefixed custom fields on any object.
+        log["_droppedEntries"] = json!(dropped_count);
+        log["_comment"] = json!(format!(
+            "{dropped_count} earlier entries were dropped due to max_entries ring-buffer cap"
+        ));
+    }
+    json!({ "log": log })
 }
 
 fn har_entry_to_json(e: HarEntry) -> serde_json::Value {
@@ -283,6 +403,24 @@ fn har_entry_to_json(e: HarEntry) -> serde_json::Value {
         e.mime_type
     };
 
+    let mut content = json!({
+        "size": e.response_body_size,
+        "mimeType": mime_type,
+    });
+    if let Some(body) = e.response_body {
+        content["text"] = json!(body);
+        if e.response_body_base64 {
+            content["encoding"] = json!("base64");
+        }
+    }
+    if let Some(dropped) = e.body_dropped_size_bytes {
+        // `_`-prefixed fields are HAR 1.2-permitted extensions.
+        content["_bodyDroppedSizeBytes"] = json!(dropped);
+    }
+    if let Some(err) = e.body_error {
+        content["_bodyError"] = json!(err);
+    }
+
     json!({
         "startedDateTime": started_date_time,
         "time": total_time,
@@ -293,10 +431,7 @@ fn har_entry_to_json(e: HarEntry) -> serde_json::Value {
             "httpVersion": e.http_version,
             "cookies": resp_cookies,
             "headers": resp_headers,
-            "content": {
-                "size": e.response_body_size,
-                "mimeType": mime_type,
-            },
+            "content": content,
             "redirectURL": e.redirect_url,
             "headersSize": -1,
             "bodySize": e.response_body_size,
@@ -484,15 +619,50 @@ fn parse_query_string(url_str: &str) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn default_har_path() -> PathBuf {
-    let dir = dirs::home_dir()
+fn default_har_dir() -> PathBuf {
+    dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join(".actionbook")
-        .join("har");
+        .join("har")
+}
+
+fn default_har_path() -> PathBuf {
+    let dir = default_har_dir();
     let _ = std::fs::create_dir_all(&dir);
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
     dir.join(format!("har-{ts}.har"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_resource_types_known_tokens_canonicalize() {
+        let set = parse_resource_types("xhr,fetch").unwrap();
+        assert!(set.contains("XHR"));
+        assert!(set.contains("Fetch"));
+    }
+
+    #[test]
+    fn parse_resource_types_all_returns_empty_set() {
+        assert!(parse_resource_types("all").unwrap().is_empty());
+        assert!(parse_resource_types("*").unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_resource_types_unknown_token_is_error() {
+        // Regression: typo-only input used to silently become "record all".
+        let err = parse_resource_types("xrh").unwrap_err();
+        assert_eq!(err, vec!["xrh".to_string()]);
+    }
+
+    #[test]
+    fn parse_resource_types_mixed_valid_invalid_is_error() {
+        let err = parse_resource_types("xhr,bogus").unwrap_err();
+        assert_eq!(err, vec!["bogus".to_string()]);
+    }
 }

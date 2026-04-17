@@ -10,6 +10,21 @@ const BRIDGE_PROBE_TIMEOUT_MS = 750;
 const HANDSHAKE_TIMEOUT_MS = 2000;
 const L3_CONFIRM_TIMEOUT_MS = 30000;
 
+// --- Tab Group Config ---
+// All tabs opened by Actionbook (via Extension.createTab or the reuse-empty-tab
+// path) are moved into a per-window Chrome tab group titled "Actionbook" so
+// users can tell agent-driven tabs apart at a glance and collapse/close them
+// in bulk. The group is looked up by title in the tab's own window — we do
+// NOT persist groupId, since it's unstable across sessions and windows.
+const ACTIONBOOK_GROUP_TITLE = "Actionbook";
+const ACTIONBOOK_GROUP_COLOR = "grey";
+// When true, tabs that the user explicitly attaches via Extension.attachTab
+// are also moved into the group. Default false: don't yank a user's existing
+// tab into the Actionbook group without their knowledge.
+const ACTIONBOOK_GROUP_ATTACH = false;
+// User-facing toggle (chrome.storage.local key: "groupTabs"). Default on.
+let groupingEnabled = true;
+
 // --- CDP Method Allowlist ---
 
 const CDP_ALLOWLIST = {
@@ -401,6 +416,48 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   }
 });
 
+// --- Tab Group Helper ---
+
+// Move a tab into the Actionbook group in its current window, creating the
+// group if none exists there. All failures are swallowed: grouping is a UX
+// nicety and must never break the CDP command that triggered it. Callers
+// should not await any particular outcome — treat this as fire-and-log.
+async function ensureTabInActionbookGroup(tabId) {
+  if (!groupingEnabled) return;
+  if (typeof tabId !== "number") return;
+  // tabGroups API availability guard — if user loaded an older build without
+  // the permission, skip silently instead of throwing.
+  if (!chrome.tabGroups || !chrome.tabs.group) return;
+
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab || typeof tab.windowId !== "number") return;
+
+    // Look up an existing Actionbook group in THIS window. groupId must be
+    // scoped per-window: passing a cross-window groupId to chrome.tabs.group
+    // would move the tab to the group's window, which is not what we want.
+    const existing = await chrome.tabGroups.query({
+      title: ACTIONBOOK_GROUP_TITLE,
+      windowId: tab.windowId,
+    });
+
+    if (existing && existing.length > 0) {
+      await chrome.tabs.group({ groupId: existing[0].id, tabIds: [tabId] });
+    } else {
+      const groupId = await chrome.tabs.group({
+        tabIds: [tabId],
+        createProperties: { windowId: tab.windowId },
+      });
+      await chrome.tabGroups.update(groupId, {
+        title: ACTIONBOOK_GROUP_TITLE,
+        color: ACTIONBOOK_GROUP_COLOR,
+      });
+    }
+  } catch (err) {
+    debugLog("[actionbook] ensureTabInActionbookGroup failed:", err?.message || err);
+  }
+}
+
 const REUSABLE_EMPTY_TAB_URLS = new Set([
   "about:blank",
   "about:newtab",
@@ -426,10 +483,12 @@ async function createOrReuseTab(targetUrl) {
   ) {
     const reusableTab = tabsInCurrentWindow[0];
     const tab = await chrome.tabs.update(reusableTab.id, { url: targetUrl, active: true });
+    await ensureTabInActionbookGroup(tab.id);
     return { tab, reused: true };
   }
 
   const tab = await chrome.tabs.create({ url: targetUrl });
+  await ensureTabInActionbookGroup(tab.id);
   return { tab, reused: false };
 }
 
@@ -511,6 +570,11 @@ async function handleExtensionCommand(id, method, params) {
         } catch (err) {
           return { id, error: { code: -32000, message: `attach failed: ${err.message}` } };
         }
+      }
+      // Opt-in: only move user-attached existing tabs into the group when
+      // ACTIONBOOK_GROUP_ATTACH is true. Default false preserves user intent.
+      if (ACTIONBOOK_GROUP_ATTACH) {
+        await ensureTabInActionbookGroup(tabId);
       }
       broadcastState();
       return {
@@ -983,6 +1047,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Offscreen document keep-alive ping - just acknowledge
     return false;
   }
+  if (message.type === "getGrouping") {
+    // Match the setter's sender check — only the popup reads this state.
+    if (!isSenderPopup(sender)) return false;
+    sendResponse({ enabled: groupingEnabled });
+    return true;
+  }
+  if (message.type === "setGrouping") {
+    // Only trust the popup — other senders cannot flip grouping
+    if (!isSenderPopup(sender)) return false;
+    groupingEnabled = message.enabled === true;
+    chrome.storage.local.set({ groupTabs: groupingEnabled });
+    return false;
+  }
   return false;
 });
 
@@ -1029,6 +1106,16 @@ function stopBridgePolling() {
 ensureOffscreenDocument();
 lastLoggedState = "idle";
 debugLog("[actionbook] Background service worker started");
+
+// Load the user's tab-grouping preference (default on). Kept fully async:
+// the few grouping calls that might race this load will just see the default
+// value, which is the safer fallback.
+chrome.storage.local.get("groupTabs", (result) => {
+  if (typeof result?.groupTabs === "boolean") {
+    groupingEnabled = result.groupTabs;
+  }
+});
+
 // Try immediate connect, then keep polling fixed ws://127.0.0.1:19222.
 connect();
 startBridgePolling();
