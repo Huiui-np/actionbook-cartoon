@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-18
 **Severity:** **High** — breaks the parallel-tab research pattern
-**Status:** Open
+**Status:** **Fixed** in commit on main 2026-04-18 (see `open_one_tab` + new helper `await_navigation_committed` in `packages/cli/src/browser/tab/open.rs`)
 **Affected component:** `packages/cli/src/browser/navigation/new_tab.rs` (or equivalent multi-URL handler)
 **Discovered during:** L4 verification run with the newly-landed "Parallel sources" SKILL.md pattern
 

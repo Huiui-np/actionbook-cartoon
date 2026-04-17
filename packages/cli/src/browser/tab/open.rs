@@ -331,6 +331,12 @@ async fn open_one_tab(
         return Err(cdp_error_to_result(e, "CDP_ERROR"));
     }
 
+    // Wait for navigation to commit (issue #004).
+    // Target.createTarget kicks off navigation async but returns before the
+    // main frame has moved away from about:blank. Without this wait, any
+    // immediately-subsequent read command (text / eval) sees the blank page.
+    await_navigation_committed(cdp, &target_id, final_url).await;
+
     let short_tab_id = {
         let mut reg = registry.lock().await;
         match reg.get_mut(session_id) {
@@ -428,6 +434,45 @@ fn failure_json(url: &str, result: &ActionResult) -> serde_json::Value {
             "code": "INTERNAL_ERROR",
             "message": "unexpected success while recording failure",
         }),
+    }
+}
+
+/// Poll document.URL until the tab has navigated away from about:blank.
+///
+/// Target.createTarget with a `url` argument kicks off navigation but returns
+/// before the main frame commits. Without this wait, a read command issued
+/// immediately after `new-tab` sees the blank page. Issue #004.
+///
+/// - Skips the wait when the requested URL is itself an internal page (about:*,
+///   chrome://*, javascript:, etc.) — user intent was a blank/internal tab.
+/// - Polls every 50 ms, gives up after 3 s. On timeout we return without
+///   error: the tab is still usable and the caller's subsequent `wait network-idle`
+///   or `text` will surface the issue if navigation genuinely failed.
+async fn await_navigation_committed(cdp: &CdpSession, target_id: &str, requested_url: &str) {
+    let requested_is_internal = requested_url.starts_with("about:")
+        || requested_url.starts_with("chrome:")
+        || requested_url.starts_with("javascript:")
+        || requested_url.starts_with("data:");
+    if requested_is_internal {
+        return;
+    }
+
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_millis(3000);
+    let tick = std::time::Duration::from_millis(50);
+
+    loop {
+        let current = crate::browser::navigation::get_tab_url(cdp, target_id).await;
+        let is_blank = current.is_empty()
+            || current.starts_with("about:")
+            || current.starts_with("chrome://newtab");
+        if !is_blank {
+            return;
+        }
+        if start.elapsed() >= timeout {
+            return;
+        }
+        tokio::time::sleep(tick).await;
     }
 }
 
