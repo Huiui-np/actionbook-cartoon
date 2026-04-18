@@ -106,7 +106,23 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
     let js = r#"(function() {
         if (document.readyState !== 'complete') { return { ready: false, unloaded_imgs: 1 }; }
         var imgs = Array.prototype.slice.call(document.querySelectorAll('img'));
-        var unloaded = imgs.filter(function(i) { return !i.complete; }).length;
+        // Non-lazy images must always be complete.  For loading="lazy" images:
+        // Chromium withholds the fetch until the image is within ~2500px of the
+        // viewport, so a below-fold lazy image stays .complete===false forever and
+        // would block idle.  We exempt lazy images that are truly off-screen (>3000px
+        // from the viewport in any direction, safely beyond the Chromium threshold).
+        // Lazy images within 3000px are in the "about to load" zone and are treated
+        // like non-lazy images — their .complete===false continues to block idle.
+        // Once any lazy image finishes loading, .complete becomes true and is no
+        // longer counted regardless of position.
+        var vh = window.innerHeight, vw = window.innerWidth, m = 3000;
+        var unloaded = imgs.filter(function(i) {
+          if (i.complete) return false;
+          if (i.loading !== 'lazy') return true;
+          var r = i.getBoundingClientRect();
+          var offscreen = r.bottom < -m || r.top > vh + m || r.right < -m || r.left > vw + m;
+          return !offscreen;
+        }).length;
         return { ready: true, unloaded_imgs: unloaded };
     })()"#;
 
