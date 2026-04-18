@@ -106,7 +106,11 @@ pub async fn execute(cmd: &Cmd, registry: &SharedRegistry) -> ActionResult {
     let js = r#"(function() {
         if (document.readyState !== 'complete') { return { ready: false, unloaded_imgs: 1 }; }
         var imgs = Array.prototype.slice.call(document.querySelectorAll('img'));
-        var unloaded = imgs.filter(function(i) { return !i.complete; }).length;
+        // Exclude loading="lazy" images that are off-screen: Chromium does not start
+        // loading them until they enter the viewport, so their .complete stays false
+        // indefinitely.  Once a lazy image scrolls into view and finishes loading,
+        // .complete becomes true and the filter correctly includes it again.
+        var unloaded = imgs.filter(function(i) { return !i.complete && i.loading !== 'lazy'; }).length;
         return { ready: true, unloaded_imgs: unloaded };
     })()"#;
 
