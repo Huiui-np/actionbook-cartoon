@@ -1521,9 +1521,18 @@ mod reap_tests {
 
         reap_daemon_and_chromes(&home);
 
-        assert!(!home.join("daemon.pid").exists(), "pid file should be unlinked");
-        assert!(!home.join("daemon.sock").exists(), "sock file should be unlinked");
-        assert!(!home.join("daemon.ready").exists(), "ready file should be unlinked");
+        assert!(
+            !home.join("daemon.pid").exists(),
+            "pid file should be unlinked"
+        );
+        assert!(
+            !home.join("daemon.sock").exists(),
+            "sock file should be unlinked"
+        );
+        assert!(
+            !home.join("daemon.ready").exists(),
+            "ready file should be unlinked"
+        );
     }
 
     #[test]
