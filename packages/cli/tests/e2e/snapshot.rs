@@ -918,7 +918,7 @@ fn snap_session_not_found_text() {
         10,
     );
     assert_failure(&out, "snapshot nonexistent session text");
-    let text = stdout_str(&out);
+    let text = stderr_str(&out);
     assert!(
         text.contains("error SESSION_NOT_FOUND:"),
         "text must contain error SESSION_NOT_FOUND: got {text}"
@@ -983,7 +983,7 @@ fn snap_tab_not_found_text() {
         10,
     );
     assert_failure(&out, "snapshot nonexistent tab text");
-    let text = stdout_str(&out);
+    let text = stderr_str(&out);
     assert!(
         text.contains("error TAB_NOT_FOUND:"),
         "text must contain error TAB_NOT_FOUND: got {text}"

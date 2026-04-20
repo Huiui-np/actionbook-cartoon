@@ -473,7 +473,7 @@ fn cloud_missing_cdp_endpoint_text() {
 
     let out = headless(&["browser", "start", "--mode", "cloud"], 10);
     assert_failure(&out, "cloud missing endpoint text");
-    let text = stdout_str(&out);
+    let text = stderr_str(&out);
     assert!(
         text.contains("MISSING_CDP_ENDPOINT") || text.contains("cdp-endpoint"),
         "error should mention cdp-endpoint: {text}"
@@ -778,7 +778,7 @@ fn cloud_list_tabs_nonexistent_session_text() {
 
     let out = headless(&["browser", "list-tabs", "--session", "ghost-cloud"], 10);
     assert_failure(&out, "list-tabs nonexistent session text");
-    let text = stdout_str(&out);
+    let text = stderr_str(&out);
     assert!(text.contains("SESSION_NOT_FOUND"), "text: {text}");
 }
 
@@ -811,7 +811,7 @@ fn cloud_new_tab_nonexistent_session_text() {
         10,
     );
     assert_failure(&out, "new-tab nonexistent session text");
-    let text = stdout_str(&out);
+    let text = stderr_str(&out);
     assert!(text.contains("SESSION_NOT_FOUND"), "text: {text}");
 }
 
@@ -860,7 +860,7 @@ fn cloud_close_tab_nonexistent_session_text() {
         10,
     );
     assert_failure(&out, "close-tab nonexistent session text");
-    let text = stdout_str(&out);
+    let text = stderr_str(&out);
     assert!(text.contains("SESSION_NOT_FOUND"));
 }
 
@@ -912,7 +912,7 @@ fn cloud_close_tab_nonexistent_tab_text() {
         10,
     );
     assert_failure(&out, "close-tab nonexistent tab text");
-    let text = stdout_str(&out);
+    let text = stderr_str(&out);
     assert!(text.contains("TAB_NOT_FOUND"));
 }
 

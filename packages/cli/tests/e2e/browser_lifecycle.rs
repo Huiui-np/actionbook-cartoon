@@ -473,7 +473,7 @@ fn lifecycle_double_close_text() {
 
     let out = headless(&["browser", "close", "--session", &sid], 30);
     assert_failure(&out, "second close text");
-    let text = stdout_str(&out);
+    let text = stderr_str(&out);
     assert!(text.contains("error SESSION_NOT_FOUND:"));
 }
 
@@ -507,7 +507,7 @@ fn lifecycle_status_nonexistent_text() {
 
     let out = headless(&["browser", "status", "--session", "nonexistent"], 10);
     assert_failure(&out, "status nonexistent text");
-    let text = stdout_str(&out);
+    let text = stderr_str(&out);
     assert!(text.contains("error SESSION_NOT_FOUND:"));
 }
 

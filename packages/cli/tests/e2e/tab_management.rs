@@ -384,7 +384,7 @@ fn tab_new_tab_multiple_urls_partial_failure_text() {
         30,
     );
     assert_failure(&out, "new-tab multiple urls partial failure text");
-    let text = stdout_str(&out);
+    let text = stderr_str(&out);
     assert!(text.contains(&format!("1/2 tabs opened in session {sid}")));
     assert!(text.contains("[failed] javascript:alert(1) - INVALID_ARGUMENT:"));
 }
@@ -552,7 +552,7 @@ fn tab_list_tabs_nonexistent_session_text() {
     }
     let out = headless(&["browser", "list-tabs", "--session", "nonexistent"], 10);
     assert_failure(&out, "list-tabs nonexistent session text");
-    let text = stdout_str(&out);
+    let text = stderr_str(&out);
     assert!(text.contains("error SESSION_NOT_FOUND:"));
 }
 
@@ -585,7 +585,7 @@ fn tab_new_tab_nonexistent_session_text() {
         10,
     );
     assert_failure(&out, "new-tab nonexistent session text");
-    let text = stdout_str(&out);
+    let text = stderr_str(&out);
     assert!(text.contains("error SESSION_NOT_FOUND:"));
 }
 
@@ -630,7 +630,7 @@ fn tab_close_tab_nonexistent_session_text() {
         10,
     );
     assert_failure(&out, "close-tab nonexistent session text");
-    let text = stdout_str(&out);
+    let text = stderr_str(&out);
     assert!(text.contains("error SESSION_NOT_FOUND:"));
 }
 
@@ -683,7 +683,7 @@ fn tab_close_tab_nonexistent_tab_text() {
         10,
     );
     assert_failure(&out, "close-tab nonexistent tab text");
-    let text = stdout_str(&out);
+    let text = stderr_str(&out);
     assert!(text.contains("error TAB_NOT_FOUND:"));
 }
 

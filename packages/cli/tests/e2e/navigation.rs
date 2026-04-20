@@ -231,7 +231,7 @@ fn nav_goto_session_not_found_text() {
         10,
     );
     assert_failure(&out, "goto nonexistent session text");
-    let text = stdout_str(&out);
+    let text = stderr_str(&out);
     assert!(
         text.contains("error SESSION_NOT_FOUND:"),
         "text must contain error SESSION_NOT_FOUND: got {text}"
@@ -291,7 +291,7 @@ fn nav_goto_tab_not_found_text() {
         10,
     );
     assert_failure(&out, "goto nonexistent tab text");
-    let text = stdout_str(&out);
+    let text = stderr_str(&out);
     assert!(
         text.contains("error TAB_NOT_FOUND:"),
         "text must contain error TAB_NOT_FOUND: got {text}"
