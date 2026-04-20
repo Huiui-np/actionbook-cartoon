@@ -801,7 +801,7 @@ mod tests {
         // t3 reserved; auto ids skip t3 and use t1, t2, t4
         assert!(ids.contains(&"t3"), "reserved id must be present");
         assert!(
-            !ids.iter().filter(|&&id| id == "t3").nth(1).is_some(),
+            ids.iter().filter(|&&id| id == "t3").nth(1).is_none(),
             "t3 must not be duplicated"
         );
         let unique: std::collections::HashSet<_> = ids.iter().collect();
