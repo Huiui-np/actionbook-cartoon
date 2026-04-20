@@ -173,7 +173,10 @@ impl SessionEntry {
         }
         // Keep the auto-counter ahead of any t{n} custom id so push_tab never
         // reissues the same short id later.
-        if let Some(n) = custom_id.strip_prefix('t').and_then(|s| s.parse::<u32>().ok()) {
+        if let Some(n) = custom_id
+            .strip_prefix('t')
+            .and_then(|s| s.parse::<u32>().ok())
+        {
             if n >= self.next_tab_id {
                 self.next_tab_id = n.saturating_add(1);
             }
@@ -751,7 +754,11 @@ mod tests {
             .unwrap();
 
         // Non-t{n} custom id must not move the auto counter.
-        entry.push_tab("native-2".to_string(), "https://b.com".to_string(), String::new());
+        entry.push_tab(
+            "native-2".to_string(),
+            "https://b.com".to_string(),
+            String::new(),
+        );
         assert_eq!(entry.tabs[1].id.0, "t1");
     }
 
@@ -775,16 +782,35 @@ mod tests {
             )
             .unwrap();
 
-        entry.push_tab("native-1".to_string(), "https://a.com".to_string(), String::new());
-        entry.push_tab("native-2".to_string(), "https://b.com".to_string(), String::new());
-        entry.push_tab("native-4".to_string(), "https://d.com".to_string(), String::new());
+        entry.push_tab(
+            "native-1".to_string(),
+            "https://a.com".to_string(),
+            String::new(),
+        );
+        entry.push_tab(
+            "native-2".to_string(),
+            "https://b.com".to_string(),
+            String::new(),
+        );
+        entry.push_tab(
+            "native-4".to_string(),
+            "https://d.com".to_string(),
+            String::new(),
+        );
 
         let ids: Vec<&str> = entry.tabs.iter().map(|t| t.id.0.as_str()).collect();
         // t3 reserved; auto ids skip t3 and use t1, t2, t4
         assert!(ids.contains(&"t3"), "reserved id must be present");
-        assert!(!ids.iter().filter(|&&id| id == "t3").nth(1).is_some(), "t3 must not be duplicated");
+        assert!(
+            !ids.iter().filter(|&&id| id == "t3").nth(1).is_some(),
+            "t3 must not be duplicated"
+        );
         let unique: std::collections::HashSet<_> = ids.iter().collect();
-        assert_eq!(unique.len(), ids.len(), "all short ids must be unique: {ids:?}");
+        assert_eq!(
+            unique.len(),
+            ids.len(),
+            "all short ids must be unique: {ids:?}"
+        );
     }
 
     #[test]
@@ -803,7 +829,12 @@ mod tests {
 
         // Simulate prior open --set-tab-id=t3 occupying the auto namespace.
         entry
-            .push_tab_with_id("t3".to_string(), "300".into(), "https://g.com".into(), "Google".into())
+            .push_tab_with_id(
+                "t3".to_string(),
+                "300".into(),
+                "https://g.com".into(),
+                "Google".into(),
+            )
             .unwrap();
 
         // Three tabs registered via list-tabs sync (as if session discovered them).
@@ -818,7 +849,11 @@ mod tests {
 
         let ids: Vec<&str> = entry.tabs.iter().map(|t| t.id.0.as_str()).collect();
         let unique: std::collections::HashSet<_> = ids.iter().collect();
-        assert_eq!(unique.len(), ids.len(), "duplicate short id after drag-out-drag-in: {ids:?}");
+        assert_eq!(
+            unique.len(),
+            ids.len(),
+            "duplicate short id after drag-out-drag-in: {ids:?}"
+        );
     }
 
     #[test]
