@@ -9,8 +9,7 @@ use crate::harness::{
     SessionGuard, assert_context_object, assert_context_with_session, assert_error_envelope,
     assert_failure, assert_meta, assert_native_tab_id, assert_success, assert_tab_id, headless,
     headless_json, new_tab_json, parse_json, skip, start_named_session, start_session, stderr_str,
-    stdout_str,
-    unique_session, url_a, url_b, url_c, url_slow,
+    stdout_str, unique_session, url_a, url_b, url_c, url_slow,
 };
 
 // ===========================================================================
