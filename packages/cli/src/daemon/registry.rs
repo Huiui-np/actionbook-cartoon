@@ -175,7 +175,7 @@ impl SessionEntry {
         // reissues the same short id later.
         if let Some(n) = custom_id.strip_prefix('t').and_then(|s| s.parse::<u32>().ok()) {
             if n >= self.next_tab_id {
-                self.next_tab_id = n + 1;
+                self.next_tab_id = n.saturating_add(1);
             }
         }
         self.tabs.push(TabEntry {
