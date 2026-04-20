@@ -176,10 +176,9 @@ impl SessionEntry {
         if let Some(n) = custom_id
             .strip_prefix('t')
             .and_then(|s| s.parse::<u32>().ok())
+            && n >= self.next_tab_id
         {
-            if n >= self.next_tab_id {
-                self.next_tab_id = n.saturating_add(1);
-            }
+            self.next_tab_id = n.saturating_add(1);
         }
         self.tabs.push(TabEntry {
             id: TabId(custom_id.clone()),
