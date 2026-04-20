@@ -5,7 +5,7 @@
 
 use crate::harness::{
     SessionGuard, assert_failure, assert_success, headless, headless_json, parse_json, skip,
-    stdout_str, unique_session, wait_page_ready,
+    stderr_str, stdout_str, unique_session, wait_page_ready,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────

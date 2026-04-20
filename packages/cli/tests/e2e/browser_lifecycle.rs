@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use crate::harness::{
     SessionGuard, SoloEnv, assert_failure, assert_native_tab_id, assert_success, assert_tab_id,
-    headless, headless_json, new_tab_json, parse_json, skip, start_session, stdout_str,
+    headless, headless_json, new_tab_json, parse_json, skip, start_session, stderr_str, stdout_str,
     unique_session, url_a, url_b, wait_url_contains,
 };
 

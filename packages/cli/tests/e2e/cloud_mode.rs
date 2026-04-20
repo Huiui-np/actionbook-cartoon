@@ -13,7 +13,8 @@
 use crate::harness::{
     SessionGuard, SoloEnv, assert_context_with_session, assert_context_with_tab,
     assert_error_envelope, assert_failure, assert_meta, assert_native_tab_id, assert_success,
-    assert_tab_id, headless, headless_json, parse_json, skip, stdout_str, url_a, url_b, url_c,
+    assert_tab_id, headless, headless_json, parse_json, skip, stderr_str, stdout_str, url_a, url_b,
+    url_c,
 };
 use std::env;
 use std::process::Command as StdCommand;

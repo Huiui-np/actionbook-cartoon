@@ -7,7 +7,7 @@
 
 use crate::harness::{
     SessionGuard, assert_error_envelope, assert_failure, assert_meta, assert_success, headless,
-    headless_json, parse_json, skip, start_session, stdout_str, url_a, url_b,
+    headless_json, parse_json, skip, start_session, stderr_str, stdout_str, url_a, url_b,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────
