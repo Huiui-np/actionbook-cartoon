@@ -1,5 +1,15 @@
 # @actionbookdev/cli
 
+## 1.5.1
+
+### Patch Changes
+
+- - Fix duplicate short tab IDs after drag-out-drag-in in extension mode: `push_tab` skips already-occupied candidates;
+  - Fix plain-text error output routed to stderr instead of stdout
+  - Fix case-insensitive internal-scheme detection
+  - Fix network-idle check incorrectly blocking on off-screen lazy images
+  - Fix wait stability with dual-threshold for already-loaded baseline URL
+
 ## 1.5.0
 
 ### Minor Changes
