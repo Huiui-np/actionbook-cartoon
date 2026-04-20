@@ -459,6 +459,14 @@ async function ensureTabInActionbookGroup(tabId) {
         title: ACTIONBOOK_GROUP_TITLE,
         color: ACTIONBOOK_GROUP_COLOR,
       });
+      // Pin the newly-created group to the leftmost position of the window so
+      // Actionbook-driven tabs are always findable in the same spot. Only done
+      // on creation — we don't fight the user if they later drag it elsewhere.
+      try {
+        await chrome.tabGroups.move(groupId, { index: 0 });
+      } catch (err) {
+        debugLog("[actionbook] tabGroups.move to index 0 failed:", err?.message || err);
+      }
     }
   } catch (err) {
     debugLog("[actionbook] ensureTabInActionbookGroup failed:", err?.message || err);
