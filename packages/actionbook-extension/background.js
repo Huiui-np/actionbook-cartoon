@@ -18,10 +18,6 @@ const L3_CONFIRM_TIMEOUT_MS = 30000;
 // NOT persist groupId, since it's unstable across sessions and windows.
 const ACTIONBOOK_GROUP_TITLE = "Actionbook";
 const ACTIONBOOK_GROUP_COLOR = "grey";
-// When true, tabs that the user explicitly attaches via Extension.attachTab
-// are also moved into the group. Default false: don't yank a user's existing
-// tab into the Actionbook group without their knowledge.
-const ACTIONBOOK_GROUP_ATTACH = false;
 // User-facing toggle (chrome.storage.local key: "groupTabs"). Default on.
 let groupingEnabled = true;
 
@@ -559,13 +555,6 @@ async function handleExtensionCommand(id, method, params) {
       return { id, result: { status: "pong", timestamp: Date.now() } };
 
     case "Extension.listTabs": {
-      // Only return tabs that Actionbook is actually managing:
-      //   * tabs currently in the "Actionbook" tab group (any window), OR
-      //   * tabs the extension has debugger-attached (`attachedTabs`).
-      // Union, not intersection: user may have disabled grouping
-      // (groupingEnabled=false) so attached tabs won't be in any group, and
-      // ACTIONBOOK_GROUP_ATTACH=false means user-attached existing tabs are
-      // not moved into the group. Either signal is enough to claim the tab.
       let actionbookGroupIds = new Set();
       if (chrome.tabGroups && chrome.tabGroups.query) {
         try {
@@ -573,15 +562,11 @@ async function handleExtensionCommand(id, method, params) {
             title: ACTIONBOOK_GROUP_TITLE,
           });
           actionbookGroupIds = new Set(groups.map((g) => g.id));
-        } catch (_) {
-          // tabGroups unavailable — fall back to attachedTabs only.
-        }
+        } catch (_) {}
       }
       const all = await chrome.tabs.query({});
       const managed = all.filter(
-        (t) =>
-          attachedTabs.has(t.id) ||
-          (typeof t.groupId === "number" && actionbookGroupIds.has(t.groupId))
+        (t) => typeof t.groupId === "number" && actionbookGroupIds.has(t.groupId)
       );
       const tabList = managed.map((t) => ({
         id: t.id,
@@ -619,11 +604,7 @@ async function handleExtensionCommand(id, method, params) {
           return { id, error: { code: -32000, message: `attach failed: ${err.message}` } };
         }
       }
-      // Opt-in: only move user-attached existing tabs into the group when
-      // ACTIONBOOK_GROUP_ATTACH is true. Default false preserves user intent.
-      if (ACTIONBOOK_GROUP_ATTACH) {
-        await ensureTabInActionbookGroup(tabId);
-      }
+      await ensureTabInActionbookGroup(tabId);
       broadcastState();
       return {
         id,
