@@ -786,7 +786,10 @@ base_url = "  https://config-api.example.com  "
         sweep_session_orphans();
 
         assert!(!empty.exists(), "empty session dir must be swept");
-        assert!(non_empty.exists(), "non-empty session dir must be preserved");
+        assert!(
+            non_empty.exists(),
+            "non-empty session dir must be preserved"
+        );
         assert!(non_empty.join("snapshot.yaml").exists());
     }
 
@@ -807,7 +810,10 @@ base_url = "  https://config-api.example.com  "
 
         assert!(!stale_a.exists());
         assert!(!stale_b.exists());
-        assert!(keep.exists(), "non-__fetch__ session files must be preserved");
+        assert!(
+            keep.exists(),
+            "non-__fetch__ session files must be preserved"
+        );
     }
 
     #[test]

@@ -236,11 +236,6 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         std::process::id(),
         crate::BUILD_VERSION
     );
-    // Startup housekeeping: remove session-dir / fetch-file orphans from
-    // previous daemons that exited ungracefully (SIGKILL, panic=abort, or
-    // a hard crash that bypassed the shutdown sweep). Safe because we
-    // hold no state yet — any empty dir was orphaned by a prior run.
-    crate::config::sweep_session_orphans();
     let path = socket_path();
     let pid_file = pid_path();
     let ready_path = path.with_extension("ready");
@@ -286,6 +281,13 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         pid_file_fd.set_len(0)?;
         write!(&pid_file_fd, "{}", std::process::id())?;
     }
+
+    // Housekeeping under lock ownership: remove session-dir / fetch-file
+    // orphans from previous daemons that exited ungracefully (SIGKILL,
+    // panic=abort). Gated behind lock acquisition so a non-owner daemon
+    // that's about to bail out on lock failure can't mistake the real
+    // owner's empty session dirs for orphans.
+    crate::config::sweep_session_orphans();
 
     // Remove stale socket (verify it's actually a socket, not a symlink to something else)
     if path.exists() {
@@ -445,8 +447,6 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         std::process::id(),
         crate::BUILD_VERSION
     );
-    // Startup sweep (same rationale as the unix path).
-    crate::config::sweep_session_orphans();
     let pid_file = pid_path();
     let port_file = port_path();
     let lock_file = lock_path();
@@ -489,6 +489,11 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     // Write our PID to a separate (unlocked) file so the client can target us
     // with taskkill on version mismatch.
     std::fs::write(&pid_file, std::process::id().to_string())?;
+
+    // Housekeeping under lock ownership: same rationale as the unix path.
+    // Must run AFTER lock acquisition so a losing daemon can't mistake the
+    // winner's empty session dirs for orphans.
+    crate::config::sweep_session_orphans();
 
     // Bind TCP listener; OS assigns an ephemeral port in the dynamic range.
     let listener = TcpListener::bind("127.0.0.1:0").await?;
